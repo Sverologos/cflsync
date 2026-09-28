@@ -14,7 +14,7 @@ from unittest.mock import patch
 from cflsync import SyncError
 from cflsync.cli import (
     InitCommand, PageCreateCommand, PageMoveCommand, PagePullCommand, PagePushCommand, PageRemoveCommand, PageRenameCommand,
-    PageStatusCommand, RepositoryPushCommand, main)
+    PageStatusCommand, RepositoryPushCommand, RepositoryStatusCommand, main)
 
 
 class TestInitCommandDispatch(unittest.TestCase):
@@ -96,6 +96,13 @@ class TestPageCommandDispatch(unittest.TestCase):
 
         self.assertEqual(result, 0)
         run.assert_called_once_with(force=True)
+
+    def test_dispatches_repository_status(self) -> None:
+        with patch.object(RepositoryStatusCommand, "run", return_value=0) as run:
+            result = main(["cflsync", "status"])
+
+        self.assertEqual(result, 0)
+        run.assert_called_once_with()
 
     def test_page_help_lists_every_documented_page_command(self) -> None:
         output = StringIO()

@@ -4,19 +4,22 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-# Repository synchronization plan (draft):
+# Repository synchronization:
 #
-# Build a TreeStatus:
+# Build a TreeStatus (TreeStatus.for_workarea):
 #
-# 1. List the root reference and every remote descendant.
+# 1. List the root reference and every remote descendant (APIClient.page_descendants). Discovery either returns the
+#    complete page hierarchy or raises, for example on a failed listing or non-page content, so no absence is ever
+#    inferred from a partial listing.
 # 2. List all local pages by loading the local cache.
 # 3. For each remote page, match its cached page. No cached state or local directory is ``absent-local``. Otherwise,
 #    classify the remote representation against the cached version.
 # 4. Every cached page absent from the remote list is ``absent-remote``. For matched pages, combine local and remote
-#    change states: both changed is ``conflict``; otherwise one changed is ``local-changed`` or ``remote-changed``;
-#    neither changed is ``unchanged``.
+#    change states (PageChangeDetector): both changed is ``conflict``; otherwise one changed is ``local-changed`` or
+#    ``remote-changed``; neither changed is ``unchanged``.
+# 5. Sort the statuses topologically, parents before children.
 #
-# Commands map PageStatusState mechanically:
+# Report (``cflsync status``, in the CLI) maps each PageStatusState to a label, parents first:
 #
 # - ``absent-local``: not in local.
 # - ``remote-changed``: remote changed.
@@ -28,8 +31,9 @@
 # Execute:
 #
 # - If any ``conflict`` entry exists, abort unless ``--force`` was specified.
-# - For pull, topologically sort the statuses parents before children. Execute ``remote-changed`` and ``absent-local``;
-#   with ``--force``, also execute ``conflict`` and ``unchanged`` entries as pulls; skip every other entry.
+# - For pull (not implemented yet), walk the statuses parents before children. Execute ``remote-changed`` and
+#   ``absent-local``; with ``--force``, also execute ``conflict`` and ``unchanged`` entries as pulls; skip every other
+#   entry.
 # - For push (RepositoryPushOperation), walk the statuses parents before children; a page push changes no hierarchy, so
 #   order is only deterministic. Execute ``local-changed`` entries; with ``--force``, also execute ``conflict`` and
 #   ``unchanged`` entries as pushes. Never push ``absent-remote`` entries; recreate those pages with ``page create``
@@ -37,7 +41,7 @@
 #
 # TreeStatus only compares and orders; each repository operation is a separate class mapping a page operation over it.
 
-"""Change inspection and installation planning shared by the synchronization commands."""
+"""Change detection, tree comparison, and synchronization operations linking the workarea with Confluence."""
 
 from __future__ import annotations
 
@@ -225,6 +229,15 @@ class PageStatus:
         assert self.local is not None
         return self.local.page.parent_id
 
+    @property
+    def title(self) -> str:
+        """Return the cached title, or the remote title for a page that is not cached."""
+        if self.local is not None:
+            return self.local.page.title
+        if self.remote is not None and self.remote.title is not None:
+            return self.remote.title
+        return self.id
+
 
 class TreeStatus:
     """The synchronization status of a remote page list and local cache."""
@@ -250,6 +263,18 @@ class TreeStatus:
             raise SyncError("page hierarchy contains a cycle") from error
 
         return [by_id[page_id] for page_id in page_ids]
+
+    @classmethod
+    def for_workarea(cls, workarea: Workarea, api, detector: PageChangeDetector) -> "TreeStatus":
+        """Compare the workarea's complete remote page tree with its local cache.
+
+        Discovery either returns the complete page hierarchy below the root page or raises, so a cached page is only
+        classified as ``absent-remote`` after a complete listing.
+        """
+        root = api.get_page(workarea.root_page_id)
+        # The root page's parent is outside the workarea's tree.
+        remote_pages = [RemoteContentRef(root.id, "page", root.title, None), *api.page_descendants(root.id)]
+        return cls.from_pages(workarea, api, remote_pages, list(workarea.page_tree().states.values()), detector)
 
     @classmethod
     def from_pages(
@@ -406,28 +431,19 @@ class RepositoryPushOperation:
                 try:
                     pushed = self._page_push.push(workarea, api, page_status, force=force)
                 except (OSError, UnicodeError) as error:
-                    results.add(page_status.id, _status_title(page_status), "failed", filesystem_error_message(error))
+                    results.add(page_status.id, page_status.title, "failed", filesystem_error_message(error))
                 except SyncError as error:
-                    results.add(page_status.id, _status_title(page_status), "failed", str(error))
+                    results.add(page_status.id, page_status.title, "failed", str(error))
                 else:
-                    results.add(page_status.id, _status_title(page_status), "pushed" if pushed else "unchanged")
+                    results.add(page_status.id, page_status.title, "pushed" if pushed else "unchanged")
                 continue
 
             if page_status.status is PageStatusState.UNCHANGED:
-                results.add(page_status.id, _status_title(page_status), "unchanged")
+                results.add(page_status.id, page_status.title, "unchanged")
             else:
-                results.add(page_status.id, _status_title(page_status), "skipped", page_status.status)
+                results.add(page_status.id, page_status.title, "skipped", page_status.status)
 
         return results
-
-
-def _status_title(status: PageStatus) -> str:
-    """Return the best title available for a status report."""
-    if status.local is not None:
-        return status.local.page.title
-    if status.remote is not None and status.remote.title is not None:
-        return status.remote.title
-    return status.id
 
 
 def _pages_by_id(pages, description: str, page_id=lambda page: page.id):

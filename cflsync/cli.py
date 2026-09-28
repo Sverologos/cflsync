@@ -17,7 +17,7 @@ from collections.abc import Sequence
 from getpass import getpass
 from pathlib import Path
 
-from .api import APIClient, APIError, RemoteContentRef
+from .api import APIClient, APIError
 from .config import Config, Profile
 from .convert import ADFToMarkdownConverter, MarkdownToADFConverter, PandocRunner
 from .errors import SyncError
@@ -63,17 +63,49 @@ class RepositoryPushCommand:
     def run(self, force: bool = False) -> int:
         try:
             workarea, api = _open_workarea()
-            tree = workarea.page_tree()
-            root = api.get_page(workarea.root_page_id)
-            remote_pages = [RemoteContentRef(root.id, "page", root.title, root.parent_id), *api.page_descendants(root.id)]
-            status = TreeStatus.from_pages(
-                workarea, api, remote_pages, list(tree.states.values()), PageChangeDetector(PandocRunner()))
+            status = TreeStatus.for_workarea(workarea, api, PageChangeDetector(PandocRunner()))
         except (OSError, UnicodeError) as error:
             raise SyncError(f"cannot push workarea: {filesystem_error_message(error)}") from error
 
         results = RepositoryPushOperation().push(workarea, api, status, force)
         results.report()
         return 1 if results.failed else 0
+
+
+class RepositoryStatusCommand:
+
+    # How each synchronization state is reported.
+    LABELS = {
+        PageStatusState.ABSENT_LOCAL: "not in local",
+        PageStatusState.ABSENT_REMOTE: "remote removed",
+        PageStatusState.REMOTE_CHANGED: "remote changed",
+        PageStatusState.LOCAL_CHANGED: "local changed",
+        PageStatusState.CONFLICT: "conflict",
+        PageStatusState.UNCHANGED: "unchanged"}
+
+    def configure(self, subparsers: _SubParsersAction[ArgumentParser]) -> None:
+        status_parser = subparsers.add_parser("status", help="show the synchronization status of every page in the workarea")
+        status_parser.set_defaults(command=self)
+
+    def __call__(self, args: Namespace) -> int:
+        return self.run()
+
+    def run(self) -> int:
+        try:
+            workarea, api = _open_workarea()
+            status = TreeStatus.for_workarea(workarea, api, PageChangeDetector(PandocRunner()))
+        except (OSError, UnicodeError) as error:
+            raise SyncError(f"cannot report workarea status: {filesystem_error_message(error)}") from error
+
+        for page_status in status.pages:
+            print(f"Page '{page_status.id}' ({page_status.title}): {self.LABELS[page_status.status]}")
+
+        counts = {label: 0 for label in self.LABELS.values()}
+        for page_status in status.pages:
+            counts[self.LABELS[page_status.status]] += 1
+
+        print(f"Summary: {', '.join(f'{count} {label}' for label, count in counts.items() if count)}.")
+        return 0
 
 
 class AuthCommand:
@@ -611,6 +643,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     AuthCommand().configure(subparsers)
     InitCommand().configure(subparsers)
     RepositoryPushCommand().configure(subparsers)
+    RepositoryStatusCommand().configure(subparsers)
     PageCommand().configure(subparsers)
     args = parser.parse_args(argv[1:])
     try:

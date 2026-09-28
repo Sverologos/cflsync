@@ -6,6 +6,7 @@
 cflsync auth [-p PROFILE] [--list | --delete]
 cflsync init [-p PROFILE] ROOT_PAGE_REF
 cflsync push [-f | --force]
+cflsync status
 cflsync page create PARENT_PAGE_REF TITLE
 cflsync page pull [-f | --force] PAGE_REF
 cflsync page push [-f | --force] PAGE_REF
@@ -55,6 +56,16 @@ and must be recreated with `page create`. Each page is reported as pushed,
 unchanged, skipped, or failed, followed by a summary. After conflict preflight,
 the command continues after a per-page failure and exits non-zero if any page
 failed.
+
+`status` discovers the tree and compares it with the cache in the same way, and
+reports one line per page, parents before children: `not in local` (remote page
+not cached, or its directory is missing), `remote removed` (cached page absent
+from the tree: deleted, inaccessible, or moved outside the root), `remote
+changed`, `local changed`, `conflict` (changed on both sides), or `unchanged`,
+followed by counts per state. It changes nothing. If discovery fails, for
+example because a listing is denied or the tree contains a folder, the command
+fails before reporting anything, so an incomplete listing is never reported as
+remote removals.
 
 `page status PAGE_REF` reports local and remote changes of a cached page, and
 where the next pull would move its directory (see
@@ -110,8 +121,8 @@ The following situations are refused with an error that explains what to do:
 - A workarea cannot be re-anchored at another root page; after removing the
   root page, delete `.cflsync` and run `init` again.
 - Folders and other non-page content inside the tree are not supported.
-- There are no commands that act on the whole tree at once; every command
-  acts on one page.
+- `push` and `status` are the only commands that act on the whole tree;
+  pulling is done page by page.
 
 ## Page references
 

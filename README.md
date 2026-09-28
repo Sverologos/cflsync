@@ -40,6 +40,7 @@ a checkout as `uv run python -m cflsync`.
 cflsync auth [-p PROFILE] [--list | --delete]
 cflsync init [-p PROFILE] ROOT_PAGE_REF
 cflsync push [-f | --force]
+cflsync status
 cflsync page create PARENT_PAGE_REF TITLE
 cflsync page pull [-f | --force] PAGE_REF
 cflsync page push [-f | --force] PAGE_REF
@@ -108,6 +109,11 @@ reports each result and a summary. Without `--force`, any conflict aborts the
 command before a page is pushed. `push --force` also uploads conflicting and
 unchanged pages, preferring local content. Remote-only changes and pages absent
 on either side are skipped; recreate a remotely absent page with `page create`.
+
+Use `status` to compare the complete remote page tree with the local cache
+without changing anything. It lists every page as `not in local`, `remote
+removed`, `remote changed`, `local changed`, `conflict`, or `unchanged`,
+followed by a summary.
 
 Local page directories mirror the page hierarchy below the root page: each
 child page's directory is inside its parent's directory. `page pull` can target
