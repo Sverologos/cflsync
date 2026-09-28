@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+from collections import deque
 from collections.abc import Callable, Iterator, Mapping
 
 from .errors import SyncError
@@ -80,6 +81,73 @@ class PageOperationResults:
             for outcome in ["pushed", "unchanged", "skipped", "failed"]}
         summary = ", ".join(f"{count} {outcome}" for outcome, count in counts.items() if count)
         print(f"Summary: {summary}.")
+
+
+class DiscoveredPage:
+    """One remote page reached from the discovery root."""
+
+    def __init__(self, page_id: str, title: str, parent_id: str | None, path: tuple[str, ...]) -> None:
+        self.id = page_id
+        self.title = title
+        self.parent_id = parent_id
+        self.path = path
+
+
+class TreeDiscovery:
+    """The remotely discovered page tree and any structural failures encountered while reading it."""
+
+    def __init__(self, root_page_id: str) -> None:
+        self.root_page_id = root_page_id
+        self.pages: dict[str, DiscoveredPage] = {}
+        self.failures: list[str] = []
+
+    @property
+    def complete(self) -> bool:
+        """Report whether all child listings completed without structural failures."""
+        return not self.failures
+
+    @classmethod
+    def discover(cls, api, root_page_id: str) -> "TreeDiscovery":
+        """Discover pages below *root_page_id* breadth-first without inferring pages after a failed listing."""
+        discovery = cls(root_page_id)
+        try:
+            root = api.get_page(root_page_id)
+        except SyncError as error:
+            discovery.failures.append(f"cannot access root page '{root_page_id}': {error}")
+            return discovery
+
+        discovery.pages[root.id] = DiscoveredPage(root.id, root.title, None, (root.id, ))
+        pending = deque([root.id])
+        while pending:
+            parent_id = pending.popleft()
+            parent = discovery.pages[parent_id]
+            try:
+                children = api.page_children(parent_id)
+            except SyncError as error:
+                discovery.failures.append(f"cannot list children of page '{parent_id}': {error}")
+                continue
+
+            for child in children:
+                if child.type != "page":
+                    discovery.failures.append(
+                        f"page '{parent_id}' has non-page child {child.type} '{child.id}'; only pages are supported")
+                    continue
+                if child.title is None:
+                    discovery.failures.append(f"child page '{child.id}' of page '{parent_id}' has no title")
+                    continue
+                if child.id in discovery.pages:
+                    discovery.failures.append(f"page '{child.id}' appears more than once in the discovered tree")
+                    continue
+
+                discovery.pages[child.id] = DiscoveredPage(child.id, child.title, parent_id, parent.path + (child.id, ))
+                pending.append(child.id)
+
+        return discovery
+
+    def require_complete(self) -> None:
+        """Refuse callers that would infer remote-tree absence from an incomplete discovery."""
+        if not self.complete:
+            raise SyncError(f"remote tree discovery is incomplete: {'; '.join(self.failures)}")
 
 
 class PageInspector:
