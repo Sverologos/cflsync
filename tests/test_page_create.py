@@ -38,6 +38,14 @@ class TestPageCreate(unittest.TestCase):
 
         return transport, status
 
+    def _local_parent(self, workarea):
+        state = example_page_state("456789", title="Parent page", directory="Parent page")
+        state.save(workarea.cache_path(state.page.id))
+        directory = workarea.root_dir / state.page.directory
+        directory.mkdir()
+        (directory / "content.md").write_text("# Parent page\n", encoding="utf-8")
+        return directory
+
     def _pull_responses(self, page, attachments=None):
         if attachments is None:
             attachments = [attachment_fixture()]
@@ -63,6 +71,7 @@ class TestPageCreate(unittest.TestCase):
 
     def test_creates_a_child_page_and_installs_it_like_a_first_pull(self) -> None:
         with temporary_workarea(root_page_id="456789") as workarea:
+            parent_directory = self._local_parent(workarea)
             page = created_page_fixture()
             parent = page_fixture("456789", "Parent page")
             responses = [
@@ -75,6 +84,7 @@ class TestPageCreate(unittest.TestCase):
             state = PageState.load(workarea.cache_path("123456"))
             directory = workarea.page_directory(state)
             self.assertEqual(status, 0)
+            self.assertEqual(directory, parent_directory / "New page")
             self.assertEqual(state.page.title, "New page")
             self.assertEqual((directory / "content.md").read_text(), "# New page\n")
             self.assertEqual((directory / "_attachments/diagram.png").read_bytes(), b"PNG")
@@ -100,20 +110,18 @@ class TestPageCreate(unittest.TestCase):
             self.assertEqual(list(workarea.page_state_paths()), [])
             self.assertEqual(list(workarea.root_dir.glob("*")), [workarea.root_dir / ".cflsync"])
 
-    def test_resolves_a_parent_title_before_creation(self) -> None:
+    def test_resolves_a_cached_parent_title_before_creation(self) -> None:
         with temporary_workarea(root_page_id="456789") as workarea:
+            self._local_parent(workarea)
             page = created_page_fixture()
             parent = page_fixture("456789", "Parent page")
-            responses = [
-                MockResponse.from_json({"results": [parent]}),
-                MockResponse.from_json(parent),
-                MockResponse.from_json(page), *self._pull_responses(page), ]
+            responses = [MockResponse.from_json(parent), MockResponse.from_json(page), *self._pull_responses(page)]
 
             transport, status = self._create(workarea, responses, parent_page_ref="Parent page")
 
             self.assertEqual(status, 0)
-            self.assertEqual(transport.requests[0].parameters["title"], "Parent page")
-            self.assertEqual(transport.requests[2].json_body()["parentId"], "456789")
+            self.assertEqual(transport.requests[0].path, "/pages/456789")
+            self.assertEqual(transport.requests[1].json_body()["parentId"], "456789")
 
     def test_resolves_a_managed_parent_directory_before_creation(self) -> None:
         with temporary_workarea(root_page_id="456789") as workarea:

@@ -9,18 +9,21 @@
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Iterable, Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from contextlib import contextmanager, redirect_stdout
 from dataclasses import dataclass
 import hashlib
+from io import StringIO
 import json
 from pathlib import Path
 import re
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 from urllib.parse import parse_qsl, quote, unquote, urlsplit
 
-from cflsync import APIClient, AttachmentMetadata, PageMetadata, PageState, TransportResponse, Workarea
+from cflsync import APIClient, AttachmentMetadata, PageMetadata, PageState, Profile, TransportResponse, Workarea
 
 
 @contextmanager
@@ -105,6 +108,19 @@ class MockTransport:
 
 
 EMPTY_DOCUMENT = json.dumps({"type": "doc", "version": 1, "content": []})
+
+
+def run_with_site(site: FakeConfluence, workarea: Workarea, command: Callable[[], object]) -> str:
+    """Run a command in *workarea*, with its API requests served by *site*, and return its standard output."""
+    config = SimpleNamespace(profiles={workarea.profile: Profile("example.atlassian.net", "user", "token")})
+    output = StringIO()
+    with patch("cflsync.cli.Path.cwd", return_value=workarea.root_dir):
+        with patch("cflsync.cli.Config.find", return_value=config):
+            with patch("cflsync.cli.APIClient", return_value=site.client()):
+                with redirect_stdout(output):
+                    command()
+
+    return output.getvalue()
 
 
 class FakeConfluence:

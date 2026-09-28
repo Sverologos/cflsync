@@ -158,6 +158,9 @@ class RecordedConfluenceTransport:
         if method == "GET" and path == f"/pages/{self.parent_id}":
             return self._json(self._parent())
 
+        if method == "GET" and path == f"/pages/{self.parent_id}/attachments":
+            return self._json({"results": []})
+
         if method == "POST" and path == "/pages":
             return self._create_page(body)
 
@@ -339,6 +342,7 @@ class TestRecordedAcceptanceWorkflow(unittest.TestCase):
             self.assertEqual(errors, "")
             self.assertTrue(config.path.is_file())
             self.assertEqual(self._run(root, config, client, ["init", "456789"])[0], 0)
+            self.assertEqual(self._run(root, config, client, ["page", "pull", "456789"])[0], 0)
             self.assertEqual(self._run(root, config, client, ["page", "create", "456789", "Acceptance page"])[0], 0)
 
             status, output, errors = self._run(root, config, client, ["page", "status", transport.page_id])
@@ -347,7 +351,7 @@ class TestRecordedAcceptanceWorkflow(unittest.TestCase):
             self.assertIn("local:  unchanged", output)
             self.assertIn("remote: unchanged", output)
 
-            directory = root / "Acceptance page"
+            directory = root / "Acceptance parent" / "Acceptance page"
             attachments = directory / "_attachments"
             attachments.mkdir(exist_ok=True)
             (attachments / "diagram.png").write_bytes(b"fixture image")
@@ -368,7 +372,7 @@ class TestRecordedAcceptanceWorkflow(unittest.TestCase):
             self.assertEqual(status, 0)
             self.assertEqual(errors, "")
 
-            directory = root / "Renamed acceptance page"
+            directory = root / "Acceptance parent" / "Renamed acceptance page"
             markdown = (directory / "content.md").read_text(encoding="utf-8")
             self.assertEqual(sum(line.startswith("# ") for line in markdown.splitlines()), 1)
             self.assertIn("# Renamed acceptance page", markdown)
@@ -394,9 +398,10 @@ class TestRecordedAcceptanceWorkflow(unittest.TestCase):
             transport = RecordedConfluenceTransport()
             client = APIClient("fixture.invalid", "fixture", "token", transport=transport)
             self.assertEqual(self._run(root, config, client, ["init", "456789"])[0], 0)
+            self.assertEqual(self._run(root, config, client, ["page", "pull", "456789"])[0], 0)
             self.assertEqual(self._run(root, config, client, ["page", "create", "456789", "Acceptance page"])[0], 0)
 
-            page = root / "Acceptance page" / "content.md"
+            page = root / "Acceptance parent" / "Acceptance page" / "content.md"
             page.write_text("# Acceptance page\n\nLocal pull conflict\n", encoding="utf-8")
             transport.set_remote_page({"type": "doc", "version": 1, "content": [_paragraph("Remote pull winner")]})
             status, _, errors = self._run(root, config, client, ["page", "pull", transport.page_id])

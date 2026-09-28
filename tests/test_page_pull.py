@@ -12,13 +12,14 @@ from io import StringIO
 import json
 import os
 from pathlib import Path
+import shutil
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 from cflsync import APIClient, PageState, Profile, SyncError
-from cflsync.cli import PagePullCommand
-from tests.support import FakeConfluence, MockResponse, MockTransport, example_page_state, temporary_workarea
+from cflsync.cli import PageMoveCommand, PagePullCommand
+from tests.support import FakeConfluence, MockResponse, MockTransport, example_page_state, run_with_site, temporary_workarea
 from tests.test_api_operations import attachment_fixture, page_fixture, user_fixture
 
 
@@ -246,18 +247,6 @@ class TestPagePull(unittest.TestCase):
 
             self.assertEqual(self._snapshot(workarea), before)
 
-    def test_rejects_title_directories_that_collide_without_case(self) -> None:
-        with temporary_workarea() as workarea:
-            self._pull(workarea)
-            other = example_page_state("654321", directory="example page")
-            other.save(workarea.cache_path(other.page.id))
-            before = self._snapshot(workarea)
-
-            with self.assertRaisesRegex(SyncError, "assigned to page '654321'"):
-                self._pull(workarea, page=self._page(18), attachments=[])
-
-            self.assertEqual(self._snapshot(workarea), before)
-
     def test_download_and_conversion_failures_leave_previous_state_unchanged(self) -> None:
         with temporary_workarea() as workarea:
             self._pull(workarea)
@@ -349,16 +338,156 @@ class TestPagePullParent(unittest.TestCase):
         site.add_page("100", "Root page")
         site.add_page("200", "Child page", parent_id="100")
         with temporary_workarea(root_page_id="100") as workarea:
-            config = SimpleNamespace(profiles={workarea.profile: Profile("example.atlassian.net", "user", "token")})
-            with patch("cflsync.cli.Path.cwd", return_value=workarea.root_dir):
-                with patch("cflsync.cli.Config.find", return_value=config):
-                    with patch("cflsync.cli.APIClient", return_value=site.client()):
-                        with redirect_stdout(StringIO()):
-                            PagePullCommand().run("100")
-                            PagePullCommand().run("200")
+            run_with_site(site, workarea, lambda: PagePullCommand().run("100"))
+            run_with_site(site, workarea, lambda: PagePullCommand().run("200"))
 
             self.assertIsNone(PageState.load(workarea.cache_path("100")).page.parent_id)
             self.assertEqual(PageState.load(workarea.cache_path("200")).page.parent_id, "100")
+
+
+class TestPagePullNesting(unittest.TestCase):
+    """Pulls in a tree of Root (100), with Child (200) and Other (400) below it, and Grandchild (300) below Child."""
+
+    def setUp(self):
+        self.site = FakeConfluence()
+        self.site.add_page("100", "Root")
+        self.site.add_page("200", "Child", parent_id="100")
+        self.site.add_page("300", "Grandchild", parent_id="200")
+        self.site.add_page("400", "Other", parent_id="100")
+
+    def _pull(self, workarea, *page_ids, force=False):
+        for page_id in page_ids:
+            run_with_site(self.site, workarea, lambda: PagePullCommand().run(page_id, force=force))
+
+    def _remote_change(self, page_id, **fields):
+        self.site.content[page_id].update(fields)
+        self.site.content[page_id]["version"] += 1
+
+    def _snapshot(self, workarea):
+        return {
+            str(path.relative_to(workarea.root_dir)): path.read_bytes() if path.is_file() else None
+            for path in workarea.root_dir.rglob("*")}
+
+    def test_pulls_the_tree_top_down_into_nested_directories(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, "100", "200", "300")
+
+            self.assertTrue((workarea.root_dir / "Root" / "Child" / "Grandchild" / "content.md").is_file())
+            self.assertEqual(
+                [PageState.load(workarea.cache_path(page_id)).page.parent_id for page_id in ["100", "200", "300"]],
+                [None, "100", "200"])
+            self.assertEqual(workarea.page_tree().directory("300"), "Root/Child/Grandchild")
+
+    def test_requires_the_parent_page_to_be_local(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            with self.assertRaisesRegex(SyncError,
+                                        r"parent page 'Root' \(100\) is not present locally; run: cflsync page pull 100"):
+                self._pull(workarea, "200")
+
+            self._pull(workarea, "100")
+            before = self._snapshot(workarea)
+            with self.assertRaisesRegex(SyncError,
+                                        r"parent page 'Child' \(200\) is not present locally; run: cflsync page pull 200"):
+                self._pull(workarea, "300")
+
+            self.assertEqual(self._snapshot(workarea), before)
+
+    def test_requires_the_parent_directory_to_exist(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, "100", "200")
+            shutil.rmtree(workarea.root_dir / "Root" / "Child")
+
+            with self.assertRaisesRegex(SyncError,
+                                        r"directory of parent page 'Child' \(200\) is missing; run: cflsync page pull --force 200"):
+                self._pull(workarea, "300")
+
+            self.assertFalse(workarea.cache_path("300").exists())
+
+    def test_relocates_a_page_renamed_remotely_with_its_subtree(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, "100", "200", "300")
+            (workarea.root_dir / "Root" / "Child" / "notes.txt").write_text("unmanaged\n", encoding="utf-8")
+            self._remote_change("200", title="Renamed child")
+
+            self._pull(workarea, "200")
+
+            renamed = workarea.root_dir / "Root" / "Renamed child"
+            self.assertFalse((workarea.root_dir / "Root" / "Child").exists())
+            self.assertIn("# Renamed child", (renamed / "content.md").read_text(encoding="utf-8"))
+            self.assertEqual((renamed / "notes.txt").read_text(encoding="utf-8"), "unmanaged\n")
+            self.assertEqual(workarea.page_directory(PageState.load(workarea.cache_path("300"))), renamed / "Grandchild")
+
+    def test_relocates_a_page_moved_remotely_below_another_local_parent(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, "100", "200", "300", "400")
+            self._remote_change("200", parent_id="400")
+
+            self._pull(workarea, "200")
+
+            self.assertTrue((workarea.root_dir / "Root" / "Other" / "Child" / "Grandchild" / "content.md").is_file())
+            self.assertFalse((workarea.root_dir / "Root" / "Child").exists())
+            self.assertEqual(PageState.load(workarea.cache_path("200")).page.parent_id, "400")
+
+    def test_relocates_after_a_move_command_although_the_content_is_in_sync(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, "100", "200", "400")
+            run_with_site(self.site, workarea, lambda: PageMoveCommand().run("200", "400"))
+            self.assertTrue((workarea.root_dir / "Root" / "Child").is_dir())
+
+            self._pull(workarea, "200")
+
+            self.assertTrue((workarea.root_dir / "Root" / "Other" / "Child" / "content.md").is_file())
+            self.assertEqual(PageState.load(workarea.cache_path("200")).page.parent_id, "400")
+
+    def test_refuses_a_move_below_a_parent_that_is_not_local(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, "100", "200")
+            self._remote_change("200", parent_id="400")
+            before = self._snapshot(workarea)
+
+            with self.assertRaisesRegex(SyncError,
+                                        r"parent page 'Other' \(400\) is not present locally; run: cflsync page pull 400"):
+                self._pull(workarea, "200")
+
+            self.assertEqual(self._snapshot(workarea), before)
+
+    def test_refuses_a_name_used_by_a_cached_sibling(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, "100", "200", "400")
+            self._remote_change("400", title="child")
+            before = self._snapshot(workarea)
+
+            with self.assertRaisesRegex(SyncError, r"a sibling page \('200'\) already uses directory 'Root/child'"):
+                self._pull(workarea, "400")
+
+            self.assertEqual(self._snapshot(workarea), before)
+
+    def test_refuses_an_unmanaged_entry_with_the_same_name(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, "100")
+            unmanaged = workarea.root_dir / "Root" / "child"
+            unmanaged.mkdir()
+            (unmanaged / "notes.txt").write_text("unmanaged\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(SyncError, "page directory 'Root/Child' already exists"):
+                self._pull(workarea, "200")
+
+            self.assertEqual([path.name for path in unmanaged.iterdir()], ["notes.txt"])
+            self.assertFalse(workarea.cache_path("200").exists())
+
+    def test_force_relocates_and_overwrites_local_changes(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, "100", "200")
+            (workarea.root_dir / "Root" / "Child" / "content.md").write_text("# Child\n\nLocal edit\n", encoding="utf-8")
+            self._remote_change("200", title="Renamed child")
+
+            with self.assertRaisesRegex(SyncError, "pull conflicts"):
+                self._pull(workarea, "200")
+
+            self._pull(workarea, "200", force=True)
+
+            content = (workarea.root_dir / "Root" / "Renamed child" / "content.md").read_text(encoding="utf-8")
+            self.assertEqual(content, "# Renamed child\n")
 
 
 class TestPagePullScope(unittest.TestCase):
@@ -368,12 +497,8 @@ class TestPagePullScope(unittest.TestCase):
         site.add_page("100", "Root page")
         site.add_page("200", "Outside page")
         with temporary_workarea(root_page_id="100") as workarea:
-            config = SimpleNamespace(profiles={workarea.profile: Profile("example.atlassian.net", "user", "token")})
-            with patch("cflsync.cli.Path.cwd", return_value=workarea.root_dir):
-                with patch("cflsync.cli.Config.find", return_value=config):
-                    with patch("cflsync.cli.APIClient", return_value=site.client()):
-                        with self.assertRaisesRegex(SyncError, "page '200' is not found in this workarea"):
-                            PagePullCommand().run("200")
+            with self.assertRaisesRegex(SyncError, "page '200' is not found in this workarea"):
+                run_with_site(site, workarea, lambda: PagePullCommand().run("200"))
 
             self.assertEqual([path.name for path in workarea.root_dir.iterdir()], [".cflsync"])
             self.assertEqual(list(workarea.cache_dir.iterdir()), [])
@@ -381,22 +506,22 @@ class TestPagePullScope(unittest.TestCase):
 
 class TestPagePullDirectoryNames(unittest.TestCase):
 
-    def test_pulls_pages_titled_like_reserved_entries_into_distinct_directories(self) -> None:
+    def test_pulls_children_titled_like_reserved_entries_next_to_them(self) -> None:
         site = FakeConfluence()
-        site.add_page("100", "_attachments")
-        site.add_page("200", "content.md", parent_id="100")
+        site.add_page("100", "Root")
+        site.add_attachment("100", "diagram.png", b"PNG")
+        site.add_page("200", "_attachments", parent_id="100")
+        site.add_page("300", "content.md", parent_id="100")
         with temporary_workarea(root_page_id="100") as workarea:
-            config = SimpleNamespace(profiles={workarea.profile: Profile("example.atlassian.net", "user", "token")})
-            with patch("cflsync.cli.Path.cwd", return_value=workarea.root_dir):
-                with patch("cflsync.cli.Config.find", return_value=config):
-                    with patch("cflsync.cli.APIClient", return_value=site.client()):
-                        with redirect_stdout(StringIO()):
-                            PagePullCommand().run("100")
-                            PagePullCommand().run("200")
+            for page_id in ["100", "200", "300"]:
+                run_with_site(site, workarea, lambda: PagePullCommand().run(page_id))
 
-            self.assertTrue((workarea.root_dir / "%5Fattachments" / "content.md").is_file())
-            self.assertTrue((workarea.root_dir / "content%2Emd" / "content.md").is_file())
-            self.assertEqual(PageState.load(workarea.cache_path("100")).page.directory, "%5Fattachments")
+            root = workarea.root_dir / "Root"
+            self.assertEqual(
+                sorted(path.name for path in root.iterdir()), ["%5Fattachments", "_attachments", "content%2Emd", "content.md"])
+            self.assertEqual((root / "_attachments" / "diagram.png").read_bytes(), b"PNG")
+            self.assertTrue((root / "%5Fattachments" / "content.md").is_file())
+            self.assertTrue((root / "content%2Emd" / "content.md").is_file())
 
 
 class TestPagePullPathLength(unittest.TestCase):
@@ -406,13 +531,8 @@ class TestPagePullPathLength(unittest.TestCase):
         site = FakeConfluence()
         site.add_page("123456", "x" * 300)
         with temporary_workarea() as workarea:
-            config = SimpleNamespace(profiles={workarea.profile: Profile("example.atlassian.net", "user", "token")})
-            with patch("cflsync.cli.Path.cwd", return_value=workarea.root_dir):
-                with patch("cflsync.cli.Config.find", return_value=config):
-                    with patch("cflsync.cli.APIClient", return_value=site.client()):
-                        with self.assertRaisesRegex(SyncError,
-                                                    r"cannot pull page: path is too long for this system \(\d+ characters\)"):
-                            PagePullCommand().run("123456")
+            with self.assertRaisesRegex(SyncError, r"cannot pull page: path is too long for this system \(\d+ characters\)"):
+                run_with_site(site, workarea, lambda: PagePullCommand().run("123456"))
 
             self.assertEqual(list(workarea.cache_dir.iterdir()), [])
             self.assertEqual([path.name for path in workarea.root_dir.iterdir()], [".cflsync"])

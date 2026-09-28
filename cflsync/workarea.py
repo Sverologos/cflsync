@@ -481,9 +481,24 @@ class Workarea:
         states = {page_id: PageState.load(path) for page_id, path in self.page_state_paths().items()}
         return PageTree(states, self.root_page_id)
 
+    def _page_directories(self):
+        # The resolved directory of every cached page, derived from one page tree.
+        tree = self.page_tree()
+        return {page_id: self.page_directory_path(tree.directory(page_id)) for page_id in tree.states}
+
+    def relative_directory(self, parent_id: str | None, name: str) -> str:
+        """Return the directory of a page named *name* below cached parent *parent_id*, relative to the workarea root.
+
+        The root page, which has no cached parent, is placed directly below the workarea root.
+        """
+        if parent_id is None:
+            return name
+
+        return f"{self.page_tree().directory(parent_id)}/{name}"
+
     def page_directory(self, state: PageState, must_exist: bool = True) -> Path:
-        """Return the safe managed path, normally requiring a directory and content.md."""
-        directory = self.page_directory_path(state.page.directory)
+        """Return the safe managed path below the page's cached parent, normally requiring a directory and content.md."""
+        directory = self.page_directory_path(self.relative_directory(state.page.parent_id, state.page.directory))
         if not must_exist:
             return directory
 
@@ -505,32 +520,32 @@ class Workarea:
         except OSError as error:
             raise Workarea.Error(f"cannot remove managed page directory: {filesystem_error_message(error)}") from error
 
-    def page_directory_target(self, state: PageState) -> Path:
-        """Return a safe, unoccupied target path for a page directory."""
-        directory = self.page_directory_path(state.page.directory)
-        for other_id, path in self.page_state_paths().items():
-            other = PageState.load(path)
-            if other_id != state.page.id and other.page.directory.casefold() == state.page.directory.casefold():
-                raise Workarea.Error(f"page directory '{state.page.directory}' is assigned to page '{other_id}'")
+    def page_directory_target(self, page_id: str, parent_id: str | None, name: str) -> Path:
+        """Return the safe, unoccupied path for page *page_id* named *name* below cached parent *parent_id*.
 
-        name = state.page.directory.split("/")[-1]
-        if directory.parent.is_dir():
-            for existing in directory.parent.iterdir():
-                if existing.name.casefold() == name.casefold() and existing != directory:
-                    raise Workarea.Error(f"page directory '{state.page.directory}' already exists")
+        The path is refused if a cached sibling uses the same name, or if the parent directory already contains another
+        entry with that name, compared case-insensitively. A page whose directory is already at the path may keep it.
+        """
+        tree = self.page_tree()
+        directory = self.relative_directory(parent_id, name)
+        target = self.page_directory_path(directory)
+        for other_id, other in tree.states.items():
+            if other_id != page_id and other.page.parent_id == parent_id and other.page.directory.casefold() == name.casefold():
+                raise Workarea.Error(f"a sibling page ('{other_id}') already uses directory '{directory}'")
 
-        cached_path = self.page_state_paths().get(state.page.id)
-        cached_state = PageState.load(cached_path) if cached_path is not None else None
-        if cached_state is not None and cached_state.page.directory != state.page.directory:
-            source = self.page_directory_path(cached_state.page.directory)
-            if _is_windows() and _current_directory_is_inside(source):
-                raise Workarea.Error(
-                    "cannot rename a page directory while it is the current directory; run cflsync from outside it")
+        source = None
+        if page_id in tree.states:
+            source = self.page_directory_path(tree.directory(page_id))
 
-        if directory.exists() and (cached_state is None or cached_state.page.directory != state.page.directory):
-            raise Workarea.Error(f"page directory '{state.page.directory}' already exists")
+        if target.parent.is_dir():
+            for existing in target.parent.iterdir():
+                if existing.name.casefold() == name.casefold() and existing != source:
+                    raise Workarea.Error(f"page directory '{directory}' already exists")
 
-        return directory
+        if source is not None and source != target and _is_windows() and _current_directory_is_inside(source):
+            raise Workarea.Error("cannot rename a page directory while it is the current directory; run cflsync from outside it")
+
+        return target
 
     def relocate(self, source: Path, directory: str) -> Path:
         """Move a page directory, with everything below it, to *directory* relative to the workarea root.
@@ -542,10 +557,9 @@ class Workarea:
         if target == source:
             return target
 
-        for path in self.page_state_paths().values():
-            other = PageState.load(path)
-            if other.page.directory.casefold() == directory.casefold() and self.page_directory_path(other.page.directory) != source:
-                raise Workarea.Error(f"page directory '{directory}' is assigned to page '{other.page.id}'")
+        for other_id, path in self._page_directories().items():
+            if str(path).casefold() == str(target).casefold() and path != source:
+                raise Workarea.Error(f"page directory '{directory}' is assigned to page '{other_id}'")
 
         if target.parent.is_dir():
             for existing in target.parent.iterdir():
@@ -902,9 +916,9 @@ class PageRef:
         else:
             raise PageRefError(f"page path '{path}' is neither a file nor a directory")
 
-        # A page is found by the location where page_directory() places it, which also covers nested directories.
-        for page_id, state in _cached_states(workarea).items():
-            if workarea.page_directory(state, must_exist=False) == directory:
+        # A page is found by the location where the cache places it, which also covers nested directories.
+        for page_id, page_directory in workarea._page_directories().items():
+            if page_directory == directory:
                 return cls(page_id)
 
         raise PageRefError(f"page path '{path}' is not managed by cflsync")

@@ -66,9 +66,15 @@ heading of `content.md` is the page title and cannot be edited; push does not
 rename pages. Use `page rename PAGE_REF TITLE` to change the remote title,
 generated heading, and title-derived local directory as one explicit operation.
 
+Local page directories mirror the page hierarchy below the root page: each
+child page's directory is inside its parent's directory. Pull pages top-down:
+a page can only be pulled once its parent is present locally, and cflsync names
+the command to run otherwise. When a page is renamed or moved remotely, the next
+`page pull` moves its directory, together with its child pages.
+
 Use `page move PAGE_REF NEW_PARENT_REF` to change a synchronized page's remote
-parent. The new parent must exist remotely in the same Confluence space; the
-current loose-page workarea does not move the local page directory.
+parent. The new parent must exist remotely in the same Confluence space. The
+local directory moves with the next `page pull` of the page.
 
 Use `page remove PAGE_REF` to delete a managed local page and its remote page.
 It asks for confirmation unless `--force` is supplied. If the remote page no

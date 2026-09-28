@@ -190,7 +190,7 @@ class TestWorkareaSafePaths(unittest.TestCase):
             before = sorted(workarea.root_dir.iterdir())
 
             with self.assertRaises(Workarea.Error):
-                workarea.page_directory_target(state)
+                workarea.page_directory_target(state.page.id, state.page.parent_id, state.page.directory)
 
             self.assertEqual(sorted(workarea.root_dir.iterdir()), before)
 
@@ -201,7 +201,7 @@ class TestWorkareaSafePaths(unittest.TestCase):
             target.mkdir()
 
             with self.assertRaisesRegex(Workarea.Error, "already exists"):
-                workarea.page_directory_target(state)
+                workarea.page_directory_target(state.page.id, state.page.parent_id, state.page.directory)
 
 
 class TestWorkareaMaterialization(unittest.TestCase):
@@ -458,12 +458,14 @@ class TestWorkareaRelocation(unittest.TestCase):
 
     def test_refuses_a_directory_assigned_to_another_cached_page(self) -> None:
         with temporary_workarea() as workarea:
-            source = self._page_directory(workarea, "Page")
-            other = example_page_state("234567", directory="Target")
-            other.save(workarea.cache_path(other.page.id))
+            self._page_directory(workarea, "Root")
+            source = self._page_directory(workarea, "Root/Page")
+            for state in [example_page_state(directory="Root"), example_page_state("234567", directory="Target",
+                                                                                   parent_id="123456")]:
+                state.save(workarea.cache_path(state.page.id))
 
-            with self.assertRaisesRegex(Workarea.Error, "'target' is assigned to page '234567'"):
-                workarea.relocate(source, "target")
+            with self.assertRaisesRegex(Workarea.Error, "'Root/target' is assigned to page '234567'"):
+                workarea.relocate(source, "Root/target")
 
             self.assertTrue(source.is_dir())
 

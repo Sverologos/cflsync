@@ -15,7 +15,8 @@ from unittest.mock import patch
 
 from cflsync import APIClient, PageState, Profile, SyncError
 from cflsync.cli import PagePullCommand, PageRenameCommand
-from tests.support import MockResponse, MockTransport, example_page_state, temporary_workarea
+from tests.support import (
+    EMPTY_DOCUMENT, FakeConfluence, MockResponse, MockTransport, example_page_state, run_with_site, temporary_workarea)
 from tests.test_api_operations import attachment_fixture, page_fixture
 
 
@@ -115,15 +116,6 @@ class TestPageRename(unittest.TestCase):
 
                     self.assertEqual(self._snapshot(workarea), before)
 
-    def test_rejects_a_target_owned_by_another_cached_page_before_remote_update(self) -> None:
-        with temporary_workarea() as workarea:
-            self._pull(workarea)
-            other = example_page_state("234567", title="Other page", directory="Renamed page")
-            other.save(workarea.cache_path(other.page.id))
-
-            with self.assertRaisesRegex(SyncError, "assigned to page '234567'"):
-                self._rename(workarea, "Renamed page")
-
     def test_rejects_invalid_titles_before_opening_the_workarea(self) -> None:
         for title in ["", " leading", "trailing ", "line\nbreak", "tab\tcharacter"]:
             with self.subTest(title=title):
@@ -171,6 +163,43 @@ class TestPageRename(unittest.TestCase):
                         self._run(workarea, lambda: PageRenameCommand().run("123456", "Renamed page"), responses)
 
             self.assertEqual(self._snapshot(workarea), before)
+
+
+class TestPageRenameInTree(unittest.TestCase):
+    """Renames in a tree of Root (100), with Child (200) and Other (400) below it, and Grandchild (300) below Child."""
+
+    def setUp(self):
+        self.site = FakeConfluence()
+        self.site.add_page("100", "Root")
+        self.site.add_page("200", "Child", parent_id="100", body=EMPTY_DOCUMENT)
+        self.site.add_page("300", "Grandchild", parent_id="200")
+        self.site.add_page("400", "Other", parent_id="100")
+
+    def _pull(self, workarea, *page_ids):
+        for page_id in page_ids:
+            run_with_site(self.site, workarea, lambda: PagePullCommand().run(page_id))
+
+    def test_renames_an_internal_page_with_its_subtree(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, "100", "200", "300")
+
+            run_with_site(self.site, workarea, lambda: PageRenameCommand().run("200", "Renamed child"))
+
+            renamed = workarea.root_dir / "Root" / "Renamed child"
+            self.assertFalse((workarea.root_dir / "Root" / "Child").exists())
+            self.assertEqual((renamed / "content.md").read_text(encoding="utf-8"), "# Renamed child\n")
+            self.assertEqual(workarea.page_directory(PageState.load(workarea.cache_path("300"))), renamed / "Grandchild")
+            self.assertEqual(self.site.content["200"]["title"], "Renamed child")
+
+    def test_refuses_a_name_used_by_a_cached_sibling_before_the_remote_update(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, "100", "200", "400")
+
+            with self.assertRaisesRegex(SyncError, r"a sibling page \('200'\) already uses directory 'Root/child'"):
+                run_with_site(self.site, workarea, lambda: PageRenameCommand().run("400", "child"))
+
+            self.assertEqual(self.site.content["400"]["title"], "Other")
+            self.assertTrue((workarea.root_dir / "Root" / "Other" / "content.md").is_file())
 
 
 # vim: set ts=4 sw=4 et tw=132:

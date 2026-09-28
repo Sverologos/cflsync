@@ -143,6 +143,13 @@ class PagePullCommand:
         media = MediaResolver(
             (attachment.filename, attachment.file_id) for attachment in attachments if attachment.file_id is not None)
         cache_path = workarea.cache_path(page.id)
+        # The root page's parent is outside the workarea; every other page is placed below its parent.
+        parent_id = None if page.id == workarea.root_page_id else page.parent_id
+        if parent_id is not None:
+            _require_local_parent(workarea, parent_id, api)
+
+        directory_name = workarea.page_directory_name(page.title)
+        directory = workarea.relative_directory(parent_id, directory_name)
         previous = None
         source = None
         if cache_path.exists():
@@ -156,20 +163,13 @@ class PagePullCommand:
                 if changes.locally:
                     raise SyncError(f"page '{page.id}' has local changes; pull conflicts")
 
-                if not changes.remotely:
+                # A page moved or renamed remotely is relocated even when its content is unchanged.
+                if not changes.remotely and source == workarea.page_directory_path(directory):
                     print(f"Page '{page.id}' is already in sync; nothing pulled. Use --force to regenerate local content.")
                     return
 
-        directory_name = workarea.page_directory_name(page.title)
-        # Cached ownership also matters when a page directory is missing.
-        for other_id, path in workarea.page_state_paths().items():
-            other = PageState.load(path)
-            if other_id != page.id and other.page.directory.casefold() == directory_name.casefold():
-                raise SyncError(f"page directory '{directory_name}' is assigned to page '{other_id}'")
-
-        for existing in workarea.root_dir.iterdir():
-            if existing.name.casefold() == directory_name.casefold() and existing != source:
-                raise SyncError(f"page directory '{directory_name}' already exists")
+        # Cached siblings count even when their directories are missing.
+        workarea.page_directory_target(page.id, parent_id, directory_name)
 
         try:
             document = json.loads(page.body)
@@ -187,17 +187,15 @@ class PagePullCommand:
             bodies[attachment.filename] = body
             metadata[attachment.filename] = AttachmentMetadata(attachment.id, attachment.version, hashlib.sha256(body).hexdigest())
 
-        # The root page's parent is outside the workarea.
-        parent_id = None if page.id == workarea.root_page_id else page.parent_id
         state = PageState(
             PageMetadata(page.id, page.title, parent_id, directory_name, page.version, inspector.content_hash(markdown)), metadata)
         managed = ()
         if previous is not None:
             managed = previous.attachments
 
-        staging = workarea.stage_page(directory_name, markdown, bodies, source=source, managed_attachments=managed)
+        staging = workarea.stage_page(directory, markdown, bodies, source=source, managed_attachments=managed)
         try:
-            with workarea.replace_page(staging, directory_name, source, set(managed) | set(bodies)):
+            with workarea.replace_page(staging, directory, source, set(managed) | set(bodies)):
                 state.save(cache_path)
         finally:
             if staging.exists():
@@ -344,13 +342,12 @@ class PageRenameCommand:
             raise SyncError(f"page '{page.id}' has no ADF body")
 
         directory_name = workarea.page_directory_name(title)
+        target = workarea.relative_directory(state.page.parent_id, directory_name)
         markdown = (directory / CONTENT_FILENAME).read_text(encoding="utf-8")
         renamed_markdown = MarkdownToADFConverter(pandoc).retitle(markdown, state.page.title, title)
         content_hash = inspector.content_hash(renamed_markdown)
-        target_state = PageState(
-            PageMetadata(page.id, title, state.page.parent_id, directory_name, page.version, content_hash), state.attachments)
-        workarea.page_directory_target(target_state)
-        staging = workarea.stage_page(directory_name, renamed_markdown, {}, source=directory)
+        workarea.page_directory_target(page.id, state.page.parent_id, directory_name)
+        staging = workarea.stage_page(target, renamed_markdown, {}, source=directory)
         try:
             updated = page.update(page.body, title)
             if updated.title != title:
@@ -359,7 +356,7 @@ class PageRenameCommand:
             renamed_state = PageState(
                 PageMetadata(updated.id, updated.title, state.page.parent_id, directory_name, updated.version, content_hash),
                 state.attachments)
-            with workarea.replace_page(staging, directory_name, directory):
+            with workarea.replace_page(staging, target, directory):
                 renamed_state.save(cache_path)
         finally:
             if staging.exists():
@@ -426,8 +423,10 @@ class PageMoveCommand:
         if updated.title != state.page.title:
             raise SyncError(f"page '{page.id}' was moved remotely with unexpected title '{updated.title}'")
 
+        # The page directory stays below its cached parent until a pull relocates it.
         moved_state = PageState(
-            PageMetadata(updated.id, state.page.title, parent.id, state.page.directory, updated.version, state.page.content_hash),
+            PageMetadata(
+                updated.id, state.page.title, state.page.parent_id, state.page.directory, updated.version, state.page.content_hash),
             state.attachments)
         try:
             moved_state.save(cache_path)
@@ -568,6 +567,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     except SyncError as error:
         print(f"{parser.prog}: {error}", file=sys.stderr)
         return 1
+
+
+def _require_local_parent(workarea, parent_id, api):
+    # A page directory can only be placed inside its parent's page directory.
+    cache_path = workarea.cache_path(parent_id)
+    if not cache_path.exists():
+        parent = api.get_page(parent_id)
+        raise SyncError(f"parent page '{parent.title}' ({parent_id}) is not present locally; run: cflsync page pull {parent_id}")
+
+    parent_state = PageState.load(cache_path)
+    if not workarea.page_directory(parent_state, must_exist=False).is_dir():
+        raise SyncError(
+            f"the directory of parent page '{parent_state.page.title}' ({parent_id}) is missing; "
+            f"run: cflsync page pull --force {parent_id}")
 
 
 def _open_workarea():

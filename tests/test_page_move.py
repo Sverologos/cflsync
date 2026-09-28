@@ -54,7 +54,8 @@ class TestPageMove(unittest.TestCase):
         return output.getvalue(), status
 
     def _pull(self, workarea):
-        self._run(workarea, lambda: PagePullCommand().run("123456"))
+        for page_id in ["100", "456789", "123456"]:
+            self._run(workarea, lambda: PagePullCommand().run(page_id))
 
     def _move(self, workarea, parent_id):
         self.site.requests.clear()
@@ -80,7 +81,8 @@ class TestPageMove(unittest.TestCase):
             self.assertEqual(status, 0)
             self.assertEqual(self._without_cache(self._snapshot(workarea)), self._without_cache(before))
             self.assertEqual((state.page.version, state.page.title, state.page.directory), (18, "Example page", "Example page"))
-            self.assertEqual(state.page.parent_id, "987654")
+            # The local directory stays below its cached parent until a pull relocates it.
+            self.assertEqual(state.page.parent_id, "456789")
             self.assertEqual(
                 (remote["parent_id"], remote["version"], remote["title"], remote["body"]), ("987654", 18, "Example page", BODY))
 
@@ -91,7 +93,8 @@ class TestPageMove(unittest.TestCase):
                 with temporary_workarea(root_page_id="100") as workarea:
                     self._pull(workarea)
                     if local:
-                        (workarea.root_dir / "Example page/content.md").write_text("# Example page\n\nEdited\n", encoding="utf-8")
+                        (workarea.root_dir / "Root page/Current parent/Example page/content.md").write_text(
+                            "# Example page\n\nEdited\n", encoding="utf-8")
                     else:
                         self.site.content["123456"]["version"] = 18
                     before = self._snapshot(workarea)

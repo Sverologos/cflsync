@@ -20,8 +20,15 @@ empty `cache/`, `profile`, and `root`, which records the root page ID, as one
 atomic installation. A failed lookup leaves no `.cflsync/` behind. `init`
 refuses a directory inside any existing workarea, and does not pull pages.
 `page pull` resolves
-`PAGE_REF` and creates or updates its page directory and cache entry. `page
-push` finds the identified page's local state at
+`PAGE_REF` and creates or updates its page directory and cache entry. The root
+page's directory is directly below the workarea root; every other page's
+directory is inside its parent's page directory. Pulling a page other than the
+root therefore requires its parent to be cached with its directory present;
+otherwise the command fails before any change and names the command that pulls
+the parent. When a page's remote title or parent changed, the pull moves its
+directory, with its child pages and unmanaged files, to the new location, also
+when its content is otherwise unchanged. The new parent must then be local as
+well. `page push` finds the identified page's local state at
 `.cflsync/cache/<page-id>.json`.
 
 `page rename PAGE_REF TITLE` requires the referenced managed page to be in
@@ -33,8 +40,9 @@ continues to reject an edited title heading.
 
 `page move PAGE_REF NEW_PARENT_REF` requires the referenced managed page to be
 in sync. `NEW_PARENT_REF` resolves to a remote page, which need not be managed
-locally. The command changes the remote parent but leaves the current
-loose-page workarea's directory and Markdown unchanged.
+locally. The command changes the remote parent but leaves the local directory
+and Markdown unchanged; the next `page pull` of the page moves its directory
+below the new parent.
 
 `page remove [-f | --force] PAGE_REF` requires a managed local page directory
 and cache entry. It confirms removal unless `--force` is supplied. When the
@@ -87,7 +95,7 @@ state; it does not resolve an ID or title remotely.
 
 All synchronization state is below `.cflsync`, separate from managed content,
 so it can later support multiple pages without private state in page
-directories. The initial layout is:
+directories. The layout mirrors the page hierarchy:
 
 ```
 <workarea>/
@@ -96,10 +104,14 @@ directories. The initial layout is:
     root
     cache/
       123456.json
-  <page-title>/
+      123457.json
+  <root-page-title>/
     content.md
     _attachments/
       <attachment filename>
+    <child-page-title>/
+      content.md
+      _attachments/
 ```
 
 `content.md` contains GitHub Flavored Markdown (GFM); `_attachments` contains
@@ -114,8 +126,10 @@ and `~` are percent-encoded, `.` always as `%2E`. A leading `_` is also
 encoded, as `%5F`, so that names starting with `_`, such as `_attachments`,
 stay reserved for cflsync, and no title can produce the name `content.md`. It
 is presentation only: the cache's page ID and directory name are
-authoritative. A pull renames a changed title only if its target is unused;
-otherwise it stops without overwriting data.
+authoritative. A pull moves a page directory only if its target is unused;
+otherwise it stops without overwriting data. A cached sibling with the same
+directory name, compared case-insensitively, is also refused; such pages cannot
+be managed side by side yet.
 
 On Windows, a title change cannot rename the page directory when cflsync is
 running from inside that directory. The command stops before mutation and asks
@@ -183,10 +197,6 @@ the directory names along the `parent_id` chain up to the root. Every cached
 page except the root must have a cached parent; a missing parent, a cycle, or
 a second page without a parent makes the cache invalid. Format-1 entries are
 refused.
-
-Until pages are placed below their parent's directory, page directories remain
-directly below the workarea root, and `parent_id` records the page's remote
-parent.
 
 `content_hash` is SHA-256 of canonical GFM for pages and raw bytes for
 attachments, unchanged since format 1. The algorithm is part of the format
