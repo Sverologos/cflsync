@@ -12,7 +12,7 @@ from .api import APIClient, APIError, APIResponse, RemoteAttachment, RemoteConte
 from .config import Config, ConfigError, Profile
 from .convert import ADFToMarkdownConverter, ConversionError, MarkdownToADFConverter, PandocError, PandocRunner
 from .errors import SyncError
-from .sync import PageChanges, PageInspector
+from .sync import InstallationPlan, PageChanges, PageInspector, PlannedPage
 from .transport import Transport, TransportError, TransportResponse, UrllibTransport
 from .workarea import AttachmentMetadata, MediaResolutionError, MediaResolver, PageMetadata, PageRef, PageRefError, PageState, StateError, Workarea
 from .cli import main
