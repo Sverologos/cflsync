@@ -17,6 +17,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from tempfile import NamedTemporaryFile, mkdtemp
 from typing import Self
+import unicodedata
 from urllib.parse import quote
 
 from .api import APIError
@@ -24,6 +25,8 @@ from .errors import SyncError
 
 # The Markdown file in each page directory. The name is not page-specific, to allow other content types later.
 CONTENT_FILENAME = "content.md"
+# The maximum length of a page directory name in characters, including a disambiguation suffix.
+DIRECTORY_NAME_LIMIT = 64
 
 
 class MediaResolutionError(SyncError):
@@ -552,7 +555,7 @@ class Workarea:
         directory = self.relative_directory(parent_id, name)
         target = self.page_directory_path(directory)
         for other_id, other in tree.states.items():
-            if other_id != page_id and other.page.parent_id == parent_id and other.page.directory.casefold() == name.casefold():
+            if other_id != page_id and other.page.parent_id == parent_id and same_directory_name(other.page.directory, name):
                 raise Workarea.Error(f"a sibling page ('{other_id}') already uses directory '{directory}'")
 
         source = None
@@ -561,7 +564,7 @@ class Workarea:
 
         if target.parent.is_dir():
             for existing in target.parent.iterdir():
-                if existing.name.casefold() == name.casefold() and existing != source:
+                if same_directory_name(existing.name, name) and existing != source:
                     raise Workarea.Error(f"page directory '{directory}' already exists")
 
         if source is not None and source != target and _is_windows() and _current_directory_is_inside(source):
@@ -580,12 +583,12 @@ class Workarea:
             return target
 
         for other_id, path in self._page_directories().items():
-            if str(path).casefold() == str(target).casefold() and path != source:
+            if same_directory_name(str(path), str(target)) and path != source:
                 raise Workarea.Error(f"page directory '{directory}' is assigned to page '{other_id}'")
 
         if target.parent.is_dir():
             for existing in target.parent.iterdir():
-                if existing.name.casefold() == target.name.casefold() and existing != source:
+                if same_directory_name(existing.name, target.name) and existing != source:
                     raise Workarea.Error(f"page directory '{directory}' already exists")
 
         if _is_windows() and _current_directory_is_inside(source):
@@ -610,22 +613,51 @@ class Workarea:
 
             raise
 
-    def page_directory_name(self, title: str) -> str:
-        """Return the deterministic safe directory name for a page title."""
+    def page_directory_name(self, title: str, page_id: str | None = None) -> str:
+        """Return the deterministic safe directory name for a page title, at most 64 characters long.
+
+        With *page_id*, the name ends in the disambiguation suffix ``_<page_id>``, within the same limit. A longer
+        name is cut between characters, never inside an escape.
+        """
         if not isinstance(title, str) or not title:
             raise Workarea.Error("page title must be a non-empty string")
 
-        directory_name = quote(title, safe=" -_").replace(".", "%2E")
+        # One piece per title character: the character itself, or its escape.
+        pieces = [_directory_name_piece(character) for character in unicodedata.normalize("NFC", title)]
         # Names starting with "_" are reserved for cflsync entries in a page directory, such as _attachments.
-        if directory_name.startswith("_"):
-            directory_name = f"%5F{directory_name[1:]}"
+        if pieces[0] == "_":
+            pieces[0] = "%5F"
 
-        trailing_spaces = len(directory_name) - len(directory_name.rstrip(" "))
-        directory_name = directory_name.rstrip(" ")
-        if directory_name.upper() in _WINDOWS_RESERVED_NAMES:
-            directory_name = f"%{ord(directory_name[0]):02X}{directory_name[1:]}"
+        trailing_spaces = 0
+        while pieces and pieces[-1] == " ":
+            pieces.pop()
+            trailing_spaces += 1
 
-        return f"{directory_name}{'%20' * trailing_spaces}"
+        if "".join(pieces).upper() in _WINDOWS_RESERVED_NAMES:
+            pieces[0] = f"%{ord(pieces[0]):02X}"
+
+        pieces.extend(["%20"] * trailing_spaces)
+        suffix = ""
+        if page_id is not None:
+            suffix = f"_{page_id}"
+
+        kept = []
+        length = len(suffix)
+        size = len(suffix.encode("utf-8"))
+        for piece in pieces:
+            # Characters count towards the limit; the UTF-8 size must also stay within the common 255-byte name limit.
+            if length + len(piece) > DIRECTORY_NAME_LIMIT or size + len(piece.encode("utf-8")) > 255:
+                break
+
+            kept.append(piece)
+            length += len(piece)
+            size += len(piece.encode("utf-8"))
+
+        # A cut can end the name on an interior space, which Windows would strip.
+        while kept and kept[-1] == " ":
+            kept.pop()
+
+        return "".join(kept) + suffix
 
     def stage_page(
         self,
@@ -1032,6 +1064,23 @@ def _current_directory_is_inside(directory: Path) -> bool:
         return False
 
     return True
+
+
+def _directory_name_piece(character):
+    # ASCII characters other than letters, digits, space, "-", "_", and "~" are escaped, "." included, so that names
+    # such as ".", "..", and "content.md" cannot occur. Other characters are kept, unless they do not print.
+    if character == ".":
+        return "%2E"
+
+    if character.isascii() or not character.isprintable():
+        return quote(character, safe=" -_")
+
+    return character
+
+
+def same_directory_name(first: str, second: str) -> bool:
+    """Report whether two directory names are equal on a case-insensitive, normalizing filesystem."""
+    return unicodedata.normalize("NFC", first).casefold() == unicodedata.normalize("NFC", second).casefold()
 
 
 def filesystem_error_message(error: Exception) -> str:

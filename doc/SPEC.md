@@ -160,15 +160,26 @@ downloaded attachment files. `.cflsync/profile` selects the credential profile.
 content.
 
 The page directory name is a deterministic filesystem-safe encoding of the
-remote title: characters other than ASCII letters and digits, space, `-`, `_`,
-and `~` are percent-encoded, `.` always as `%2E`. A leading `_` is also
-encoded, as `%5F`, so that names starting with `_`, such as `_attachments`,
-stay reserved for cflsync, and no title can produce the name `content.md`. It
-is presentation only: the cache's page ID and directory name are
+remote title, normalized to Unicode NFC. Non-ASCII characters are kept as they
+are, unless they do not print, such as zero-width or non-breaking spaces. ASCII
+characters other than letters, digits, space, `-`, `_`, and `~` are
+percent-encoded, `.` always as `%2E`, so that no title can produce `.`, `..`,
+or the name `content.md`. A leading `_` is also encoded, as `%5F`, so that
+names starting with `_`, such as `_attachments`, stay reserved for cflsync.
+Trailing spaces are encoded as `%20`, and Windows device names such as `CON`
+are escaped.
+
+A name has at most 64 characters, and at most 255 UTF-8 bytes. A longer name is
+cut between characters, never inside an escape, and a space left at the end of
+the cut is dropped. A disambiguation suffix, which is not in use yet, counts
+towards the same limit.
+
+The name is presentation only: the cache's page ID and directory name are
 authoritative. A pull moves a page directory only if its target is unused;
 otherwise it stops without overwriting data. A cached sibling with the same
-directory name, compared case-insensitively, is also refused; such pages cannot
-be managed side by side yet.
+directory name is also refused; such pages cannot be managed side by side yet.
+Names are compared case-insensitively and after NFC normalization, because some
+filesystems store names decomposed.
 
 On Windows, a page directory cannot be renamed or moved when cflsync is
 running from inside it. The command stops before mutation and asks the user to

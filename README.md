@@ -117,10 +117,11 @@ help, and `cflsync page COMMAND --help` for a command's arguments.
 
 ### Long paths
 
-Page directory names are derived from page titles, so long titles in a deeply
-located workarea can produce long paths. cflsync does not limit path lengths
-itself: when the operating system rejects a path as too long, the command fails
-without changing local state and reports the path and its length.
+Page directory names are derived from page titles and have at most 64
+characters, but deep page trees in a deeply located workarea can still produce
+long paths. cflsync does not limit path lengths itself: when the operating
+system rejects a path as too long, the command fails without changing local
+state and reports the path and its length.
 
 On Windows, paths are limited to 260 characters unless long path support is
 enabled:

@@ -194,6 +194,13 @@ class TestWorkareaSafePaths(unittest.TestCase):
 
             self.assertEqual(sorted(workarea.root_dir.iterdir()), before)
 
+    def test_rejects_an_existing_directory_that_differs_only_in_unicode_normalization(self) -> None:
+        with temporary_workarea() as workarea:
+            (workarea.root_dir / "Cafe\u0301").mkdir()
+
+            with self.assertRaisesRegex(Workarea.Error, "already exists"):
+                workarea.page_directory_target("123456", None, workarea.page_directory_name("Café"))
+
     def test_rejects_an_existing_title_directory_with_different_case(self) -> None:
         with temporary_workarea() as workarea:
             state = example_page_state(directory="Example page")
@@ -215,6 +222,38 @@ class TestWorkareaMaterialization(unittest.TestCase):
             self.assertEqual(workarea.page_directory_name("lpt9"), "%6Cpt9")
             self.assertEqual(workarea.page_directory_name("Example "), "Example%20")
             self.assertEqual(workarea.page_directory_name("Example/page"), workarea.page_directory_name("Example/page"))
+
+    def test_keeps_printable_unicode_characters_and_escapes_others(self) -> None:
+        with temporary_workarea() as workarea:
+            cases = [
+                ("Café — Überblick", "Café — Überblick"), ("日本語のページ", "日本語のページ"), ("IT Standard · Loki", "IT Standard · Loki"),
+                ("zero\u200bwidth", "zero%E2%80%8Bwidth"), ("no\u00a0break", "no%C2%A0break"), ("Cafe\u0301", "Café"),
+                ("Sven's Test Space", "Sven%27s Test Space"), ]
+            for title, expected in cases:
+                with self.subTest(title=title):
+                    self.assertEqual(workarea.page_directory_name(title), expected)
+
+    def test_caps_names_at_64_characters_between_characters(self) -> None:
+        with temporary_workarea() as workarea:
+            cases = [
+                ("x" * 64, "x" * 64), ("x" * 65, "x" * 64), ("é" * 70, "é" * 64), ("x" * 62 + "/tail", "x" * 62),
+                ("x" * 63 + " tail", "x" * 63), ("x" * 60 + "—tail", "x" * 60 + "—tai"), ("_" + "x" * 70, "%5F" + "x" * 61), ]
+            for title, expected in cases:
+                with self.subTest(title=title):
+                    self.assertEqual(workarea.page_directory_name(title), expected)
+
+    def test_keeps_the_suffix_within_the_limit(self) -> None:
+        with temporary_workarea() as workarea:
+            self.assertEqual(workarea.page_directory_name("Release notes", "1843628507"), "Release notes_1843628507")
+            self.assertEqual(workarea.page_directory_name("x" * 70, "1843628507"), "x" * 53 + "_1843628507")
+            self.assertEqual(workarea.page_directory_name("x" * 59 + " tail", "123"), "x" * 59 + "_123")
+
+    def test_keeps_names_within_255_utf8_bytes(self) -> None:
+        with temporary_workarea() as workarea:
+            name = workarea.page_directory_name("😀" * 70)
+
+            self.assertEqual(name, "😀" * 63)
+            self.assertLessEqual(len(name.encode("utf-8")), 255)
 
     def test_escapes_a_leading_underscore_and_never_names_the_content_file(self) -> None:
         with temporary_workarea() as workarea:

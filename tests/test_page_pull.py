@@ -18,7 +18,7 @@ import unittest
 from unittest.mock import patch
 
 from cflsync import APIClient, PageState, Profile, SyncError
-from cflsync.cli import PageMoveCommand, PagePullCommand
+from cflsync.cli import PageMoveCommand, PagePullCommand, PageStatusCommand
 from tests.support import FakeConfluence, MockResponse, MockTransport, example_page_state, run_with_site, temporary_workarea
 from tests.test_api_operations import attachment_fixture, page_fixture, user_fixture
 
@@ -523,12 +523,38 @@ class TestPagePullDirectoryNames(unittest.TestCase):
             self.assertTrue((root / "content%2Emd" / "content.md").is_file())
 
 
+class TestPagePullUnicodeNames(unittest.TestCase):
+
+    def test_pulls_a_unicode_title_into_a_directory_of_the_same_name(self) -> None:
+        site = FakeConfluence()
+        site.add_page("100", "Café — Überblick")
+        site.add_page("200", "日本語のページ", parent_id="100")
+        with temporary_workarea(root_page_id="100") as workarea:
+            for page_id in ["100", "200"]:
+                run_with_site(site, workarea, lambda: PagePullCommand().run(page_id))
+
+            directory = workarea.root_dir / "Café — Überblick" / "日本語のページ"
+            self.assertTrue((directory / "content.md").is_file())
+            output = run_with_site(site, workarea, lambda: PageStatusCommand().run(str(directory)))
+            self.assertIn("Page '200' (日本語のページ)", output)
+
+
 class TestPagePullPathLength(unittest.TestCase):
 
-    @unittest.skipIf(os.name == "nt", "the error Windows reports for an over-long name component depends on its configuration")
-    def test_reports_a_directory_name_that_the_filesystem_rejects_as_too_long(self) -> None:
+    def test_caps_the_directory_name_of_a_long_title(self) -> None:
         site = FakeConfluence()
         site.add_page("123456", "x" * 300)
+        with temporary_workarea() as workarea:
+            run_with_site(site, workarea, lambda: PagePullCommand().run("123456"))
+
+            self.assertEqual([path.name for path in workarea.root_dir.iterdir() if path.name != ".cflsync"], ["x" * 64])
+            self.assertEqual(PageState.load(workarea.cache_path("123456")).page.directory, "x" * 64)
+
+    @unittest.skipIf(os.name == "nt", "the error Windows reports for an over-long name component depends on its configuration")
+    def test_reports_an_attachment_name_that_the_filesystem_rejects_as_too_long(self) -> None:
+        site = FakeConfluence()
+        site.add_page("123456", "Example page")
+        site.add_attachment("123456", "x" * 300 + ".png", b"PNG")
         with temporary_workarea() as workarea:
             # The operation that reports the limit, and therefore the message prefix, depends on the system.
             with self.assertRaisesRegex(SyncError, r"path is too long for this system \(\d+ characters\)"):
