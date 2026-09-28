@@ -102,12 +102,12 @@ heading of `content.md` is the page title and cannot be edited; push does not
 rename pages. Use `page rename PAGE_REF TITLE` to change the remote title,
 generated heading, and title-derived local directory as one explicit operation.
 
-Use `push` to apply the same push rules to every cached page with a local
-directory. It processes pages in path order, reports each result and a summary,
-skips cached pages whose directories are missing, and ignores unmanaged
-directories. It continues after a conflict or other page failure, returning a
-non-zero status if any page failed. `push --force` applies `--force` to every
-page it processes.
+Use `push` to compare the complete remote page tree with the local cache and
+apply page pushes parents before children. It pushes locally changed pages and
+reports each result and a summary. Without `--force`, any conflict aborts the
+command before a page is pushed. `push --force` also uploads conflicting and
+unchanged pages, preferring local content. Remote-only changes and pages absent
+on either side are skipped; recreate a remotely absent page with `page create`.
 
 Local page directories mirror the page hierarchy below the root page: each
 child page's directory is inside its parent's directory. `page pull` can target

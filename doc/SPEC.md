@@ -45,13 +45,16 @@ when its content is otherwise unchanged.
 `page push PAGE_REF` uploads the local changes of a cached page. It never
 changes the page's title or parent.
 
-`push` applies `page push` to every cached page whose directory exists, in
-deterministic path order. It does not discover remote pages. A cached page with
-a missing directory is reported and skipped; unmanaged directories are ignored.
-Each page is reported as pushed, unchanged, skipped, or failed, followed by a
-summary. The command continues after a per-page failure and exits non-zero if
-any page failed. `push --force` applies the page-push force behavior to every
-page it processes.
+`push` discovers the root page and all of its page descendants, compares them
+with the cached tree, and processes the resulting statuses parents before
+children. Without `--force`, it pushes only locally changed pages and aborts
+before mutation if any page conflicts. Remote-only changes and pages absent on
+either side are skipped. With `--force`, conflicting and unchanged pages are
+also pushed, preferring local content; a page absent remotely is still skipped
+and must be recreated with `page create`. Each page is reported as pushed,
+unchanged, skipped, or failed, followed by a summary. After conflict preflight,
+the command continues after a per-page failure and exits non-zero if any page
+failed.
 
 `page status PAGE_REF` reports local and remote changes of a cached page, and
 where the next pull would move its directory (see
@@ -385,4 +388,8 @@ Confluence Cloud:
   (folders, whiteboards, databases, embeds). The `/pages/{id}/children`
   endpoint omits `type`, so it cannot distinguish non-page children, and is not
   used.
+- `APIClient.page_descendants` repeatedly calls the direct-children endpoint,
+  breadth-first, and returns every page `RemoteContentRef` below the supplied
+  page. It rejects non-page children, so a successful return is complete for
+  the page hierarchy.
 - A `limit` above 250 is rejected with HTTP 400 by both endpoints.

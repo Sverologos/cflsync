@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+from collections import deque
 from collections.abc import Mapping
 
 from .errors import SyncError
@@ -366,6 +367,28 @@ class APIClient:
         values = self.make_paginated_request(
             "GET", f"/pages/{page_id}/direct-children", parameters={"limit": str(MAX_LISTING_LIMIT)})
         return [RemoteContentRef.from_json(_json_mapping(value, "child result"), page_id) for value in values]
+
+    def page_descendants(self, page_id: str) -> list[RemoteContentRef]:
+        """Return every page descendant breadth-first and excluding *page_id* itself.
+
+        A non-page child makes a page-only traversal incomplete, so it is rejected rather than omitted.
+        """
+        descendants = []
+        seen = {page_id}
+        pending = deque([page_id])
+        while pending:
+            parent_id = pending.popleft()
+            for child in self.page_children(parent_id):
+                if child.type != "page":
+                    raise APIError(f"descendants of page '{page_id}' contain non-page {child.type} '{child.id}'")
+                if child.id in seen:
+                    raise APIError(f"descendants of page '{page_id}' contain '{child.id}' more than once")
+
+                seen.add(child.id)
+                descendants.append(child)
+                pending.append(child.id)
+
+        return descendants
 
     def find_pages_by_title(self, title: str) -> list[RemotePage]:
         """Return pages whose remote title matches *title*."""

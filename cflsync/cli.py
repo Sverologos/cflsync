@@ -17,11 +17,13 @@ from collections.abc import Sequence
 from getpass import getpass
 from pathlib import Path
 
-from .api import APIClient, APIError
+from .api import APIClient, APIError, RemoteContentRef
 from .config import Config, Profile
 from .convert import ADFToMarkdownConverter, MarkdownToADFConverter, PandocRunner
 from .errors import SyncError
-from .sync import InstallationPlan, PageInspector, PageOperationResults, PlannedPage
+from .sync import (
+    InstallationPlan, PageChangeDetector, PageChangeStatus, PagePushOperation, PageStatus, PageStatusState, PlannedPage,
+    RepositoryPushOperation, TreeStatus)
 from .workarea import (
     CONTENT_FILENAME, AttachmentMetadata, MediaResolver, PageMetadata, PageRef, PageState, Workarea, filesystem_error_message)
 
@@ -62,29 +64,14 @@ class RepositoryPushCommand:
         try:
             workarea, api = _open_workarea()
             tree = workarea.page_tree()
-            states = sorted(tree.states.values(), key=lambda state: tree.directory(state.page.id).casefold())
+            root = api.get_page(workarea.root_page_id)
+            remote_pages = [RemoteContentRef(root.id, "page", root.title, root.parent_id), *api.page_descendants(root.id)]
+            status = TreeStatus.from_pages(
+                workarea, api, remote_pages, list(tree.states.values()), PageChangeDetector(PandocRunner()))
         except (OSError, UnicodeError) as error:
             raise SyncError(f"cannot push workarea: {filesystem_error_message(error)}") from error
 
-        results = PageOperationResults()
-        push = PagePushCommand()
-        pandoc = PandocRunner()
-        for state in states:
-            directory = workarea.page_directory(state, must_exist=False)
-            if not directory.is_dir():
-                results.add(state.page.id, state.page.title, "skipped", "managed directory is missing")
-                continue
-
-            try:
-                page = api.get_page(state.page.id)
-                pushed = push._push(workarea, page, state, workarea.cache_path(state.page.id), pandoc, api, force)
-            except (OSError, UnicodeError) as error:
-                results.add(state.page.id, state.page.title, "failed", filesystem_error_message(error))
-            except SyncError as error:
-                results.add(state.page.id, state.page.title, "failed", str(error))
-            else:
-                results.add(state.page.id, state.page.title, "pushed" if pushed else "unchanged")
-
+        results = RepositoryPushOperation().push(workarea, api, status, force)
         results.report()
         return 1 if results.failed else 0
 
@@ -199,7 +186,7 @@ class PagePullCommand:
             directory=planned.directory)
 
     def _pull(self, workarea, page, pandoc, api, force=False, parent_id=None, directory_name=None, directory=None):
-        inspector = PageInspector(pandoc)
+        inspector = PageChangeDetector(pandoc)
         attachments = page.attachments()
         MediaResolver((attachment.filename, attachment.id) for attachment in attachments)
         # ADF media nodes reference attachments by file ID, not by attachment ID.
@@ -225,12 +212,13 @@ class PagePullCommand:
                 source = None
 
             if not force:
-                changes = inspector.inspect(source, previous, page, attachments)
-                if changes.locally:
+                if inspector.local_status(source, previous) != PageChangeStatus.UNCHANGED:
                     raise SyncError(f"page '{page.id}' has local changes; pull conflicts")
 
                 # A page moved or renamed remotely is relocated even when its content is unchanged.
-                if not changes.remotely and source == workarea.page_directory_path(directory):
+                if inspector.remote_status(
+                        page, attachments,
+                        previous) == PageChangeStatus.UNCHANGED and source == workarea.page_directory_path(directory):
                     print(f"Page '{page.id}' is already in sync; nothing pulled. Use --force to regenerate local content.")
                     return
 
@@ -288,83 +276,15 @@ class PagePushCommand:
                 raise SyncError(f"page '{reference.page_id}' is not managed in this workarea")
 
             state = PageState.load(cache_path)
-            page = api.get_page(reference.page_id)
-            pushed = self._push(workarea, page, state, cache_path, PandocRunner(), api, force)
+            status = PageStatus(PageStatusState.LOCAL_CHANGED, None, state)
+            pushed = PagePushOperation().push(workarea, api, status, force)
         except (OSError, UnicodeError) as error:
             raise SyncError(f"cannot push page: {filesystem_error_message(error)}") from error
 
         if not pushed:
-            print(f"Page '{page.id}' is already in sync; nothing pushed. Use --force to upload local content.")
+            print(f"Page '{reference.page_id}' is already in sync; nothing pushed. Use --force to upload local content.")
 
         return 0
-
-    def _push(self, workarea, page, state, cache_path, pandoc, api, force=False):
-        inspector = PageInspector(pandoc)
-        directory = workarea.page_directory(state)
-        attachments = page.attachments()
-        changes = inspector.inspect(directory, state, page, attachments)
-        if not force:
-            if changes.remotely:
-                raise SyncError(f"page '{page.id}' has remote changes; push conflicts")
-
-            if not changes.locally:
-                return False
-
-        markdown = (directory / CONTENT_FILENAME).read_text(encoding="utf-8")
-        bodies = self._managed_attachments(directory, state, inspector, markdown)
-        self._upload_attachments(page, state, bodies, attachments)
-        # Re-read the manifest so new uploads contribute their server-assigned file IDs.
-        remote = {attachment.filename: attachment for attachment in page.attachments()}
-        document = self._convert(pandoc, markdown, page, bodies, remote, api)
-        updated = page.update(json.dumps(document))
-        self._delete_removed_attachments(state, bodies, remote)
-
-        attachments = {}
-        for name, body in bodies.items():
-            attachments[name] = AttachmentMetadata(remote[name].id, remote[name].version, hashlib.sha256(body).hexdigest())
-
-        PageState(
-            PageMetadata(
-                updated.id, updated.title, state.page.parent_id, state.page.directory, updated.version,
-                inspector.content_hash(markdown)), attachments).save(cache_path)
-        return True
-
-    def _managed_attachments(self, directory, state, inspector, markdown):
-        """Return the bytes of every managed attachment still present locally."""
-        names = set(state.attachments) | set(inspector.referenced_attachments(markdown))
-        bodies = {}
-        for name in sorted(names):
-            path = directory / "_attachments" / name
-            if path.is_file():
-                bodies[name] = path.read_bytes()
-
-        return bodies
-
-    def _upload_attachments(self, page, state, bodies, attachments):
-        remote = {attachment.filename: attachment for attachment in attachments}
-        for name, body in bodies.items():
-            existing = remote.get(name)
-            if existing is None:
-                page.create_attachment(name, body)
-                continue
-
-            cached = state.attachments.get(name)
-            local_hash = hashlib.sha256(body).hexdigest()
-            if cached is None or cached.content_hash != local_hash or (existing.id, existing.version) != (cached.id,
-                                                                                                          cached.version):
-                existing.update(body)
-
-    def _delete_removed_attachments(self, state, bodies, remote):
-        for name in state.attachments:
-            if name not in bodies and name in remote:
-                remote[name].delete()
-
-    def _convert(self, pandoc, markdown, page, bodies, remote, api):
-        # Attachments without a server-assigned file ID cannot be referenced from ADF.
-        media = MediaResolver(
-            (name, remote[name].file_id) for name in bodies if name in remote and remote[name].file_id is not None)
-        return MarkdownToADFConverter(pandoc, media, f"contentId-{page.id}", api.find_user_by_name_and_email).convert(
-            markdown, title=page.title)
 
 
 class PageRenameCommand:
@@ -396,11 +316,11 @@ class PageRenameCommand:
         return 0
 
     def _rename(self, workarea, page, state, cache_path, pandoc, title):
-        inspector = PageInspector(pandoc)
+        inspector = PageChangeDetector(pandoc)
         directory = workarea.page_directory(state)
         attachments = page.attachments()
-        changes = inspector.inspect(directory, state, page, attachments)
-        if changes.locally or changes.remotely:
+        if inspector.local_status(directory, state) != PageChangeStatus.UNCHANGED or inspector.remote_status(
+                page, attachments, state) != PageChangeStatus.UNCHANGED:
             raise SyncError(f"page '{page.id}' has local or remote changes; rename conflicts")
 
         if title == page.title:
@@ -470,10 +390,11 @@ class PageMoveCommand:
         if page.id == workarea.root_page_id:
             raise SyncError(f"page '{page.id}' is the root page of this workarea and cannot be moved")
 
-        inspector = PageInspector(pandoc)
+        inspector = PageChangeDetector(pandoc)
         directory = workarea.page_directory(state)
-        changes = inspector.inspect(directory, state, page, page.attachments())
-        if changes.locally or changes.remotely:
+        attachments = page.attachments()
+        if inspector.local_status(directory, state) != PageChangeStatus.UNCHANGED or inspector.remote_status(
+                page, attachments, state) != PageChangeStatus.UNCHANGED:
             raise SyncError(f"page '{page.id}' has local or remote changes; move conflicts")
 
         if page.id == parent.id:
@@ -545,8 +466,11 @@ class PageRemoveCommand:
 
             self._require_no_children(workarea, state, page, api)
             if page is not None:
-                changes = PageInspector(PandocRunner()).inspect(workarea.page_directory(state), state, page, page.attachments())
-                if changes.locally or changes.remotely:
+                detector = PageChangeDetector(PandocRunner())
+                directory = workarea.page_directory(state)
+                attachments = page.attachments()
+                if detector.local_status(directory, state) != PageChangeStatus.UNCHANGED or detector.remote_status(
+                        page, attachments, state) != PageChangeStatus.UNCHANGED:
                     raise SyncError(f"page '{page.id}' has local or remote changes; remove conflicts")
 
             if not force and not self._confirm(state, remote_exists=page is not None):
@@ -599,21 +523,21 @@ class PageStatusCommand:
             # Status only reports cached pages, which are in the workarea's tree.
             reference = PageRef.resolve_local(page_ref, workarea)
             state = PageState.load(workarea.cache_path(reference.page_id))
-            inspector = PageInspector(PandocRunner())
+            inspector = PageChangeDetector(PandocRunner())
             # A missing page directory is a local change, not a lookup failure.
             directory = workarea.page_directory(state, must_exist=False)
             page = self._remote_page(api, state.page.id)
             location = None
             if page is None:
-                page_locally, attachments_locally = inspector.inspect_local(directory, state)
+                page_locally, attachments_locally = inspector.local_changes(directory, state)
                 remote = "not found; the page was deleted, or is not accessible"
             elif not workarea.contains(page.id, api):
-                page_locally, attachments_locally = inspector.inspect_local(directory, state)
+                page_locally, attachments_locally = inspector.local_changes(directory, state)
                 remote = "moved outside this workarea's tree"
             else:
-                changes = inspector.inspect(directory, state, page, page.attachments())
-                page_locally, attachments_locally = changes.page_locally, changes.attachments_locally
-                remote = self._summary(changes.page_remotely, "page", changes.attachments_remotely)
+                page_locally, attachments_locally = inspector.local_changes(directory, state)
+                page_remotely, attachments_remotely = inspector.remote_changes(page, page.attachments(), state)
+                remote = self._summary(page_remotely, "page", attachments_remotely)
                 location = self._location(workarea, state, page)
         except (OSError, UnicodeError) as error:
             raise SyncError(f"cannot report page status: {filesystem_error_message(error)}") from error

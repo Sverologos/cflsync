@@ -4,41 +4,57 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+# Repository synchronization plan (draft):
+#
+# Build a TreeStatus:
+#
+# 1. List the root reference and every remote descendant.
+# 2. List all local pages by loading the local cache.
+# 3. For each remote page, match its cached page. No cached state or local directory is ``absent-local``. Otherwise,
+#    classify the remote representation against the cached version.
+# 4. Every cached page absent from the remote list is ``absent-remote``. For matched pages, combine local and remote
+#    change states: both changed is ``conflict``; otherwise one changed is ``local-changed`` or ``remote-changed``;
+#    neither changed is ``unchanged``.
+#
+# Commands map PageStatusState mechanically:
+#
+# - ``absent-local``: not in local.
+# - ``remote-changed``: remote changed.
+# - ``local-changed``: local changed.
+# - ``conflict``: conflict.
+# - ``absent-remote``: remote removed.
+# - ``unchanged``: unchanged.
+#
+# Execute:
+#
+# - If any ``conflict`` entry exists, abort unless ``--force`` was specified.
+# - For pull, topologically sort the statuses parents before children. Execute ``remote-changed`` and ``absent-local``;
+#   with ``--force``, also execute ``conflict`` and ``unchanged`` entries as pulls; skip every other entry.
+# - For push (RepositoryPushOperation), walk the statuses parents before children; a page push changes no hierarchy, so
+#   order is only deterministic. Execute ``local-changed`` entries; with ``--force``, also execute ``conflict`` and
+#   ``unchanged`` entries as pushes. Never push ``absent-remote`` entries; recreate those pages with ``page create``
+#   instead.
+#
+# TreeStatus only compares and orders; each repository operation is a separate class mapping a page operation over it.
+
 """Change inspection and installation planning shared by the synchronization commands."""
 
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 
-from collections import deque
 from collections.abc import Callable, Iterator, Mapping
+from enum import StrEnum
+from graphlib import CycleError, TopologicalSorter
 
+from .api import APIError, RemoteContentRef
+from .convert import MarkdownToADFConverter, PandocRunner
 from .errors import SyncError
-from .workarea import CONTENT_FILENAME, MediaResolver, PageState, Workarea
+from .workarea import AttachmentMetadata, CONTENT_FILENAME, MediaResolver, PageMetadata, PageState, Workarea, filesystem_error_message
 
 ATTACHMENTS_PREFIX = "_attachments/"
-
-
-class PageChanges:
-    """What differs between local files, cached state, and remote metadata."""
-
-    def __init__(
-            self, page_locally: bool, attachments_locally: list[str], page_remotely: bool, attachments_remotely: list[str]) -> None:
-        self.page_locally = page_locally
-        self.attachments_locally = attachments_locally
-        self.page_remotely = page_remotely
-        self.attachments_remotely = attachments_remotely
-
-    @property
-    def locally(self) -> bool:
-        """Report whether the page or any managed attachment changed locally."""
-        return self.page_locally or bool(self.attachments_locally)
-
-    @property
-    def remotely(self) -> bool:
-        """Report whether the page or its attachment manifest changed remotely."""
-        return self.page_remotely or bool(self.attachments_remotely)
 
 
 class PageOperationResult:
@@ -83,75 +99,16 @@ class PageOperationResults:
         print(f"Summary: {summary}.")
 
 
-class DiscoveredPage:
-    """One remote page reached from the discovery root."""
+class PageChangeStatus(StrEnum):
+    """The local or remote change state of a page representation."""
 
-    def __init__(self, page_id: str, title: str, parent_id: str | None, path: tuple[str, ...]) -> None:
-        self.id = page_id
-        self.title = title
-        self.parent_id = parent_id
-        self.path = path
+    ABSENT = "absent"
+    CHANGED = "changed"
+    UNCHANGED = "unchanged"
 
 
-class TreeDiscovery:
-    """The remotely discovered page tree and any structural failures encountered while reading it."""
-
-    def __init__(self, root_page_id: str) -> None:
-        self.root_page_id = root_page_id
-        self.pages: dict[str, DiscoveredPage] = {}
-        self.failures: list[str] = []
-
-    @property
-    def complete(self) -> bool:
-        """Report whether all child listings completed without structural failures."""
-        return not self.failures
-
-    @classmethod
-    def discover(cls, api, root_page_id: str) -> "TreeDiscovery":
-        """Discover pages below *root_page_id* breadth-first without inferring pages after a failed listing."""
-        discovery = cls(root_page_id)
-        try:
-            root = api.get_page(root_page_id)
-        except SyncError as error:
-            discovery.failures.append(f"cannot access root page '{root_page_id}': {error}")
-            return discovery
-
-        discovery.pages[root.id] = DiscoveredPage(root.id, root.title, None, (root.id, ))
-        pending = deque([root.id])
-        while pending:
-            parent_id = pending.popleft()
-            parent = discovery.pages[parent_id]
-            try:
-                children = api.page_children(parent_id)
-            except SyncError as error:
-                discovery.failures.append(f"cannot list children of page '{parent_id}': {error}")
-                continue
-
-            for child in children:
-                if child.type != "page":
-                    discovery.failures.append(
-                        f"page '{parent_id}' has non-page child {child.type} '{child.id}'; only pages are supported")
-                    continue
-                if child.title is None:
-                    discovery.failures.append(f"child page '{child.id}' of page '{parent_id}' has no title")
-                    continue
-                if child.id in discovery.pages:
-                    discovery.failures.append(f"page '{child.id}' appears more than once in the discovered tree")
-                    continue
-
-                discovery.pages[child.id] = DiscoveredPage(child.id, child.title, parent_id, parent.path + (child.id, ))
-                pending.append(child.id)
-
-        return discovery
-
-    def require_complete(self) -> None:
-        """Refuse callers that would infer remote-tree absence from an incomplete discovery."""
-        if not self.complete:
-            raise SyncError(f"remote tree discovery is incomplete: {'; '.join(self.failures)}")
-
-
-class PageInspector:
-    """Compare a page's local files and remote metadata with its cached state."""
+class PageChangeDetector:
+    """Classify local files and remote metadata independently against cached state."""
 
     def __init__(self, pandoc) -> None:
         self._pandoc_runner = pandoc
@@ -175,16 +132,26 @@ class PageInspector:
 
         return names
 
-    def inspect(self, directory: Path, state: PageState, page, attachments) -> PageChanges:
-        """Report local and remote changes for one cached page."""
-        page_locally, attachments_locally = self.inspect_local(directory, state)
+    def local_status(self, directory: Path | None, state: PageState | None) -> PageChangeStatus:
+        """Return ``absent``, ``changed``, or ``unchanged`` for the local cached page representation."""
+        if state is None or directory is None or not directory.is_dir():
+            return PageChangeStatus.ABSENT
 
-        return PageChanges(
-            page_locally, attachments_locally, self._page_changed_remotely(page, state),
-            self._attachments_changed_remotely(attachments, state))
+        page_changed, attachments_changed = self.local_changes(directory, state)
+        return PageChangeStatus.CHANGED if page_changed or attachments_changed else PageChangeStatus.UNCHANGED
 
-    def inspect_local(self, directory: Path, state: PageState) -> tuple[bool, list[str]]:
-        """Report whether a cached page's Markdown changed locally, and which managed attachments did."""
+    def remote_status(self, page, attachments, state: PageState | None) -> PageChangeStatus:
+        """Return ``absent``, ``changed``, or ``unchanged`` for remote metadata against cached state."""
+        if page is None:
+            return PageChangeStatus.ABSENT
+        if state is None:
+            return PageChangeStatus.CHANGED
+
+        page_changed, attachments_changed = self.remote_changes(page, attachments, state)
+        return PageChangeStatus.CHANGED if page_changed or attachments_changed else PageChangeStatus.UNCHANGED
+
+    def local_changes(self, directory: Path, state: PageState) -> tuple[bool, list[str]]:
+        """Return local page and managed-attachment changes for detailed status reporting."""
         path = directory / CONTENT_FILENAME
         markdown = path.read_text(encoding="utf-8") if path.is_file() else None
 
@@ -207,10 +174,9 @@ class PageInspector:
 
         return sorted(changed)
 
-    def _page_changed_remotely(self, page, state):
-        return page.version != state.page.version or page.title != state.page.title
-
-    def _attachments_changed_remotely(self, attachments, state):
+    def remote_changes(self, page, attachments, state: PageState) -> tuple[bool, list[str]]:
+        """Return remote page and managed-attachment changes for detailed status reporting."""
+        page_changed = page.version != state.page.version or page.title != state.page.title
         remote = {attachment.filename: (attachment.id, attachment.version) for attachment in attachments}
         cached = {name: (attachment.id, attachment.version) for name, attachment in state.attachments.items()}
         changed = []
@@ -218,7 +184,261 @@ class PageInspector:
             if remote.get(name) != cached.get(name):
                 changed.append(name)
 
-        return changed
+        return page_changed, changed
+
+
+class PageStatusState(StrEnum):
+    """The combined local and remote synchronization state of a page."""
+
+    ABSENT_LOCAL = "absent-local"
+    ABSENT_REMOTE = "absent-remote"
+    REMOTE_CHANGED = "remote-changed"
+    LOCAL_CHANGED = "local-changed"
+    CONFLICT = "conflict"
+    UNCHANGED = "unchanged"
+
+
+class PageStatus:
+    """One local/remote page comparison result."""
+
+    def __init__(self, status: PageStatusState, remote: RemoteContentRef | None, local: PageState | None) -> None:
+        if remote is None and local is None:
+            raise ValueError("a page status requires a remote page, a local page, or both")
+        if remote is not None and local is not None and remote.id != local.page.id:
+            raise ValueError("the remote and local page IDs differ")
+
+        if remote is not None:
+            self.id = remote.id
+        else:
+            assert local is not None
+            self.id = local.page.id
+        self.status = status
+        self.remote = remote
+        self.local = local
+
+    @property
+    def parent_id(self) -> str | None:
+        """Return the current remote parent, or the cached parent if the remote page is absent."""
+        if self.remote is not None:
+            return self.remote.parent_id
+
+        assert self.local is not None
+        return self.local.page.parent_id
+
+
+class TreeStatus:
+    """The synchronization status of a remote page list and local cache."""
+
+    def __init__(self, pages: list[PageStatus]) -> None:
+        self.pages = self._parents_first(pages)
+
+    @staticmethod
+    def _parents_first(pages: list[PageStatus]) -> list[PageStatus]:
+        """Return *pages* topologically sorted with every represented parent before its children."""
+        by_id = _pages_by_id(pages, "tree status", lambda page: page.id)
+        sorter: TopologicalSorter[str] = TopologicalSorter()
+        for page in pages:
+            parent_id = page.parent_id
+            if parent_id is not None and parent_id in by_id:
+                sorter.add(page.id, parent_id)
+            else:
+                sorter.add(page.id)
+
+        try:
+            page_ids = list(sorter.static_order())
+        except CycleError as error:
+            raise SyncError("page hierarchy contains a cycle") from error
+
+        return [by_id[page_id] for page_id in page_ids]
+
+    @classmethod
+    def from_pages(
+            cls, workarea: Workarea, api, remote_pages: list[RemoteContentRef], local_pages: list[PageState],
+            detector: PageChangeDetector) -> "TreeStatus":
+        """Compare *remote_pages* with *local_pages* and return one status per page ID.
+
+        Remote page order is retained. Cached pages absent from that list are appended in their supplied order.
+        """
+        remotes = _pages_by_id(remote_pages, "remote page list")
+        locals_ = _pages_by_id(local_pages, "local cache", lambda state: state.page.id)
+        pages = []
+
+        for remote in remotes.values():
+            local = locals_.pop(remote.id, None)
+            if local is None:
+                pages.append(PageStatus(PageStatusState.ABSENT_LOCAL, remote, None))
+                continue
+
+            local_status = detector.local_status(workarea.page_directory(local, must_exist=False), local)
+            if local_status is PageChangeStatus.ABSENT:
+                pages.append(PageStatus(PageStatusState.ABSENT_LOCAL, remote, local))
+                continue
+
+            try:
+                page = api.get_page(remote.id)
+            except APIError as error:
+                if error.status != 404:
+                    raise
+                pages.append(PageStatus(PageStatusState.ABSENT_REMOTE, None, local))
+                continue
+
+            remote_status = detector.remote_status(page, page.attachments(), local)
+            pages.append(PageStatus(cls._status(local_status, remote_status), remote, local))
+
+        for local in locals_.values():
+            pages.append(PageStatus(PageStatusState.ABSENT_REMOTE, None, local))
+
+        return cls(pages)
+
+    @staticmethod
+    def _status(local: PageChangeStatus, remote: PageChangeStatus) -> PageStatusState:
+        """Map independent local and remote change states to one synchronization state."""
+        if local is PageChangeStatus.ABSENT:
+            return PageStatusState.ABSENT_LOCAL
+        if remote is PageChangeStatus.ABSENT:
+            return PageStatusState.ABSENT_REMOTE
+        if local is PageChangeStatus.CHANGED and remote is PageChangeStatus.CHANGED:
+            return PageStatusState.CONFLICT
+        if local is PageChangeStatus.CHANGED:
+            return PageStatusState.LOCAL_CHANGED
+        if remote is PageChangeStatus.CHANGED:
+            return PageStatusState.REMOTE_CHANGED
+        return PageStatusState.UNCHANGED
+
+
+class PagePushOperation:
+    """The reusable local-to-remote synchronization operation for one existing page."""
+
+    def __init__(self, pandoc: PandocRunner | None = None) -> None:
+        self._pandoc = pandoc or PandocRunner()
+        self._detector = PageChangeDetector(self._pandoc)
+
+    def push(self, workarea: Workarea, api, status: PageStatus, force: bool = False) -> bool:
+        """Push the locally cached page represented by *status*, returning whether it changed the remote page."""
+        state = status.local
+        if state is None:
+            raise SyncError(f"page '{status.id}' is not present locally and cannot be pushed")
+
+        page = api.get_page(status.id)
+        directory = workarea.page_directory(state)
+        attachments = page.attachments()
+        if not force:
+            if self._detector.remote_status(page, attachments, state) != PageChangeStatus.UNCHANGED:
+                raise SyncError(f"page '{page.id}' has remote changes; push conflicts")
+
+            if self._detector.local_status(directory, state) != PageChangeStatus.CHANGED:
+                return False
+
+        markdown = (directory / CONTENT_FILENAME).read_text(encoding="utf-8")
+        bodies = self._managed_attachments(directory, state, markdown)
+        self._upload_attachments(page, state, bodies, attachments)
+        # Re-read the manifest so new uploads contribute their server-assigned file IDs.
+        remote = {attachment.filename: attachment for attachment in page.attachments()}
+        document = self._convert(markdown, page, bodies, remote, api)
+        updated = page.update(json.dumps(document))
+        self._delete_removed_attachments(state, bodies, remote)
+
+        updated_attachments = {}
+        for name, body in bodies.items():
+            updated_attachments[name] = AttachmentMetadata(remote[name].id, remote[name].version, hashlib.sha256(body).hexdigest())
+
+        PageState(
+            PageMetadata(
+                updated.id, updated.title, state.page.parent_id, state.page.directory, updated.version,
+                self._detector.content_hash(markdown)), updated_attachments).save(workarea.cache_path(updated.id))
+        return True
+
+    def _managed_attachments(self, directory, state, markdown):
+        """Return the bytes of every managed attachment still present locally."""
+        names = set(state.attachments) | set(self._detector.referenced_attachments(markdown))
+        bodies = {}
+        for name in sorted(names):
+            path = directory / "_attachments" / name
+            if path.is_file():
+                bodies[name] = path.read_bytes()
+
+        return bodies
+
+    @staticmethod
+    def _upload_attachments(page, state, bodies, attachments):
+        remote = {attachment.filename: attachment for attachment in attachments}
+        for name, body in bodies.items():
+            existing = remote.get(name)
+            if existing is None:
+                page.create_attachment(name, body)
+                continue
+
+            cached = state.attachments.get(name)
+            local_hash = hashlib.sha256(body).hexdigest()
+            if cached is None or cached.content_hash != local_hash or (existing.id, existing.version) != (cached.id,
+                                                                                                          cached.version):
+                existing.update(body)
+
+    @staticmethod
+    def _delete_removed_attachments(state, bodies, remote):
+        for name in state.attachments:
+            if name not in bodies and name in remote:
+                remote[name].delete()
+
+    def _convert(self, markdown, page, bodies, remote, api):
+        # Attachments without a server-assigned file ID cannot be referenced from ADF.
+        media = MediaResolver(
+            (name, remote[name].file_id) for name in bodies if name in remote and remote[name].file_id is not None)
+        return MarkdownToADFConverter(self._pandoc, media, f"contentId-{page.id}", api.find_user_by_name_and_email).convert(
+            markdown, title=page.title)
+
+
+class RepositoryPushOperation:
+    """Apply page push operations to a complete tree-status comparison."""
+
+    def __init__(self, page_push: PagePushOperation | None = None) -> None:
+        self._page_push = page_push or PagePushOperation()
+
+    def push(self, workarea: Workarea, api, status: TreeStatus, force: bool = False) -> PageOperationResults:
+        """Push locally changed pages, rejecting detected conflicts unless *force* prefers local state."""
+        if not force and any(page.status is PageStatusState.CONFLICT for page in status.pages):
+            raise SyncError("repository push conflicts; resolve conflicts or use --force")
+
+        results = PageOperationResults()
+        for page_status in status.pages:
+            if page_status.status is PageStatusState.LOCAL_CHANGED or (force and page_status.status in {PageStatusState.CONFLICT,
+                                                                                                        PageStatusState.UNCHANGED}):
+                try:
+                    pushed = self._page_push.push(workarea, api, page_status, force=force)
+                except (OSError, UnicodeError) as error:
+                    results.add(page_status.id, _status_title(page_status), "failed", filesystem_error_message(error))
+                except SyncError as error:
+                    results.add(page_status.id, _status_title(page_status), "failed", str(error))
+                else:
+                    results.add(page_status.id, _status_title(page_status), "pushed" if pushed else "unchanged")
+                continue
+
+            if page_status.status is PageStatusState.UNCHANGED:
+                results.add(page_status.id, _status_title(page_status), "unchanged")
+            else:
+                results.add(page_status.id, _status_title(page_status), "skipped", page_status.status)
+
+        return results
+
+
+def _status_title(status: PageStatus) -> str:
+    """Return the best title available for a status report."""
+    if status.local is not None:
+        return status.local.page.title
+    if status.remote is not None and status.remote.title is not None:
+        return status.remote.title
+    return status.id
+
+
+def _pages_by_id(pages, description: str, page_id=lambda page: page.id):
+    """Return *pages* indexed by ID, rejecting duplicate IDs in one input list."""
+    result = {}
+    for page in pages:
+        identifier = page_id(page)
+        if identifier in result:
+            raise SyncError(f"{description} contains page '{identifier}' more than once")
+        result[identifier] = page
+    return result
 
 
 def _link_targets(value: object) -> Iterator[str]:

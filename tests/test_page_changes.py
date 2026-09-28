@@ -10,7 +10,7 @@ import hashlib
 from types import SimpleNamespace
 import unittest
 
-from cflsync import AttachmentMetadata, PageInspector, PageMetadata, PageState, PandocRunner
+from cflsync import AttachmentMetadata, PageChangeDetector, PageChangeStatus, PageMetadata, PageState, PandocRunner
 from tests.support import temporary_workarea
 
 MARKDOWN = "# Example page\n\nExample\n"
@@ -25,10 +25,10 @@ def remote_attachment(filename="diagram.png", attachment_id="att987654", version
     return SimpleNamespace(filename=filename, id=attachment_id, version=version)
 
 
-class TestPageInspector(unittest.TestCase):
+class TestPageChangeDetector(unittest.TestCase):
 
     def setUp(self) -> None:
-        self.inspector = PageInspector(PandocRunner())
+        self.inspector = PageChangeDetector(PandocRunner())
 
     def _page(self, workarea):
         """Install a page whose local files, cache, and remote metadata all agree."""
@@ -43,14 +43,14 @@ class TestPageInspector(unittest.TestCase):
 
         return directory, state
 
-    def _inspect(self, directory, state, page=None, attachments=None):
+    def _statuses(self, directory, state, page=None, attachments=None):
         if page is None:
             page = remote_page()
 
         if attachments is None:
             attachments = [remote_attachment()]
 
-        return self.inspector.inspect(directory, state, page, attachments)
+        return self.inspector.local_status(directory, state), self.inspector.remote_status(page, attachments, state)
 
     def test_hashes_formatting_only_differences_identically(self) -> None:
         equivalent = "# Example page\n\n\nExample\n\n"
@@ -60,10 +60,9 @@ class TestPageInspector(unittest.TestCase):
 
     def test_reports_no_change_when_all_three_agree(self) -> None:
         with temporary_workarea() as workarea:
-            changes = self._inspect(*self._page(workarea))
+            statuses = self._statuses(*self._page(workarea))
 
-            self.assertEqual((changes.locally, changes.remotely), (False, False))
-            self.assertEqual((changes.attachments_locally, changes.attachments_remotely), ([], []))
+            self.assertEqual(statuses, (PageChangeStatus.UNCHANGED, PageChangeStatus.UNCHANGED))
 
     def test_reports_local_page_edits_and_removal(self) -> None:
         for content in ["# Example page\n\nEdited\n", None]:
@@ -75,11 +74,9 @@ class TestPageInspector(unittest.TestCase):
                     else:
                         (directory / "content.md").write_text(content, encoding="utf-8")
 
-                    changes = self._inspect(directory, state)
+                    local, remote = self._statuses(directory, state)
 
-                    self.assertTrue(changes.page_locally)
-                    self.assertTrue(changes.locally)
-                    self.assertFalse(changes.remotely)
+                    self.assertEqual((local, remote), (PageChangeStatus.CHANGED, PageChangeStatus.UNCHANGED))
 
     def test_reports_changed_and_missing_managed_attachments_by_name(self) -> None:
         for edit in ["bytes", "remove"]:
@@ -92,10 +89,10 @@ class TestPageInspector(unittest.TestCase):
                     else:
                         path.unlink()
 
-                    changes = self._inspect(directory, state)
+                    page_changed, attachments_changed = self.inspector.local_changes(directory, state)
 
-                    self.assertEqual(changes.attachments_locally, ["diagram.png"])
-                    self.assertFalse(changes.page_locally)
+                    self.assertEqual(attachments_changed, ["diagram.png"])
+                    self.assertFalse(page_changed)
 
     def test_ignores_unreferenced_local_files(self) -> None:
         with temporary_workarea() as workarea:
@@ -103,9 +100,9 @@ class TestPageInspector(unittest.TestCase):
             (directory / "_attachments/notes.txt").write_text("unmanaged")
             (directory / "scratch.md").write_text("unmanaged")
 
-            changes = self._inspect(directory, state)
+            local, _ = self._statuses(directory, state)
 
-            self.assertFalse(changes.locally)
+            self.assertEqual(local, PageChangeStatus.UNCHANGED)
 
     def test_reports_a_referenced_new_attachment_as_a_local_change(self) -> None:
         with temporary_workarea() as workarea:
@@ -116,10 +113,10 @@ class TestPageInspector(unittest.TestCase):
             (directory / "content.md").write_text(markdown, encoding="utf-8")
             state.page.content_hash = self.inspector.content_hash(markdown)
 
-            changes = self._inspect(directory, state)
+            page_changed, attachments_changed = self.inspector.local_changes(directory, state)
 
-            self.assertEqual(changes.attachments_locally, ["added.png"])
-            self.assertFalse(changes.page_locally)
+            self.assertEqual(attachments_changed, ["added.png"])
+            self.assertFalse(page_changed)
 
     def test_ignores_references_without_a_local_file_or_a_safe_name(self) -> None:
         for reference in ["_attachments/absent.png", "_attachments/../escape.png", "https://example.test/remote.png"]:
@@ -130,9 +127,9 @@ class TestPageInspector(unittest.TestCase):
                     (directory / "content.md").write_text(markdown, encoding="utf-8")
                     state.page.content_hash = self.inspector.content_hash(markdown)
 
-                    changes = self._inspect(directory, state)
+                    _, attachments_changed = self.inspector.local_changes(directory, state)
 
-                    self.assertEqual(changes.attachments_locally, [])
+                    self.assertEqual(attachments_changed, [])
 
     def test_lists_referenced_attachment_names(self) -> None:
         markdown = "[Report](_attachments/report.pdf) ![Diagram](_attachments/diagram.png) [Other](https://example.test)\n"
@@ -143,11 +140,9 @@ class TestPageInspector(unittest.TestCase):
         for page in [remote_page(version=18), remote_page(title="Renamed page")]:
             with self.subTest(version=page.version, title=page.title):
                 with temporary_workarea() as workarea:
-                    changes = self._inspect(*self._page(workarea), page=page)
+                    _, remote = self._statuses(*self._page(workarea), page=page)
 
-                    self.assertTrue(changes.page_remotely)
-                    self.assertTrue(changes.remotely)
-                    self.assertFalse(changes.locally)
+                    self.assertEqual(remote, PageChangeStatus.CHANGED)
 
     def test_reports_remote_attachment_updates_deletions_and_additions(self) -> None:
         cases = [
@@ -157,20 +152,28 @@ class TestPageInspector(unittest.TestCase):
         for name, attachments, expected in cases:
             with self.subTest(case=name):
                 with temporary_workarea() as workarea:
-                    changes = self._inspect(*self._page(workarea), attachments=attachments)
+                    _, state = self._page(workarea)
+                    _, attachment_changes = self.inspector.remote_changes(remote_page(), attachments, state)
 
-                    self.assertEqual(changes.attachments_remotely, expected)
-                    self.assertFalse(changes.page_remotely)
-                    self.assertFalse(changes.locally)
+                    self.assertEqual(attachment_changes, expected)
 
     def test_reports_both_sides_when_each_changed(self) -> None:
         with temporary_workarea() as workarea:
             directory, state = self._page(workarea)
             (directory / "content.md").write_text("# Example page\n\nEdited\n", encoding="utf-8")
 
-            changes = self._inspect(directory, state, page=remote_page(version=18))
+            statuses = self._statuses(directory, state, page=remote_page(version=18))
 
-            self.assertEqual((changes.locally, changes.remotely), (True, True))
+            self.assertEqual(statuses, (PageChangeStatus.CHANGED, PageChangeStatus.CHANGED))
+
+    def test_reports_absent_local_and_remote_representations(self) -> None:
+        with temporary_workarea() as workarea:
+            directory, state = self._page(workarea)
+
+            self.assertEqual(self.inspector.local_status(directory, None), PageChangeStatus.ABSENT)
+            self.assertEqual(self.inspector.local_status(directory / "missing", state), PageChangeStatus.ABSENT)
+            self.assertEqual(self.inspector.remote_status(None, [], state), PageChangeStatus.ABSENT)
+            self.assertEqual(self.inspector.remote_status(remote_page(), [remote_attachment()], None), PageChangeStatus.CHANGED)
 
 
 # vim: set ts=4 sw=4 et tw=132:

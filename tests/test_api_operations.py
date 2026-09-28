@@ -328,6 +328,56 @@ class TestAPIClientTreeOperations(unittest.TestCase):
         self.assertEqual(transport.requests[0].parameters, {"limit": "250"})
         self.assertEqual(transport.requests[1].path, "/wiki/api/v2/pages/123456/direct-children?limit=250&cursor=abc")
 
+    def test_lists_descendants_breadth_first_and_preserves_parent_ids(self) -> None:
+        root_children = {
+            "results": [
+                {
+                    "id": "200",
+                    "status": "current",
+                    "title": "First",
+                    "type": "page"}, {
+                        "id": "300",
+                        "status": "current",
+                        "title": "Second",
+                        "type": "page"}]}
+        first_children = {"results": [{"id": "400", "status": "current", "title": "Grandchild", "type": "page"}]}
+        second_children = {"results": []}
+        grandchild_children = {"results": []}
+        transport = MockTransport(
+            [
+                MockResponse.from_json(root_children),
+                MockResponse.from_json(first_children),
+                MockResponse.from_json(second_children),
+                MockResponse.from_json(grandchild_children)])
+        client = APIClient("example.atlassian.net", "user", "token", transport=transport)
+
+        descendants = client.page_descendants("123456")
+
+        self.assertEqual(
+            [(page.id, page.type, page.title, page.parent_id) for page in descendants], [
+                ("200", "page", "First", "123456"), ("300", "page", "Second", "123456"), ("400", "page", "Grandchild", "200")])
+        self.assertEqual(
+            [request.path for request in transport.requests], [
+                "/pages/123456/direct-children", "/pages/200/direct-children", "/pages/300/direct-children",
+                "/pages/400/direct-children"])
+
+    def test_rejects_a_non_page_descendant(self) -> None:
+        children = {"results": [{"id": "200", "status": "current", "title": "Folder", "type": "folder"}]}
+        transport = MockTransport([MockResponse.from_json(children)])
+        client = APIClient("example.atlassian.net", "user", "token", transport=transport)
+
+        with self.assertRaisesRegex(APIError, "contain non-page folder '200'"):
+            client.page_descendants("123456")
+
+    def test_rejects_a_repeated_descendant(self) -> None:
+        root_children = {"results": [{"id": "200", "status": "current", "title": "Child", "type": "page"}]}
+        child_children = {"results": [{"id": "200", "status": "current", "title": "Child", "type": "page"}]}
+        transport = MockTransport([MockResponse.from_json(root_children), MockResponse.from_json(child_children)])
+        client = APIClient("example.atlassian.net", "user", "token", transport=transport)
+
+        with self.assertRaisesRegex(APIError, "contain '200' more than once"):
+            client.page_descendants("123456")
+
 
 class TestAPIClientAttachmentOperations(unittest.TestCase):
 
