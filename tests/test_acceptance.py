@@ -20,7 +20,7 @@ from unittest.mock import patch
 
 from cflsync import APIClient, Config, Profile, TransportResponse
 from cflsync.cli import main
-from tests.support import RecordedRequest
+from tests.support import FakeConfluence, RecordedRequest
 
 
 def _paragraph(text: str) -> dict[str, object]:
@@ -433,6 +433,83 @@ class TestLiveAcceptanceIsManualOnly(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "must not open network connections"):
             client.get_page("123456")
+
+
+class TestTreeAcceptanceWorkflow(unittest.TestCase):
+    """The page-by-page workflow on a tree: Root (100) with Child (200) and Other (400), and Grandchild (300) below Child."""
+
+    def setUp(self):
+        self.site = FakeConfluence()
+        self.site.add_page("100", "Root")
+        self.site.add_attachment("100", "diagram.png", b"PNG")
+        self.site.add_page("200", "Child", parent_id="100")
+        self.site.add_page("300", "Grandchild", parent_id="200")
+        self.site.add_page("400", "Other", parent_id="100")
+
+    def _run(self, root, *arguments):
+        config = Config(root / "credentials.json", {"default": Profile("fixture.invalid", "fixture", "token")})
+        output = StringIO()
+        errors = StringIO()
+        with patch("cflsync.cli.Path.cwd", return_value=root):
+            with patch("cflsync.cli.Config.find", return_value=config):
+                with patch("cflsync.cli.APIClient", return_value=self.site.client()):
+                    with redirect_stdout(output), redirect_stderr(errors):
+                        status = main(["cflsync", *arguments])
+
+        return status, output.getvalue(), errors.getvalue()
+
+    def _succeeds(self, root, *arguments):
+        status, output, errors = self._run(root, *arguments)
+        self.assertEqual((status, errors), (0, ""), arguments)
+        return output
+
+    def test_manages_a_tree_page_by_page(self) -> None:
+        with TemporaryDirectory(prefix="cflsync-acceptance-") as temporary:
+            root = Path(temporary) / "workarea"
+            root.mkdir()
+            self._succeeds(root, "init", "Root")
+
+            status, _, errors = self._run(root, "page", "pull", "300")
+            self.assertEqual(status, 1)
+            self.assertIn("parent page 'Child' (200) is not present locally; run: cflsync page pull 200", errors)
+
+            for page_id in ["100", "200", "300", "400"]:
+                self._succeeds(root, "page", "pull", page_id)
+
+            tree = root / "Root"
+            self.assertEqual((tree / "_attachments" / "diagram.png").read_bytes(), b"PNG")
+            grandchild = tree / "Child" / "Grandchild"
+            self.assertIn("remote: unchanged", self._succeeds(root, "page", "status", str(grandchild / "content.md")))
+
+            self._succeeds(root, "page", "create", str(tree / "Child"), "New page")
+            new_page = tree / "Child" / "New page"
+            (new_page / "content.md").write_text("# New page\n\nWritten locally.\n", encoding="utf-8")
+            self._succeeds(root, "page", "push", str(new_page))
+            [new_page_id] = [item["id"] for item in self.site.content.values() if item["title"] == "New page"]
+            self.assertIn("Written locally.", self.site.content[new_page_id]["body"])
+
+            self._succeeds(root, "page", "rename", "200", "Renamed child")
+            renamed = tree / "Renamed child"
+            self.assertEqual(
+                sorted(path.name for path in renamed.iterdir()), ["Grandchild", "New page", "_attachments", "content.md"])
+
+            self._succeeds(root, "page", "move", "300", "400")
+            self.assertTrue((tree / "Other" / "Grandchild" / "content.md").is_file())
+            self.assertEqual(self.site.content["300"]["parent_id"], "400")
+
+            self._succeeds(root, "page", "remove", "--force", str(renamed / "New page"))
+            self.assertNotIn(new_page_id, self.site.content)
+            self.assertFalse((renamed / "New page").exists())
+
+            status, _, errors = self._run(root, "page", "remove", "--force", "100")
+            self.assertEqual(status, 1)
+            self.assertIn("page '100' has 2 child pages; remove them first", errors)
+
+            for page_ref in ["100", "Renamed child", "300", "400"]:
+                output = self._succeeds(root, "page", "status", page_ref)
+                self.assertIn("local:  unchanged", output)
+                self.assertIn("remote: unchanged", output)
+                self.assertNotIn("location:", output)
 
 
 # vim: set ts=4 sw=4 et tw=132:

@@ -14,22 +14,42 @@ cflsync page remove [-f | --force] PAGE_REF
 cflsync page status PAGE_REF
 ```
 
-`init` resolves `ROOT_PAGE_REF`, a page ID or an exact page title, through
-Confluence with the profile's credentials. It then creates `.cflsync/` with an
-empty `cache/`, `profile`, and `root`, which records the root page ID, as one
-atomic installation. A failed lookup leaves no `.cflsync/` behind. `init`
-refuses a directory inside any existing workarea, and does not pull pages.
-`page pull` resolves
-`PAGE_REF` and creates or updates its page directory and cache entry. The root
-page's directory is directly below the workarea root; every other page's
-directory is inside its parent's page directory. Pulling a page other than the
-root therefore requires its parent to be cached with its directory present;
-otherwise the command fails before any change and names the command that pulls
-the parent. When a page's remote title or parent changed, the pull moves its
-directory, with its child pages and unmanaged files, to the new location, also
-when its content is otherwise unchanged. The new parent must then be local as
-well. `page push` finds the identified page's local state at
-`.cflsync/cache/<page-id>.json`.
+A workarea manages one Confluence page tree: a root page and its descendants.
+Commands locate a workarea by walking upward to a directory containing
+`.cflsync/profile`. A workarea without a valid `.cflsync/root` was created by
+an earlier cflsync version; every command except `auth` refuses it and explains
+how to create a new, anchored workarea.
+
+`init [-p PROFILE] ROOT_PAGE_REF` resolves `ROOT_PAGE_REF`, a page ID or an
+exact page title, through Confluence with the profile's credentials. It then
+creates `.cflsync/` with an empty `cache/`, `profile`, and `root`, which records
+the root page ID, as one atomic installation. A failed lookup leaves no
+`.cflsync/` behind. `init` refuses a directory inside any existing workarea,
+and does not pull pages.
+
+`page pull PAGE_REF` resolves `PAGE_REF` and creates or updates its page
+directory and cache entry. The root page's directory is directly below the
+workarea root; every other page's directory is inside its parent's page
+directory. Pulling a page other than the root therefore requires its parent to
+be cached with its directory present; otherwise the command fails before any
+change and names the command that pulls the parent. When a page's remote title
+or parent changed, the pull moves its directory, with its child pages and
+unmanaged files, to the new location, also when its content is otherwise
+unchanged. The new parent must then be local as well.
+
+`page push PAGE_REF` uploads the local changes of a cached page. It never
+changes the page's title or parent.
+
+`page status PAGE_REF` reports local and remote changes of a cached page, and
+where the next pull would move its directory (see
+[Change detection and synchronization](#change-detection-and-synchronization)).
+
+`page create PARENT_PAGE_REF TITLE` resolves `PARENT_PAGE_REF`, creates an
+empty child page remotely, then runs the equivalent of `page pull` for its
+returned ID. The parent must be present locally, and the new page's directory
+below it must be free, with no cached sibling or other entry of the same name;
+both are checked before the page is created remotely. It has no offline mode,
+so each local page begins with Confluence-authoritative metadata.
 
 `page rename PAGE_REF TITLE` requires the referenced managed page to be in
 sync. It updates the remote title with optimistic concurrency, rewrites the
@@ -37,11 +57,10 @@ generated title heading, renames the title-derived local directory, and writes
 the updated cache state. The directory keeps its parent; child page directories
 and unmanaged files move with it, and only the renamed page's cache entry
 changes. The new directory name must be free in the parent directory, which is
-checked before the remote update. If the remote rename succeeds but the local
-update fails, local files are restored and the command reports incomplete
-synchronization; `page pull` then completes the rename. `TITLE` must be
-non-empty, single-line text without surrounding whitespace. It is the explicit
-local-title operation; `page push` continues to reject an edited title heading.
+checked before the remote update. `TITLE` must be non-empty, single-line text
+without surrounding whitespace. It is the explicit local-title operation;
+`page push` continues to reject an edited title heading. The root page may be
+renamed.
 
 `page move PAGE_REF NEW_PARENT_REF` requires the referenced managed page to be
 in sync, and not to be the workarea's root page. `NEW_PARENT_REF` resolves to a
@@ -50,9 +69,6 @@ update, the command checks that the page's directory name is free in the new
 parent's directory. It then changes the remote parent, moves the page
 directory, with its child pages and unmanaged files, into the new parent's
 directory, and records the new parent in the cache. The Markdown is unchanged.
-If the remote move succeeds but the local update fails, the directory is moved
-back and the command reports incomplete synchronization; `page pull` then
-completes the move.
 
 `page remove [-f | --force] PAGE_REF` requires a managed local page directory
 and cache entry. It confirms removal unless `--force` is supplied. When the
@@ -66,15 +82,20 @@ profile, root page ID, and an empty cache, remains. Commands that then refer to
 pages report that the root page no longer exists; the directory can be re-used
 by deleting `.cflsync` and running `init` again.
 
-`page create PARENT_PAGE_REF TITLE` resolves `PARENT_PAGE_REF`, creates an
-empty child page remotely, then runs the equivalent of `page pull` for its
-returned ID. The parent must be present locally, and the new page's directory
-below it must be free, with no cached sibling or other entry of the same name;
-both are checked before the page is created remotely. It has no offline mode,
-so each local page begins with Confluence-authoritative metadata. Commands locate a workarea by walking upward
-to a directory containing `.cflsync/profile`. A workarea without a valid
-`.cflsync/root` is a version-1 workarea; every command except `auth` refuses
-it and explains how to create a new, anchored workarea.
+## Current limitations
+
+The following situations are refused with an error that explains what to do:
+
+- A page can only be pulled, created, or moved below a parent that is present
+  locally. Pull the tree top-down, starting with the root page.
+- Two sibling pages whose directory names are equal, compared
+  case-insensitively, cannot both be present locally.
+- A page with child pages cannot be removed; remove its children first.
+- A workarea cannot be re-anchored at another root page; after removing the
+  root page, delete `.cflsync` and run `init` again.
+- Folders and other non-page content inside the tree are not supported.
+- There are no commands that act on the whole tree at once; every command
+  acts on one page.
 
 ## Page references
 
@@ -112,8 +133,8 @@ cached local state; they do not resolve an ID or title remotely.
 ## Workarea and local representation
 
 All synchronization state is below `.cflsync`, separate from managed content,
-so it can later support multiple pages without private state in page
-directories. The layout mirrors the page hierarchy:
+so page directories contain no private state. The layout mirrors the page
+hierarchy:
 
 ```
 <workarea>/
@@ -149,9 +170,9 @@ otherwise it stops without overwriting data. A cached sibling with the same
 directory name, compared case-insensitively, is also refused; such pages cannot
 be managed side by side yet.
 
-On Windows, a title change cannot rename the page directory when cflsync is
-running from inside that directory. The command stops before mutation and asks
-the user to run it from the workarea or another directory before retrying.
+On Windows, a page directory cannot be renamed or moved when cflsync is
+running from inside it. The command stops before mutation and asks the user to
+run it from the workarea or another directory before retrying.
 
 Attachments use relative Markdown URLs:
 
@@ -279,24 +300,28 @@ because push does not rename pages.
 
 `page rename` is non-destructive but changes the local path. It first checks
 that page and attachment state is unchanged locally and remotely, and rejects
-a target directory that is occupied or cached for another page. It stages the
+a target directory that is occupied, or used by a cached sibling. It stages the
 rewritten Markdown before the remote update, preserves the current ADF body in
 that update, then renames the directory and writes cache last. If the remote
-update succeeds but local installation or the cache write fails, the command
-reports incomplete synchronization; the old cache makes the remote title change
-visible to `status` and recoverable with `pull`.
+update succeeds but local installation or the cache write fails, local files
+are restored and the command reports incomplete synchronization, naming the
+`page pull` that completes the rename; the old cache makes the remote title
+change visible to `status`.
 
 `page move` checks that the managed source page and attachments are unchanged
 locally and remotely. It resolves and fetches the new parent, which must be a
-different page in the same space. A move sends the existing title and ADF body
-with the new `parentId` in one versioned update. Confluence validates the
-resulting hierarchy; a rejected update identifies both the source and target
-page IDs. The local directory and page content remain unchanged; cache state
-records the returned page version last. If cache writing fails after the remote
-move, the command reports incomplete synchronization and a pull can recover it.
+different, local page in the same space, and checks the target directory. A
+move sends the existing title and ADF body with the new `parentId` in one
+versioned update. Confluence validates the resulting hierarchy; a rejected
+update identifies both the source and target page IDs. The command then moves
+the page directory and writes the cache, with the new parent and the returned
+page version, last. If that fails after the remote move, the directory is moved
+back and the command reports incomplete synchronization, naming the
+`page pull` that completes the move.
 
-`page remove` resolves only local managed state, checks the remote page if it
-still exists, and asks for confirmation immediately before deletion. `--force`
+`page remove` resolves only local managed state, refuses a page with children,
+checks the remote page if it still exists, and asks for confirmation
+immediately before deletion. `--force`
 only bypasses that prompt. A remote deletion failure leaves the local directory
 and cache intact. After a successful remote deletion, it removes the complete
 local directory, including unmanaged files, then its cache entry. If the remote
@@ -305,9 +330,9 @@ page is already absent, it performs that local cleanup without a remote delete.
 `page pull` stages downloads, conversion, attachment-path validation, and
 content validation in a temporary directory. For an existing page it preserves
 the page and attachment directories, atomically replaces `content.md` and each
-managed attachment, and writes the cache last. Only a title change renames the
-existing page directory. Backups allow rollback of file changes and the rename
-if installation or the cache write fails. These individual replacements are
+managed attachment, and writes the cache last. Only a remote title or parent
+change moves the existing page directory. Backups allow rollback of file
+changes and the move if installation or the cache write fails. These individual replacements are
 not a single filesystem transaction across all files. `page push` uploads changed
 attachments, updates content with optimistic concurrency, applies managed
 attachment deletions, and writes cache only after complete success. A failed
@@ -316,9 +341,10 @@ resulting remote change.
 
 ## Content hierarchy requests
 
-The API client lists a page's ancestors and direct children. No command uses
-these listings yet; they support the planned subtree operations. Their
-behaviour was verified against Confluence Cloud:
+The API client lists a page's ancestors, which reference resolution and
+`page status` use to check that a page is in the workarea's tree, and its
+direct children, which `page remove` checks. Their behaviour was verified
+against Confluence Cloud:
 
 - `GET /pages/{id}/ancestors` returns `id` and `type` for every ancestor,
   highest first. Non-page ancestors such as folders are included. A response

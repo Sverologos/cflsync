@@ -1,11 +1,15 @@
-# cflsync: single-page synchronization design
+# cflsync: page tree synchronization design
 
 ## Scope
 
-Each synchronization operation targets exactly one Confluence Cloud page. It
-does not discover, download, or update child pages. The `.cflsync` directory
-is at the workarea root, separate from managed page content. The command,
-storage, and synchronization contracts are specified in [SPEC.md](SPEC.md).
+A workarea manages one Confluence Cloud page tree, anchored at a root page
+recorded in `.cflsync/root`. Local page directories mirror the page hierarchy,
+and commands only accept pages in the tree. Each synchronization operation
+still targets exactly one page: it does not discover, download, or update the
+page's children, although a rename or move carries their local directories
+along. The `.cflsync` directory is at the workarea root, separate from managed
+page content. The command, storage, and synchronization contracts are
+specified in [SPEC.md](SPEC.md).
 
 ## Implementation constraints
 

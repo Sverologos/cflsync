@@ -9,7 +9,7 @@ as publishing platform rather than authoring environment.
 
 ### Windows
 
-Install from the personal [scoop](https://scoop.sh) bucket:
+Install from a [scoop](https://scoop.sh) bucket:
 
 ```console
 scoop bucket add sven https://github.com/sven-prive/scoop
@@ -51,10 +51,38 @@ cflsync page status PAGE_REF
 `PAGE_REF` may be a numeric Confluence page ID, an exact page title, a managed
 local `content.md` file, or a managed page directory.
 
-`init ROOT_PAGE_REF` creates a workarea anchored at a root page, given as a page
-ID or exact title; it contacts Confluence with the profile's credentials, and
-does not pull any page. Workareas created by earlier cflsync versions are not
-anchored and are refused; create a new workarea with `init` instead.
+### Getting started
+
+A workarea manages one Confluence page tree: a root page and the pages below
+it. `init ROOT_PAGE_REF` anchors a new workarea at its root page, given as a
+page ID or exact title; it contacts Confluence with the profile's credentials,
+but does not pull any page. After a succesfull init, pull the root page first,
+then the pages below it:
+
+```console
+cflsync auth
+mkdir handbook && cd handbook
+cflsync init "Team handbook"
+cflsync page pull "Team handbook"
+cflsync page pull "Onboarding"
+```
+
+Each page is a directory containing the page content in `content.md`, its
+attachments in `_attachments/`, and any child pages in subdirectories.
+
+### Upgrading from cflsync 0.3
+
+Workareas created by cflsync 0.3 follow a 'loose collection of pages' model
+rather than the 'managed subtree' approach used by cflsync 0.4 and later. The
+consequence is that pre-cflsync 0.4 workspaces cannot be managed by cflsync
+0.4. To migrate a workarea:
+
+1. Push any local changes with the cflsync version that created it.
+2. Create a new workarea in an empty directory with `cflsync init ROOT_PAGE_REF`.
+3. Pull the root page, then the pages below it, top-down.
+
+Unmanaged files in old page directories are not carried over; copy them into
+the new page directories if needed.
 
 Pull reports when the page is already in sync. Use `page pull --force PAGE_REF`
 to prefer remote content, overwriting local edits to managed files even when
