@@ -1,6 +1,6 @@
 [project]
 name = "cflsync"
-version = "0.5.0"
+version = "0.4.1"
 description = "Synchronize Confluence Cloud pages with local Markdown page directories"
 readme = "README.md"
 authors = [
