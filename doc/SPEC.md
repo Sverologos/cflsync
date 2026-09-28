@@ -52,8 +52,10 @@ an already-removed remote page, so only the local copy is removed.
 
 `page create PARENT_PAGE_REF TITLE` resolves `PARENT_PAGE_REF`, creates an
 empty child page remotely, then runs the equivalent of `page pull` for its
-returned ID. It has no offline mode, so each local page begins with
-Confluence-authoritative metadata. Commands locate a workarea by walking upward
+returned ID. The parent must be present locally, and the new page's directory
+below it must be free, with no cached sibling or other entry of the same name;
+both are checked before the page is created remotely. It has no offline mode,
+so each local page begins with Confluence-authoritative metadata. Commands locate a workarea by walking upward
 to a directory containing `.cflsync/profile`. A workarea without a valid
 `.cflsync/root` is a version-1 workarea; every command except `auth` refuses
 it and explains how to create a new, anchored workarea.

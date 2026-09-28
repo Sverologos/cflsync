@@ -540,11 +540,12 @@ class Workarea:
         except OSError as error:
             raise Workarea.Error(f"cannot remove managed page directory: {filesystem_error_message(error)}") from error
 
-    def page_directory_target(self, page_id: str, parent_id: str | None, name: str) -> Path:
+    def page_directory_target(self, page_id: str | None, parent_id: str | None, name: str) -> Path:
         """Return the safe, unoccupied path for page *page_id* named *name* below cached parent *parent_id*.
 
         The path is refused if a cached sibling uses the same name, or if the parent directory already contains another
         entry with that name, compared case-insensitively. A page whose directory is already at the path may keep it.
+        *page_id* is ``None`` for a page that does not exist yet.
         """
         tree = self.page_tree()
         directory = self.relative_directory(parent_id, name)

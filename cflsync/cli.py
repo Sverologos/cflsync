@@ -102,6 +102,9 @@ class PageCreateCommand:
             if parent.space_id is None:
                 raise SyncError(f"parent page '{reference.page_id}' reports no space")
 
+            # The new page is pulled below its parent, so both must be possible before it is created remotely.
+            _require_local_parent(workarea, parent.id, api)
+            workarea.page_directory_target(None, parent.id, workarea.page_directory_name(title))
             page = api.create_page(parent.space_id, parent.id, title)
         except (OSError, UnicodeError) as error:
             raise SyncError(f"cannot create page: {filesystem_error_message(error)}") from error

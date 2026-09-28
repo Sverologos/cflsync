@@ -8,13 +8,14 @@
 
 import json
 from pathlib import Path
+import shutil
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 from cflsync import APIClient, PageState, Profile, SyncError
-from cflsync.cli import PageCreateCommand
-from tests.support import MockResponse, MockTransport, example_page_state, temporary_workarea
+from cflsync.cli import PageCreateCommand, PagePullCommand
+from tests.support import FakeConfluence, MockResponse, MockTransport, example_page_state, run_with_site, temporary_workarea
 from tests.test_api_operations import attachment_fixture, page_fixture
 
 
@@ -98,17 +99,18 @@ class TestPageCreate(unittest.TestCase):
 
     def test_failed_creation_leaves_no_local_state(self) -> None:
         with temporary_workarea(root_page_id="456789") as workarea:
+            parent_directory = self._local_parent(workarea)
             parent = page_fixture("456789", "Parent page")
             responses = [
                 MockResponse.from_json(parent),
                 MockResponse.from_json(parent),
                 MockResponse.from_json({"message": "title already exists"}, 400)]
 
-            with self.assertRaises(SyncError):
+            with self.assertRaisesRegex(SyncError, "title already exists"):
                 self._create(workarea, responses)
 
-            self.assertEqual(list(workarea.page_state_paths()), [])
-            self.assertEqual(list(workarea.root_dir.glob("*")), [workarea.root_dir / ".cflsync"])
+            self.assertEqual(list(workarea.page_state_paths()), ["456789"])
+            self.assertEqual(sorted(path.name for path in parent_directory.iterdir()), ["content.md"])
 
     def test_resolves_a_cached_parent_title_before_creation(self) -> None:
         with temporary_workarea(root_page_id="456789") as workarea:
@@ -142,6 +144,7 @@ class TestPageCreate(unittest.TestCase):
 
     def test_failed_follow_up_pull_reports_the_created_page(self) -> None:
         with temporary_workarea(root_page_id="456789") as workarea:
+            parent_directory = self._local_parent(workarea)
             page = created_page_fixture()
             parent = page_fixture("456789", "Parent page")
             responses = [
@@ -159,8 +162,77 @@ class TestPageCreate(unittest.TestCase):
             with self.assertRaisesRegex(SyncError, "created page '123456'"):
                 self._create(workarea, responses)
 
-            self.assertEqual(list(workarea.page_state_paths()), [])
-            self.assertEqual(list(workarea.root_dir.glob("*")), [workarea.root_dir / ".cflsync"])
+            self.assertEqual(list(workarea.page_state_paths()), ["456789"])
+            self.assertEqual(sorted(path.name for path in parent_directory.iterdir()), ["content.md"])
+
+
+class TestPageCreateInTree(unittest.TestCase):
+    """Creation in a tree of Root (100) with Child (200) below it; Outside (900) is not in the tree."""
+
+    def setUp(self):
+        self.site = FakeConfluence()
+        self.site.add_page("100", "Root")
+        self.site.add_page("200", "Child", parent_id="100")
+        self.site.add_page("900", "Outside")
+
+    def _run(self, workarea, command):
+        return run_with_site(self.site, workarea, command)
+
+    def _pull(self, workarea, *page_ids):
+        for page_id in page_ids:
+            self._run(workarea, lambda: PagePullCommand().run(page_id))
+
+    def _refused(self, workarea, parent_ref, title, error):
+        self.site.requests.clear()
+        with self.assertRaisesRegex(SyncError, error):
+            self._run(workarea, lambda: PageCreateCommand().run(parent_ref, title))
+
+        self.assertEqual([request.method for request in self.site.requests if request.method != "GET"], [])
+        self.assertNotIn(title, [item["title"] for item in self.site.content.values()])
+
+    def test_creates_a_page_below_a_local_parent(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, "100", "200")
+
+            self._run(workarea, lambda: PageCreateCommand().run("200", "New page"))
+
+            created = [item for item in self.site.content.values() if item["title"] == "New page"]
+            self.assertEqual([item["parent_id"] for item in created], ["200"])
+            self.assertTrue((workarea.root_dir / "Root" / "Child" / "New page" / "content.md").is_file())
+            self.assertEqual(PageState.load(workarea.cache_path(created[0]["id"])).page.parent_id, "200")
+
+    def test_refuses_a_parent_that_is_not_local_before_creating(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, "100")
+
+            self._refused(
+                workarea, "200", "New page", r"parent page 'Child' \(200\) is not present locally; run: cflsync page pull 200")
+
+    def test_refuses_a_parent_whose_directory_is_missing_before_creating(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, "100", "200")
+            shutil.rmtree(workarea.root_dir / "Root" / "Child")
+
+            self._refused(workarea, "200", "New page", r"run: cflsync page pull --force 200")
+
+    def test_refuses_an_existing_unmanaged_entry_before_creating(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, "100")
+            (workarea.root_dir / "Root" / "new page").mkdir()
+
+            self._refused(workarea, "100", "New page", "page directory 'Root/New page' already exists")
+
+    def test_refuses_a_name_used_by_a_cached_sibling_before_creating(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, "100", "200")
+
+            self._refused(workarea, "100", "child", r"a sibling page \('200'\) already uses directory 'Root/child'")
+
+    def test_refuses_a_parent_outside_the_tree_before_creating(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, "100")
+
+            self._refused(workarea, "900", "New page", "page '900' is not found in this workarea")
 
 
 # vim: set ts=4 sw=4 et tw=132:
