@@ -207,19 +207,35 @@ class TestPageCreateInTree(unittest.TestCase):
             self.assertTrue((workarea.root_dir / "Root" / "Child" / "New page" / "content.md").is_file())
             self.assertEqual(PageState.load(workarea.cache_path(created[0]["id"])).page.parent_id, "200")
 
-    def test_refuses_a_parent_that_is_not_local_before_creating(self) -> None:
+    def test_pulls_a_missing_parent_chain_before_creating(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
-            self._pull(workarea, "100")
+            output = self._run(workarea, lambda: PageCreateCommand().run("200", "New page"))
 
-            self._refused(
-                workarea, "200", "New page", r"parent page 'Child' \(200\) is not present locally; run: cflsync page pull 200")
+            created = [item for item in self.site.content.values() if item["title"] == "New page"]
+            self.assertEqual(output, "Pulled parent 'Root' (100) to Root\nPulled parent 'Child' (200) to Root/Child\n")
+            self.assertEqual([item["parent_id"] for item in created], ["200"])
+            self.assertTrue((workarea.root_dir / "Root" / "Child" / "New page" / "content.md").is_file())
 
-    def test_refuses_a_parent_whose_directory_is_missing_before_creating(self) -> None:
+    def test_restores_a_missing_cached_parent_before_creating(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea, "100", "200")
             shutil.rmtree(workarea.root_dir / "Root" / "Child")
 
-            self._refused(workarea, "200", "New page", r"run: cflsync page pull --force 200")
+            output = self._run(workarea, lambda: PageCreateCommand().run("200", "New page"))
+
+            self.assertEqual(output, "Pulled parent 'Child' (200) to Root/Child\n")
+            self.assertTrue((workarea.root_dir / "Root" / "Child" / "New page" / "content.md").is_file())
+
+    def test_keeps_pulled_parents_when_remote_creation_fails(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self.site.fail("POST", "/wiki/api/v2/pages", 503)
+
+            with self.assertRaisesRegex(SyncError, "injected failure"):
+                self._run(workarea, lambda: PageCreateCommand().run("200", "New page"))
+
+            self.assertTrue((workarea.root_dir / "Root" / "Child" / "content.md").is_file())
+            self.assertTrue(workarea.cache_path("100").is_file())
+            self.assertTrue(workarea.cache_path("200").is_file())
 
     def test_refuses_an_existing_unmanaged_entry_before_creating(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:

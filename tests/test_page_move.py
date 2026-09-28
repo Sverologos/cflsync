@@ -143,16 +143,15 @@ class TestPageMove(unittest.TestCase):
 
             self._assert_not_moved(workarea, before)
 
-    def test_refuses_a_new_parent_that_is_not_local_before_the_remote_update(self) -> None:
+    def test_pulls_a_missing_new_parent_chain_before_the_remote_update(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea, ["100", "456789", "123456"])
-            before = self._snapshot(workarea)
 
-            with self.assertRaisesRegex(
-                    SyncError, r"parent page 'New parent' \(987654\) is not present locally; run: cflsync page pull 987654"):
-                self._move(workarea, "987654")
+            output, status = self._move(workarea, "987654")
 
-            self._assert_not_moved(workarea, before)
+            self.assertEqual(status, 0)
+            self.assertEqual(output, "Pulled parent 'New parent' (987654) to Root page/New parent\n")
+            self.assertTrue((workarea.root_dir / "Root page" / "New parent" / "Example page" / "content.md").is_file())
 
     def test_refuses_a_name_used_by_a_cached_sibling_in_the_new_parent_before_the_remote_update(self) -> None:
         self.site.add_page("333333", "Example page", parent_id="987654")
@@ -168,13 +167,17 @@ class TestPageMove(unittest.TestCase):
 
     def test_reports_server_hierarchy_rejection_without_changing_local_state(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
-            self._pull(workarea, ["100", "456789", "123456", "222222"])
+            self._pull(workarea, ["100", "456789", "123456"])
             before = self._snapshot(workarea)
 
             with self.assertRaisesRegex(SyncError, "cannot move page '123456' to parent '222222'.*invalid hierarchy"):
                 self._move(workarea, "222222")
 
-            self.assertEqual(self._snapshot(workarea), before)
+            after = self._snapshot(workarea)
+            self.assertEqual({path: after[path] for path in before}, before)
+            self.assertTrue(
+                (workarea.root_dir / "Root page" / "Current parent" / "Example page" / "Descendant" / "content.md").is_file())
+            self.assertTrue(workarea.cache_path("222222").is_file())
             self.assertEqual(self.site.content["123456"]["parent_id"], "456789")
 
     def test_reports_an_unchanged_parent_as_a_noop(self) -> None:

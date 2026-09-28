@@ -103,7 +103,7 @@ class PageCreateCommand:
                 raise SyncError(f"parent page '{reference.page_id}' reports no space")
 
             # The new page is pulled below its parent, so both must be possible before it is created remotely.
-            _require_local_parent(workarea, parent.id, api)
+            PagePullCommand()._install_ancestors(workarea, api, parent.id, PandocRunner(), include_page=True)
             workarea.page_directory_target(None, parent.id, workarea.page_directory_name(title))
             page = api.create_page(parent.space_id, parent.id, title)
         except (OSError, UnicodeError) as error:
@@ -133,13 +133,17 @@ class PagePullCommand:
             reference = PageRef.resolve(page_ref, workarea, api)
             page = api.get_page(reference.page_id)
             pandoc = PandocRunner()
-            plan = InstallationPlan.for_ancestors(workarea, api, page.id)
-            plan.install(lambda planned: self._pull_planned(workarea, planned, pandoc, api))
+            self._install_ancestors(workarea, api, page.id, pandoc)
             self._pull(workarea, page, pandoc, api, force)
         except (OSError, UnicodeError) as error:
             raise SyncError(f"cannot pull page: {filesystem_error_message(error)}") from error
 
         return 0
+
+    def _install_ancestors(self, workarea, api, page_id, pandoc, include_page=False) -> None:
+        """Plan and install missing ancestors of *page_id*, optionally including that page."""
+        plan = InstallationPlan.for_ancestors(workarea, api, page_id, include_page=include_page)
+        plan.install(lambda planned: self._pull_planned(workarea, planned, pandoc, api))
 
     def _pull_planned(self, workarea, planned: PlannedPage, pandoc, api) -> None:
         """Install one missing ancestor at its planned cached or remote location."""
@@ -444,7 +448,7 @@ class PageMoveCommand:
             raise SyncError(f"page '{page.id}' has no ADF body")
 
         # The page directory moves into its new parent's directory, so both must be possible before the remote update.
-        _require_local_parent(workarea, parent.id, api)
+        PagePullCommand()._install_ancestors(workarea, api, parent.id, pandoc, include_page=True)
         workarea.page_directory_target(page.id, parent.id, state.page.directory)
         try:
             updated = page.update(page.body, parent_id=parent.id)
