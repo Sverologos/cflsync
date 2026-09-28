@@ -34,9 +34,14 @@ well. `page push` finds the identified page's local state at
 `page rename PAGE_REF TITLE` requires the referenced managed page to be in
 sync. It updates the remote title with optimistic concurrency, rewrites the
 generated title heading, renames the title-derived local directory, and writes
-the updated cache state. `TITLE` must be non-empty, single-line text without
-surrounding whitespace. It is the explicit local-title operation; `page push`
-continues to reject an edited title heading.
+the updated cache state. The directory keeps its parent; child page directories
+and unmanaged files move with it, and only the renamed page's cache entry
+changes. The new directory name must be free in the parent directory, which is
+checked before the remote update. If the remote rename succeeds but the local
+update fails, local files are restored and the command reports incomplete
+synchronization; `page pull` then completes the rename. `TITLE` must be
+non-empty, single-line text without surrounding whitespace. It is the explicit
+local-title operation; `page push` continues to reject an edited title heading.
 
 `page move PAGE_REF NEW_PARENT_REF` requires the referenced managed page to be
 in sync. `NEW_PARENT_REF` resolves to a remote page, which need not be managed

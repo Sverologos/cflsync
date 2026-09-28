@@ -201,5 +201,65 @@ class TestPageRenameInTree(unittest.TestCase):
             self.assertEqual(self.site.content["400"]["title"], "Other")
             self.assertTrue((workarea.root_dir / "Root" / "Other" / "content.md").is_file())
 
+    def _snapshot(self, workarea):
+        return {
+            str(path.relative_to(workarea.root_dir)): path.read_bytes() if path.is_file() else None
+            for path in workarea.root_dir.rglob("*")}
+
+    def test_renames_the_root_page_with_the_whole_tree(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, "100", "200", "300")
+
+            run_with_site(self.site, workarea, lambda: PageRenameCommand().run("100", "Renamed root"))
+
+            self.assertEqual([path.name for path in workarea.root_dir.iterdir() if path.name != ".cflsync"], ["Renamed root"])
+            self.assertTrue((workarea.root_dir / "Renamed root" / "Child" / "Grandchild" / "content.md").is_file())
+            self.assertEqual(workarea.page_tree().directory("300"), "Renamed root/Child/Grandchild")
+            self.assertEqual(self.site.content["100"]["title"], "Renamed root")
+
+    def test_writes_only_the_renamed_page_cache_entry_and_carries_descendant_edits(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, "100", "200", "300")
+            grandchild = workarea.root_dir / "Root" / "Child" / "Grandchild" / "content.md"
+            grandchild.write_text("# Grandchild\n\nLocal edit\n", encoding="utf-8")
+            cached = {page_id: workarea.cache_path(page_id).read_bytes() for page_id in ["100", "300"]}
+
+            run_with_site(self.site, workarea, lambda: PageRenameCommand().run("200", "Renamed child"))
+
+            self.assertEqual({page_id: workarea.cache_path(page_id).read_bytes() for page_id in ["100", "300"]}, cached)
+            moved = workarea.root_dir / "Root" / "Renamed child" / "Grandchild" / "content.md"
+            self.assertEqual(moved.read_text(encoding="utf-8"), "# Grandchild\n\nLocal edit\n")
+
+    def test_refuses_an_unmanaged_entry_in_the_parent_before_the_remote_update(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, "100", "200")
+            (workarea.root_dir / "Root" / "renamed child").mkdir()
+            before = self._snapshot(workarea)
+
+            with self.assertRaisesRegex(SyncError, "page directory 'Root/Renamed child' already exists"):
+                run_with_site(self.site, workarea, lambda: PageRenameCommand().run("200", "Renamed child"))
+
+            self.assertEqual(self._snapshot(workarea), before)
+            self.assertEqual(self.site.content["200"]["title"], "Child")
+
+    def test_failed_cache_write_restores_the_subtree_and_reports_the_remote_rename(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, "100", "200", "300")
+            before = self._snapshot(workarea)
+
+            with patch.object(PageState, "save", side_effect=SyncError("injected state failure")):
+                with self.assertRaisesRegex(SyncError,
+                                            "renamed page '200' remotely but could not update local state: injected state failure; "
+                                            "run: cflsync page pull 200"):
+                    run_with_site(self.site, workarea, lambda: PageRenameCommand().run("200", "Renamed child"))
+
+            self.assertEqual(self._snapshot(workarea), before)
+            self.assertEqual(self.site.content["200"]["title"], "Renamed child")
+
+            self._pull(workarea, "200")
+
+            self.assertTrue((workarea.root_dir / "Root" / "Renamed child" / "Grandchild" / "content.md").is_file())
+            self.assertEqual(PageState.load(workarea.cache_path("200")).page.title, "Renamed child")
+
 
 # vim: set ts=4 sw=4 et tw=132:

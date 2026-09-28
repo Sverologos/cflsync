@@ -359,8 +359,13 @@ class PageRenameCommand:
             renamed_state = PageState(
                 PageMetadata(updated.id, updated.title, state.page.parent_id, directory_name, updated.version, content_hash),
                 state.attachments)
-            with workarea.replace_page(staging, target, directory):
-                renamed_state.save(cache_path)
+            try:
+                with workarea.replace_page(staging, target, directory):
+                    renamed_state.save(cache_path)
+            except (OSError, SyncError) as error:
+                raise SyncError(
+                    f"renamed page '{page.id}' remotely but could not update local state: {filesystem_error_message(error)}; "
+                    f"run: cflsync page pull {page.id}") from error
         finally:
             if staging.exists():
                 shutil.rmtree(staging)
