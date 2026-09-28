@@ -57,6 +57,9 @@ class TestPageCreate(unittest.TestCase):
                 "id": "456789",
                 "type": "page"}]}),
             MockResponse.from_json(page),
+            MockResponse.from_json({"results": [{
+                "id": "456789",
+                "type": "page"}]}),
             MockResponse.from_json({"results": attachments}), *[MockResponse(200, {}, b"PNG") for attachment in attachments], ]
 
     def test_rejects_invalid_titles_before_any_request(self) -> None:
@@ -156,6 +159,9 @@ class TestPageCreate(unittest.TestCase):
                     "id": "456789",
                     "type": "page"}]}),
                 MockResponse.from_json(page),
+                MockResponse.from_json({"results": [{
+                    "id": "456789",
+                    "type": "page"}]}),
                 MockResponse.from_json({"message": "attachments unavailable"}, 503),
                 MockResponse.from_json({"message": "attachments unavailable"}, 503), ]
 

@@ -378,30 +378,22 @@ class TestPagePullNesting(unittest.TestCase):
                 [None, "100", "200"])
             self.assertEqual(workarea.page_tree().directory("300"), "Root/Child/Grandchild")
 
-    def test_requires_the_parent_page_to_be_local(self) -> None:
+    def test_pulls_missing_ancestors_before_the_requested_page(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
-            with self.assertRaisesRegex(SyncError,
-                                        r"parent page 'Root' \(100\) is not present locally; run: cflsync page pull 100"):
-                self._pull(workarea, "200")
+            output = run_with_site(self.site, workarea, lambda: PagePullCommand().run("300"))
 
-            self._pull(workarea, "100")
-            before = self._snapshot(workarea)
-            with self.assertRaisesRegex(SyncError,
-                                        r"parent page 'Child' \(200\) is not present locally; run: cflsync page pull 200"):
-                self._pull(workarea, "300")
+            self.assertEqual(output, "Pulled parent 'Root' (100) to Root\nPulled parent 'Child' (200) to Root/Child\n")
+            self.assertTrue((workarea.root_dir / "Root" / "Child" / "Grandchild" / "content.md").is_file())
 
-            self.assertEqual(self._snapshot(workarea), before)
-
-    def test_requires_the_parent_directory_to_exist(self) -> None:
+    def test_restores_a_cached_ancestor_with_a_missing_directory(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea, "100", "200")
             shutil.rmtree(workarea.root_dir / "Root" / "Child")
 
-            with self.assertRaisesRegex(SyncError,
-                                        r"directory of parent page 'Child' \(200\) is missing; run: cflsync page pull --force 200"):
-                self._pull(workarea, "300")
+            output = run_with_site(self.site, workarea, lambda: PagePullCommand().run("300"))
 
-            self.assertFalse(workarea.cache_path("300").exists())
+            self.assertEqual(output, "Pulled parent 'Child' (200) to Root/Child\n")
+            self.assertTrue((workarea.root_dir / "Root" / "Child" / "Grandchild" / "content.md").is_file())
 
     def test_relocates_a_page_renamed_remotely_with_its_subtree(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
@@ -438,17 +430,25 @@ class TestPagePullNesting(unittest.TestCase):
             self.assertIn("already in sync", output)
             self.assertTrue((workarea.root_dir / "Root" / "Other" / "Child" / "content.md").is_file())
 
-    def test_refuses_a_move_below_a_parent_that_is_not_local(self) -> None:
+    def test_pulls_a_new_remote_parent_before_relocating(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea, "100", "200")
             self._remote_change("200", parent_id="400")
-            before = self._snapshot(workarea)
 
-            with self.assertRaisesRegex(SyncError,
-                                        r"parent page 'Other' \(400\) is not present locally; run: cflsync page pull 400"):
-                self._pull(workarea, "200")
+            output = run_with_site(self.site, workarea, lambda: PagePullCommand().run("200"))
 
-            self.assertEqual(self._snapshot(workarea), before)
+            self.assertEqual(output, "Pulled parent 'Other' (400) to Root/Other\n")
+            self.assertTrue((workarea.root_dir / "Root" / "Other" / "Child" / "content.md").is_file())
+
+    def test_force_does_not_apply_to_cached_ancestors(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, "100")
+            root = workarea.root_dir / "Root" / "content.md"
+            root.write_text("# Root\n\nLocal edit\n", encoding="utf-8")
+
+            self._pull(workarea, "300", force=True)
+
+            self.assertEqual(root.read_text(encoding="utf-8"), "# Root\n\nLocal edit\n")
 
     def test_refuses_a_name_used_by_a_cached_sibling(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:

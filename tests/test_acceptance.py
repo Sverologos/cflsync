@@ -469,11 +469,10 @@ class TestTreeAcceptanceWorkflow(unittest.TestCase):
             root.mkdir()
             self._succeeds(root, "init", "Root")
 
-            status, _, errors = self._run(root, "page", "pull", "300")
-            self.assertEqual(status, 1)
-            self.assertIn("parent page 'Child' (200) is not present locally; run: cflsync page pull 200", errors)
+            output = self._succeeds(root, "page", "pull", "300")
+            self.assertEqual(output, "Pulled parent 'Root' (100) to Root\nPulled parent 'Child' (200) to Root/Child\n")
 
-            for page_id in ["100", "200", "300", "400"]:
+            for page_id in ["100", "200", "400"]:
                 self._succeeds(root, "page", "pull", page_id)
 
             tree = root / "Root"

@@ -109,8 +109,8 @@ class TestInstallationPlan(unittest.TestCase):
 
     def test_executor_reports_completed_pages_after_a_partial_failure(self) -> None:
         pages = [
-            PlannedPage(remote_page("100", "Root", None), "Root", False),
-            PlannedPage(remote_page("200", "Child", "100"), "Root/Child", False), ]
+            PlannedPage(remote_page("100", "Root", None), None, "Root", "Root", False),
+            PlannedPage(remote_page("200", "Child", "100"), "100", "Child", "Root/Child", False), ]
         plan = InstallationPlan(pages)
         installed = []
 

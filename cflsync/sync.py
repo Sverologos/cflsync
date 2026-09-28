@@ -131,12 +131,15 @@ def _link_targets(value: object) -> Iterator[str]:
 class PlannedPage:
     """One planned page installation.
 
-    *directory* is relative to the workarea root, with "/" separators. *restore* is true for a cached page whose
-    directory is missing, and false for a page that is not cached yet.
+    *parent_id* and *directory_name* are the location that the installer must persist. *directory* is its path
+    relative to the workarea root, with "/" separators. *restore* is true for a cached page whose directory is
+    missing, and false for a page that is not cached yet.
     """
 
-    def __init__(self, page, directory: str, restore: bool) -> None:
+    def __init__(self, page, parent_id: str | None, directory_name: str, directory: str, restore: bool) -> None:
         self.page = page
+        self.parent_id = parent_id
+        self.directory_name = directory_name
         self.directory = directory
         self.restore = restore
 
@@ -193,7 +196,7 @@ class InstallationPlan:
             if parent_id not in planned:
                 workarea.page_directory_target(chain_id, parent_id, name)
 
-            planned[chain_id] = PlannedPage(page, directory, cached is not None)
+            planned[chain_id] = PlannedPage(page, parent_id, name, directory, cached is not None)
             pages.append(planned[chain_id])
 
         return cls(pages)

@@ -21,7 +21,7 @@ from .api import APIClient, APIError
 from .config import Config, Profile
 from .convert import ADFToMarkdownConverter, MarkdownToADFConverter, PandocRunner
 from .errors import SyncError
-from .sync import PageInspector
+from .sync import InstallationPlan, PageInspector, PlannedPage
 from .workarea import (
     CONTENT_FILENAME, AttachmentMetadata, MediaResolver, PageMetadata, PageRef, PageState, Workarea, filesystem_error_message)
 
@@ -132,13 +132,28 @@ class PagePullCommand:
             workarea, api = _open_workarea()
             reference = PageRef.resolve(page_ref, workarea, api)
             page = api.get_page(reference.page_id)
-            self._pull(workarea, page, PandocRunner(), api, force)
+            pandoc = PandocRunner()
+            plan = InstallationPlan.for_ancestors(workarea, api, page.id)
+            plan.install(lambda planned: self._pull_planned(workarea, planned, pandoc, api))
+            self._pull(workarea, page, pandoc, api, force)
         except (OSError, UnicodeError) as error:
             raise SyncError(f"cannot pull page: {filesystem_error_message(error)}") from error
 
         return 0
 
-    def _pull(self, workarea, page, pandoc, api, force=False):
+    def _pull_planned(self, workarea, planned: PlannedPage, pandoc, api) -> None:
+        """Install one missing ancestor at its planned cached or remote location."""
+        self._pull(
+            workarea,
+            planned.page,
+            pandoc,
+            api,
+            force=planned.restore,
+            parent_id=planned.parent_id,
+            directory_name=planned.directory_name,
+            directory=planned.directory)
+
+    def _pull(self, workarea, page, pandoc, api, force=False, parent_id=None, directory_name=None, directory=None):
         inspector = PageInspector(pandoc)
         attachments = page.attachments()
         MediaResolver((attachment.filename, attachment.id) for attachment in attachments)
@@ -146,13 +161,16 @@ class PagePullCommand:
         media = MediaResolver(
             (attachment.filename, attachment.file_id) for attachment in attachments if attachment.file_id is not None)
         cache_path = workarea.cache_path(page.id)
-        # The root page's parent is outside the workarea; every other page is placed below its parent.
-        parent_id = None if page.id == workarea.root_page_id else page.parent_id
+        # The root page's parent is outside the workarea; every other page is placed below its parent. A planner may
+        # restore a cached ancestor at its cached location, despite remote hierarchy or title changes.
+        if directory is None:
+            parent_id = None if page.id == workarea.root_page_id else page.parent_id
+            directory_name = workarea.page_directory_name(page.title)
+            directory = workarea.relative_directory(parent_id, directory_name)
+
         if parent_id is not None:
             _require_local_parent(workarea, parent_id, api)
 
-        directory_name = workarea.page_directory_name(page.title)
-        directory = workarea.relative_directory(parent_id, directory_name)
         previous = None
         source = None
         if cache_path.exists():
