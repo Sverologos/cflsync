@@ -19,6 +19,7 @@ from tempfile import NamedTemporaryFile, mkdtemp
 from typing import Self
 from urllib.parse import quote
 
+from .api import APIError
 from .errors import SyncError
 
 # The Markdown file in each page directory. The name is not page-specific, to allow other content types later.
@@ -889,8 +890,16 @@ class PageRef:
 
         states = _cached_states(workarea)
         if text.isdigit():
-            page_id = api.get_page(text).id
+            try:
+                page_id = api.get_page(text).id
+            except APIError as error:
+                if error.status == 404 and text == workarea.root_page_id:
+                    raise _root_missing_error(workarea) from error
+
+                raise
+
             if page_id not in states and not workarea.contains(page_id, api):
+                _require_root_page(workarea, api)
                 raise PageRefError(
                     f"page '{page_id}' is not found in this workarea, which is anchored at page '{workarea.root_page_id}'")
 
@@ -902,6 +911,9 @@ class PageRef:
 
         pages = [page for page in api.find_pages_by_title(text) if page.title == text]
         page_ids = [page.id for page in pages if workarea.contains(page.id, api)]
+        if not page_ids:
+            _require_root_page(workarea, api)
+
         return cls(_one_page_ref_id(page_ids, f"title '{text}' in this workarea"))
 
     @classmethod
@@ -964,6 +976,23 @@ def _page_ref_path(value: str | Path, cwd: Path | None) -> Path:
 
 def _cached_states(workarea):
     return {page_id: PageState.load(path) for page_id, path in workarea.page_state_paths().items()}
+
+
+def _require_root_page(workarea, api):
+    # A reference outside the tree may be explained by a root page that no longer exists, for example after removing it.
+    try:
+        api.get_page(workarea.root_page_id)
+    except APIError as error:
+        if error.status == 404:
+            raise _root_missing_error(workarea) from error
+
+        raise
+
+
+def _root_missing_error(workarea):
+    return PageRefError(
+        f"root page '{workarea.root_page_id}' of this workarea no longer exists; to re-use this directory, delete "
+        f"'{workarea.cflsync_dir}' and run 'cflsync init ROOT_PAGE_REF'")
 
 
 def _one_cached_page_id(page_ids, title, states, workarea):

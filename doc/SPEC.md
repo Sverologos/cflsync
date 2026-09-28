@@ -58,7 +58,13 @@ completes the move.
 and cache entry. It confirms removal unless `--force` is supplied. When the
 remote page exists, the command requires it to be synchronized, deletes it,
 then removes the local directory and cache entry. A remote 404 is treated as
-an already-removed remote page, so only the local copy is removed.
+an already-removed remote page, so only the local copy is removed. A page with
+child pages, cached locally or existing remotely, is refused before the
+confirmation; its children must be removed first. Removing the root page, once
+it has no children, leaves an empty workarea: only `.cflsync`, with its
+profile, root page ID, and an empty cache, remains. Commands that then refer to
+pages report that the root page no longer exists; the directory can be re-used
+by deleting `.cflsync` and running `init` again.
 
 `page create PARENT_PAGE_REF TITLE` resolves `PARENT_PAGE_REF`, creates an
 empty child page remotely, then runs the equivalent of `page pull` for its

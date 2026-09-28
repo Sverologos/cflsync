@@ -477,6 +477,7 @@ class PageRemoveCommand:
                     raise
                 page = None
 
+            self._require_no_children(workarea, state, page, api)
             if page is not None:
                 changes = PageInspector(PandocRunner()).inspect(workarea.page_directory(state), state, page, page.attachments())
                 if changes.locally or changes.remotely:
@@ -498,6 +499,17 @@ class PageRemoveCommand:
             raise SyncError(f"cannot remove page: {filesystem_error_message(error)}") from error
 
         return 0
+
+    def _require_no_children(self, workarea, state, page, api):
+        # Removing a page with children is not supported yet; its directory contains theirs.
+        children = {page_id for page_id, other in workarea.page_tree().states.items() if other.page.parent_id == state.page.id}
+        if page is not None:
+            children.update(child.id for child in api.page_children(page.id))
+
+        if len(children) == 1:
+            raise SyncError(f"page '{state.page.id}' has 1 child page; remove it first")
+        if children:
+            raise SyncError(f"page '{state.page.id}' has {len(children)} child pages; remove them first")
 
     def _confirm(self, state: PageState, remote_exists: bool) -> bool:
         scope = "remote and local copy of" if remote_exists else "local copy of"

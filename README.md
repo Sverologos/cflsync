@@ -79,7 +79,10 @@ page cannot be moved.
 
 Use `page remove PAGE_REF` to delete a managed local page and its remote page.
 It asks for confirmation unless `--force` is supplied. If the remote page no
-longer exists, it removes only the local page and cache state.
+longer exists, it removes only the local page and cache state. Pages with child
+pages cannot be removed yet; remove the children first. Removing the root page
+leaves an empty workarea, which can be re-used by deleting `.cflsync` and
+running `init` again.
 
 Use `cflsync --help` for top-level help, `cflsync page --help` for page-command
 help, and `cflsync page COMMAND --help` for a command's arguments.

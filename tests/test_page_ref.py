@@ -147,7 +147,7 @@ class TestPageRefTitles(unittest.TestCase):
 
     def test_rejects_zero_or_multiple_remote_title_candidates(self) -> None:
         with temporary_workarea() as workarea:
-            no_match_api = FakeAPI()
+            no_match_api = FakeAPI(page_ids=["123456"])
             with self.assertRaisesRegex(PageRefError, "no page matches"):
                 PageRef.resolve("Missing", workarea, no_match_api, cwd=workarea.root_dir)
 
