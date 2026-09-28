@@ -136,7 +136,7 @@ class TestPagePull(unittest.TestCase):
         with temporary_workarea() as workarea:
             self._pull(workarea)
             output = StringIO()
-            with patch("cflsync.cli.ADFToMarkdownConverter.convert", return_value="# Example page\n\nRegenerated\n"):
+            with patch("cflsync.sync.ADFToMarkdownConverter.convert", return_value="# Example page\n\nRegenerated\n"):
                 with redirect_stdout(output):
                     transport = self._pull(workarea, force=True)
 

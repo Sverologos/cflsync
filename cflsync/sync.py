@@ -31,9 +31,12 @@
 # Execute:
 #
 # - If any ``conflict`` entry exists, abort unless ``--force`` was specified.
-# - For pull (not implemented yet), walk the statuses parents before children. Execute ``remote-changed`` and
-#   ``absent-local``; with ``--force``, also execute ``conflict`` and ``unchanged`` entries as pulls; skip every other
-#   entry.
+# - For pull (RepositoryPullOperation), walk the statuses parents before children, since a page directory lives inside
+#   its parent's. Execute ``remote-changed`` and ``absent-local`` entries (an ``absent-local`` entry with cached state
+#   restores the missing directory); with ``--force``, also execute ``conflict`` and ``unchanged`` entries as pulls.
+#   Each pull places the page below its current remote parent and relocates its directory, with its subtree, after a
+#   remote rename or move. A page below a page that failed is blocked. Skip ``local-changed`` entries. Keep
+#   ``absent-remote`` entries unchanged and report them last, after every relocation out of their directories.
 # - For push (RepositoryPushOperation), walk the statuses parents before children; a page push changes no hierarchy, so
 #   order is only deterministic. Execute ``local-changed`` entries; with ``--force``, also execute ``conflict`` and
 #   ``unchanged`` entries as pushes. Never push ``absent-remote`` entries; recreate those pages with ``page create``
@@ -48,13 +51,14 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import shutil
 
 from collections.abc import Callable, Iterator, Mapping
 from enum import StrEnum
 from graphlib import CycleError, TopologicalSorter
 
 from .api import APIError, RemoteContentRef
-from .convert import MarkdownToADFConverter, PandocRunner
+from .convert import ADFToMarkdownConverter, MarkdownToADFConverter, PandocRunner
 from .errors import SyncError
 from .workarea import AttachmentMetadata, CONTENT_FILENAME, MediaResolver, PageMetadata, PageState, Workarea, filesystem_error_message
 
@@ -98,7 +102,7 @@ class PageOperationResults:
 
         counts = {
             outcome: sum(result.outcome == outcome for result in self.pages)
-            for outcome in ["pushed", "unchanged", "skipped", "failed"]}
+            for outcome in ["pulled", "pushed", "unchanged", "skipped", "kept", "blocked", "failed"]}
         summary = ", ".join(f"{count} {outcome}" for outcome, count in counts.items() if count)
         print(f"Summary: {summary}.")
 
@@ -444,6 +448,189 @@ class RepositoryPushOperation:
                 results.add(page_status.id, page_status.title, "skipped", page_status.status)
 
         return results
+
+
+class PagePullOperation:
+    """The reusable remote-to-local synchronization operation for one page."""
+
+    def __init__(self, pandoc: PandocRunner | None = None) -> None:
+        self._pandoc = pandoc or PandocRunner()
+        self._detector = PageChangeDetector(self._pandoc)
+
+    def install_ancestors(self, workarea: Workarea, api, page_id: str, include_page: bool = False) -> None:
+        """Plan and install the locally missing ancestors of *page_id*, optionally including that page."""
+        plan = InstallationPlan.for_ancestors(workarea, api, page_id, include_page=include_page)
+        plan.install(lambda planned: self._pull_planned(workarea, api, planned))
+
+    def _pull_planned(self, workarea, api, planned: PlannedPage) -> None:
+        # A planned ancestor is installed at its planned location; a cached one is restored there.
+        self.pull(
+            workarea,
+            api,
+            planned.page,
+            force=planned.restore,
+            parent_id=planned.parent_id,
+            directory_name=planned.directory_name,
+            directory=planned.directory)
+
+    def pull(
+            self,
+            workarea: Workarea,
+            api,
+            page,
+            force: bool = False,
+            parent_id: str | None = None,
+            directory_name: str | None = None,
+            directory: str | None = None) -> bool:
+        """Install or update the local copy of remote *page*, returning whether anything was pulled.
+
+        The page is placed below its remote parent, which must be present locally, unless *directory* gives a
+        planned location. Without *force*, local changes conflict, and a page that is in sync and in place is left
+        alone. With *force*, remote content is preferred and a missing local directory is restored.
+        """
+        attachments = page.attachments()
+        MediaResolver((attachment.filename, attachment.id) for attachment in attachments)
+        # ADF media nodes reference attachments by file ID, not by attachment ID.
+        media = MediaResolver(
+            (attachment.filename, attachment.file_id) for attachment in attachments if attachment.file_id is not None)
+        cache_path = workarea.cache_path(page.id)
+        # The root page's parent is outside the workarea; every other page is placed below its parent. A planner may
+        # restore a cached ancestor at its cached location, despite remote hierarchy or title changes.
+        if directory is None:
+            parent_id = None if page.id == workarea.root_page_id else page.parent_id
+            directory_name = workarea.page_directory_name(page.title)
+            directory = workarea.relative_directory(parent_id, directory_name)
+
+        assert directory_name is not None
+        if parent_id is not None:
+            _require_local_parent(workarea, parent_id, api)
+
+        previous = None
+        source = None
+        if cache_path.exists():
+            previous = PageState.load(cache_path)
+            source = workarea.page_directory(previous, must_exist=not force)
+            if force and not source.exists():
+                source = None
+
+            if not force:
+                if self._detector.local_status(source, previous) != PageChangeStatus.UNCHANGED:
+                    raise SyncError(f"page '{page.id}' has local changes; pull conflicts")
+
+                # A page moved or renamed remotely is relocated even when its content is unchanged.
+                if self._detector.remote_status(
+                        page, attachments,
+                        previous) == PageChangeStatus.UNCHANGED and source == workarea.page_directory_path(directory):
+                    return False
+
+        # Cached siblings count even when their directories are missing.
+        workarea.page_directory_target(page.id, parent_id, directory_name)
+
+        try:
+            document = json.loads(page.body)
+        except (TypeError, json.JSONDecodeError) as error:
+            raise SyncError(f"page '{page.id}' has invalid ADF JSON") from error
+
+        if not isinstance(document, dict):
+            raise SyncError(f"page '{page.id}' ADF must be an object")
+
+        markdown = ADFToMarkdownConverter(self._pandoc, media, api.get_user).convert(document, title=page.title)
+        bodies = {}
+        metadata = {}
+        for attachment in attachments:
+            body = attachment.download()
+            bodies[attachment.filename] = body
+            metadata[attachment.filename] = AttachmentMetadata(attachment.id, attachment.version, hashlib.sha256(body).hexdigest())
+
+        state = PageState(
+            PageMetadata(page.id, page.title, parent_id, directory_name, page.version, self._detector.content_hash(markdown)),
+            metadata)
+        managed: Mapping[str, AttachmentMetadata] = {}
+        if previous is not None:
+            managed = previous.attachments
+
+        staging = workarea.stage_page(directory, markdown, bodies, source=source, managed_attachments=managed)
+        try:
+            with workarea.replace_page(staging, directory, source, set(managed) | set(bodies)):
+                state.save(cache_path)
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging)
+
+        return True
+
+
+class RepositoryPullOperation:
+    """Apply page pull operations to a complete tree-status comparison."""
+
+    def __init__(self, page_pull: PagePullOperation | None = None) -> None:
+        self._page_pull = page_pull or PagePullOperation()
+
+    def pull(self, workarea: Workarea, api, status: TreeStatus, force: bool = False) -> PageOperationResults:
+        """Pull remotely changed and missing pages parents first, rejecting detected conflicts unless *force*.
+
+        A page below a page that failed is blocked. Cached pages absent from the tree are kept and reported.
+        """
+        if not force and any(page.status is PageStatusState.CONFLICT for page in status.pages):
+            raise SyncError("repository pull conflicts; resolve conflicts or use --force")
+
+        results = PageOperationResults()
+        unsuccessful: set[str] = set()
+        pulled = {PageStatusState.ABSENT_LOCAL, PageStatusState.REMOTE_CHANGED}
+        if force:
+            pulled |= {PageStatusState.CONFLICT, PageStatusState.UNCHANGED}
+
+        for page_status in status.pages:
+            if page_status.status is PageStatusState.ABSENT_REMOTE:
+                continue
+
+            if page_status.parent_id in unsuccessful:
+                unsuccessful.add(page_status.id)
+                results.add(page_status.id, page_status.title, "blocked", f"parent page '{page_status.parent_id}' was not pulled")
+                continue
+
+            if page_status.status not in pulled:
+                if page_status.status is PageStatusState.UNCHANGED:
+                    results.add(page_status.id, page_status.title, "unchanged")
+                else:
+                    results.add(page_status.id, page_status.title, "skipped", page_status.status)
+                continue
+
+            # A cached page whose directory is missing has no local content to protect, so it is restored.
+            restore = page_status.status is PageStatusState.ABSENT_LOCAL and page_status.local is not None
+            try:
+                changed = self._page_pull.pull(workarea, api, api.get_page(page_status.id), force=force or restore)
+            except (OSError, UnicodeError) as error:
+                unsuccessful.add(page_status.id)
+                results.add(page_status.id, page_status.title, "failed", filesystem_error_message(error))
+            except SyncError as error:
+                unsuccessful.add(page_status.id)
+                results.add(page_status.id, page_status.title, "failed", str(error))
+            else:
+                results.add(page_status.id, page_status.title, "pulled" if changed else "unchanged")
+
+        # Absent pages are reported last, after every relocation out of their directories has been applied.
+        for page_status in status.pages:
+            if page_status.status is PageStatusState.ABSENT_REMOTE:
+                results.add(
+                    page_status.id, page_status.title, "kept",
+                    "no longer in the tree (deleted or moved outside the root); the local copy is unchanged")
+
+        return results
+
+
+def _require_local_parent(workarea, parent_id, api):
+    # A page directory can only be placed inside its parent's page directory.
+    cache_path = workarea.cache_path(parent_id)
+    if not cache_path.exists():
+        parent = api.get_page(parent_id)
+        raise SyncError(f"parent page '{parent.title}' ({parent_id}) is not present locally; run: cflsync page pull {parent_id}")
+
+    parent_state = PageState.load(cache_path)
+    if not workarea.page_directory(parent_state, must_exist=False).is_dir():
+        raise SyncError(
+            f"the directory of parent page '{parent_state.page.title}' ({parent_id}) is missing; "
+            f"run: cflsync page pull --force {parent_id}")
 
 
 def _pages_by_id(pages, description: str, page_id=lambda page: page.id):

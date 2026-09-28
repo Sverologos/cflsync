@@ -39,6 +39,7 @@ a checkout as `uv run python -m cflsync`.
 ```text
 cflsync auth [-p PROFILE] [--list | --delete]
 cflsync init [-p PROFILE] ROOT_PAGE_REF
+cflsync pull [-f | --force]
 cflsync push [-f | --force]
 cflsync status
 cflsync page create PARENT_PAGE_REF TITLE
@@ -58,14 +59,14 @@ local `content.md` file, or a managed page directory.
 A workarea manages one Confluence page tree: a root page and the pages below
 it. `init ROOT_PAGE_REF` anchors a new workarea at its root page, given as a
 page ID or exact title; it contacts Confluence with the profile's credentials,
-but does not pull any page. After a successful init, pull any page in the tree.
-cflsync pulls missing ancestor pages first:
+but does not pull any page. After a successful init, pull the whole tree, or
+any single page in it; cflsync pulls missing ancestor pages first:
 
 ```console
 cflsync auth
 mkdir handbook && cd handbook
 cflsync init "Team handbook"
-cflsync page pull "Onboarding"
+cflsync pull
 ```
 
 Each page is a directory containing the page content in `content.md`, its
@@ -102,6 +103,13 @@ changes. Use `page push --force PAGE_REF` to prefer local content. The first
 heading of `content.md` is the page title and cannot be edited; push does not
 rename pages. Use `page rename PAGE_REF TITLE` to change the remote title,
 generated heading, and title-derived local directory as one explicit operation.
+
+Use `pull` to bring the complete remote page tree into the workarea. It pulls
+pages that changed remotely or are missing locally, parents first, moves
+directories after remote renames and moves, and reports each result and a
+summary. Without `--force`, any conflict aborts the command before a page is
+pulled, and locally changed pages are skipped. `pull --force` also overwrites
+local changes. Pages no longer in the tree are reported but kept locally.
 
 Use `push` to compare the complete remote page tree with the local cache and
 apply page pushes parents before children. It pushes locally changed pages and

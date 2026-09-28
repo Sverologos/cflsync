@@ -6,7 +6,7 @@ A workarea manages one Confluence Cloud page tree, anchored at a root page
 recorded in `.cflsync/root`. Local page directories mirror the page hierarchy,
 and commands only accept pages in the tree. Page commands target one page;
 they pull only its missing ancestors, and a rename or move carries the local
-directories of its children along. Repository commands (`push`, `status`)
+directories of its children along. Repository commands (`pull`, `push`, `status`)
 discover the complete tree, compare it with the cache as a `TreeStatus`, and
 map a page-level operation over its per-page statuses. The `.cflsync` directory is at the workarea root, separate from managed
 page content. The command, storage, and synchronization contracts are

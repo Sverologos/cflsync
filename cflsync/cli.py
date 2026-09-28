@@ -9,8 +9,6 @@
 from __future__ import annotations
 
 import sys
-import hashlib
-import json
 import shutil
 from argparse import ArgumentParser, Namespace, _SubParsersAction
 from collections.abc import Sequence
@@ -19,13 +17,12 @@ from pathlib import Path
 
 from .api import APIClient, APIError
 from .config import Config, Profile
-from .convert import ADFToMarkdownConverter, MarkdownToADFConverter, PandocRunner
+from .convert import MarkdownToADFConverter, PandocRunner
 from .errors import SyncError
 from .sync import (
-    InstallationPlan, PageChangeDetector, PageChangeStatus, PagePushOperation, PageStatus, PageStatusState, PlannedPage,
-    RepositoryPushOperation, TreeStatus)
-from .workarea import (
-    CONTENT_FILENAME, AttachmentMetadata, MediaResolver, PageMetadata, PageRef, PageState, Workarea, filesystem_error_message)
+    PageChangeDetector, PageChangeStatus, PagePullOperation, PagePushOperation, PageStatus, PageStatusState,
+    RepositoryPullOperation, RepositoryPushOperation, TreeStatus)
+from .workarea import (CONTENT_FILENAME, PageMetadata, PageRef, PageState, Workarea, filesystem_error_message)
 
 
 class InitCommand:
@@ -46,7 +43,7 @@ class InitCommand:
         page = api.get_page(reference.page_id)
         Workarea.init(Path.cwd(), page.id, profile)
         print(f"Initialised a workarea anchored at page '{page.id}' ({page.title}), using profile '{profile}'.")
-        print(f"Pull the root page with 'cflsync page pull {page.id}'.")
+        print("Pull the page tree with 'cflsync pull'.")
         return 0
 
 
@@ -68,6 +65,29 @@ class RepositoryPushCommand:
             raise SyncError(f"cannot push workarea: {filesystem_error_message(error)}") from error
 
         results = RepositoryPushOperation().push(workarea, api, status, force)
+        results.report()
+        return 1 if results.failed else 0
+
+
+class RepositoryPullCommand:
+
+    def configure(self, subparsers: _SubParsersAction[ArgumentParser]) -> None:
+        pull_parser = subparsers.add_parser("pull", help="pull every page of the workarea's tree")
+        pull_parser.add_argument(
+            "-f", "--force", action="store_true", help="prefer remote content, overwriting local changes to managed files")
+        pull_parser.set_defaults(command=self)
+
+    def __call__(self, args: Namespace) -> int:
+        return self.run(force=args.force)
+
+    def run(self, force: bool = False) -> int:
+        try:
+            workarea, api = _open_workarea()
+            status = TreeStatus.for_workarea(workarea, api, PageChangeDetector(PandocRunner()))
+        except (OSError, UnicodeError) as error:
+            raise SyncError(f"cannot pull workarea: {filesystem_error_message(error)}") from error
+
+        results = RepositoryPullOperation().pull(workarea, api, status, force)
         results.report()
         return 1 if results.failed else 0
 
@@ -163,7 +183,7 @@ class PageCreateCommand:
                 raise SyncError(f"parent page '{reference.page_id}' reports no space")
 
             # The new page is pulled below its parent, so both must be possible before it is created remotely.
-            PagePullCommand()._install_ancestors(workarea, api, parent.id, PandocRunner(), include_page=True)
+            PagePullOperation().install_ancestors(workarea, api, parent.id, include_page=True)
             workarea.page_directory_target(None, parent.id, workarea.page_directory_name(title))
             page = api.create_page(parent.space_id, parent.id, title)
         except (OSError, UnicodeError) as error:
@@ -192,100 +212,16 @@ class PagePullCommand:
             workarea, api = _open_workarea()
             reference = PageRef.resolve(page_ref, workarea, api)
             page = api.get_page(reference.page_id)
-            pandoc = PandocRunner()
-            self._install_ancestors(workarea, api, page.id, pandoc)
-            self._pull(workarea, page, pandoc, api, force)
+            operation = PagePullOperation()
+            operation.install_ancestors(workarea, api, page.id)
+            pulled = operation.pull(workarea, api, page, force)
         except (OSError, UnicodeError) as error:
             raise SyncError(f"cannot pull page: {filesystem_error_message(error)}") from error
 
+        if not pulled:
+            print(f"Page '{page.id}' is already in sync; nothing pulled. Use --force to regenerate local content.")
+
         return 0
-
-    def _install_ancestors(self, workarea, api, page_id, pandoc, include_page=False) -> None:
-        """Plan and install missing ancestors of *page_id*, optionally including that page."""
-        plan = InstallationPlan.for_ancestors(workarea, api, page_id, include_page=include_page)
-        plan.install(lambda planned: self._pull_planned(workarea, planned, pandoc, api))
-
-    def _pull_planned(self, workarea, planned: PlannedPage, pandoc, api) -> None:
-        """Install one missing ancestor at its planned cached or remote location."""
-        self._pull(
-            workarea,
-            planned.page,
-            pandoc,
-            api,
-            force=planned.restore,
-            parent_id=planned.parent_id,
-            directory_name=planned.directory_name,
-            directory=planned.directory)
-
-    def _pull(self, workarea, page, pandoc, api, force=False, parent_id=None, directory_name=None, directory=None):
-        inspector = PageChangeDetector(pandoc)
-        attachments = page.attachments()
-        MediaResolver((attachment.filename, attachment.id) for attachment in attachments)
-        # ADF media nodes reference attachments by file ID, not by attachment ID.
-        media = MediaResolver(
-            (attachment.filename, attachment.file_id) for attachment in attachments if attachment.file_id is not None)
-        cache_path = workarea.cache_path(page.id)
-        # The root page's parent is outside the workarea; every other page is placed below its parent. A planner may
-        # restore a cached ancestor at its cached location, despite remote hierarchy or title changes.
-        if directory is None:
-            parent_id = None if page.id == workarea.root_page_id else page.parent_id
-            directory_name = workarea.page_directory_name(page.title)
-            directory = workarea.relative_directory(parent_id, directory_name)
-
-        if parent_id is not None:
-            _require_local_parent(workarea, parent_id, api)
-
-        previous = None
-        source = None
-        if cache_path.exists():
-            previous = PageState.load(cache_path)
-            source = workarea.page_directory(previous, must_exist=not force)
-            if force and not source.exists():
-                source = None
-
-            if not force:
-                if inspector.local_status(source, previous) != PageChangeStatus.UNCHANGED:
-                    raise SyncError(f"page '{page.id}' has local changes; pull conflicts")
-
-                # A page moved or renamed remotely is relocated even when its content is unchanged.
-                if inspector.remote_status(
-                        page, attachments,
-                        previous) == PageChangeStatus.UNCHANGED and source == workarea.page_directory_path(directory):
-                    print(f"Page '{page.id}' is already in sync; nothing pulled. Use --force to regenerate local content.")
-                    return
-
-        # Cached siblings count even when their directories are missing.
-        workarea.page_directory_target(page.id, parent_id, directory_name)
-
-        try:
-            document = json.loads(page.body)
-        except (TypeError, json.JSONDecodeError) as error:
-            raise SyncError(f"page '{page.id}' has invalid ADF JSON") from error
-
-        if not isinstance(document, dict):
-            raise SyncError(f"page '{page.id}' ADF must be an object")
-
-        markdown = ADFToMarkdownConverter(pandoc, media, api.get_user).convert(document, title=page.title)
-        bodies = {}
-        metadata = {}
-        for attachment in attachments:
-            body = attachment.download()
-            bodies[attachment.filename] = body
-            metadata[attachment.filename] = AttachmentMetadata(attachment.id, attachment.version, hashlib.sha256(body).hexdigest())
-
-        state = PageState(
-            PageMetadata(page.id, page.title, parent_id, directory_name, page.version, inspector.content_hash(markdown)), metadata)
-        managed = ()
-        if previous is not None:
-            managed = previous.attachments
-
-        staging = workarea.stage_page(directory, markdown, bodies, source=source, managed_attachments=managed)
-        try:
-            with workarea.replace_page(staging, directory, source, set(managed) | set(bodies)):
-                state.save(cache_path)
-        finally:
-            if staging.exists():
-                shutil.rmtree(staging)
 
 
 class PagePushCommand:
@@ -445,7 +381,7 @@ class PageMoveCommand:
             raise SyncError(f"page '{page.id}' has no ADF body")
 
         # The page directory moves into its new parent's directory, so both must be possible before the remote update.
-        PagePullCommand()._install_ancestors(workarea, api, parent.id, pandoc, include_page=True)
+        PagePullOperation(pandoc).install_ancestors(workarea, api, parent.id, include_page=True)
         workarea.page_directory_target(page.id, parent.id, state.page.directory)
         try:
             updated = page.update(page.body, parent_id=parent.id)
@@ -642,6 +578,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     subparsers = parser.add_subparsers(title="commands", metavar="command")
     AuthCommand().configure(subparsers)
     InitCommand().configure(subparsers)
+    RepositoryPullCommand().configure(subparsers)
     RepositoryPushCommand().configure(subparsers)
     RepositoryStatusCommand().configure(subparsers)
     PageCommand().configure(subparsers)
@@ -651,20 +588,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     except SyncError as error:
         print(f"{parser.prog}: {error}", file=sys.stderr)
         return 1
-
-
-def _require_local_parent(workarea, parent_id, api):
-    # A page directory can only be placed inside its parent's page directory.
-    cache_path = workarea.cache_path(parent_id)
-    if not cache_path.exists():
-        parent = api.get_page(parent_id)
-        raise SyncError(f"parent page '{parent.title}' ({parent_id}) is not present locally; run: cflsync page pull {parent_id}")
-
-    parent_state = PageState.load(cache_path)
-    if not workarea.page_directory(parent_state, must_exist=False).is_dir():
-        raise SyncError(
-            f"the directory of parent page '{parent_state.page.title}' ({parent_id}) is missing; "
-            f"run: cflsync page pull --force {parent_id}")
 
 
 def _open_workarea():

@@ -5,6 +5,7 @@
 ```text
 cflsync auth [-p PROFILE] [--list | --delete]
 cflsync init [-p PROFILE] ROOT_PAGE_REF
+cflsync pull [-f | --force]
 cflsync push [-f | --force]
 cflsync status
 cflsync page create PARENT_PAGE_REF TITLE
@@ -56,6 +57,21 @@ and must be recreated with `page create`. Each page is reported as pushed,
 unchanged, skipped, or failed, followed by a summary. After conflict preflight,
 the command continues after a per-page failure and exits non-zero if any page
 failed.
+
+`pull` discovers the tree and compares it with the cache in the same way, and
+processes the resulting statuses parents before children. Without `--force`, it
+aborts before any change if a page conflicts, and pulls remotely changed pages
+and pages not present locally, including cached pages whose directory is
+missing. Each pull places the page inside its current remote parent's
+directory and moves its directory, with child pages and unmanaged files, after
+a remote rename or move. Locally changed pages are skipped. With `--force`,
+conflicting and unchanged pages are also pulled, overwriting local changes to
+managed files. A page whose parent could not be pulled is reported as blocked.
+Cached pages that are no longer in the tree, because they were deleted or moved
+outside the root, are kept unchanged and reported last. Each page is reported
+as pulled, unchanged, skipped, blocked, kept, or failed, followed by a summary;
+the command exits non-zero if any page failed. An interrupted pull is completed
+by running it again.
 
 `status` discovers the tree and compares it with the cache in the same way, and
 reports one line per page, parents before children: `not in local` (remote page
@@ -121,8 +137,8 @@ The following situations are refused with an error that explains what to do:
 - A workarea cannot be re-anchored at another root page; after removing the
   root page, delete `.cflsync` and run `init` again.
 - Folders and other non-page content inside the tree are not supported.
-- `push` and `status` are the only commands that act on the whole tree;
-  pulling is done page by page.
+- Cached pages that are no longer in the tree are not deleted locally; remove
+  their directories and cache entries with `page remove`.
 
 ## Page references
 

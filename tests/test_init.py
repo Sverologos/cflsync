@@ -48,7 +48,7 @@ class TestInitCommand(unittest.TestCase):
 
             self.assertEqual((status, errors), (0, ""))
             self.assertIn("anchored at page '123456' (Root page), using profile 'default'", output)
-            self.assertIn("cflsync page pull 123456", output)
+            self.assertIn("Pull the page tree with 'cflsync pull'.", output)
             workarea = Workarea.find(root)
             self.assertEqual((workarea.root_page_id, workarea.profile), ("123456", "default"))
             self.assertEqual(list(workarea.cache_dir.iterdir()), [])
