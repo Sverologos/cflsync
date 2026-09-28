@@ -449,6 +449,22 @@ class TestWorkareaRelocation(unittest.TestCase):
             self.assertEqual((target / "notes.txt").read_text(encoding="utf-8"), "unmanaged\n")
             self.assertTrue((target / "Child" / "content.md").is_file())
 
+    def test_relocation_moves_the_directory_back_when_the_block_fails(self) -> None:
+        with temporary_workarea() as workarea:
+            source = self._page_directory(workarea, "Page")
+            (workarea.root_dir / "Parent").mkdir()
+
+            with workarea.relocation(source, "Parent/Page") as target:
+                self.assertTrue((target / "content.md").is_file())
+
+            self.assertFalse(source.exists())
+            with self.assertRaisesRegex(RuntimeError, "block failed"):
+                with workarea.relocation(target, "Page"):
+                    raise RuntimeError("block failed")
+
+            self.assertTrue((target / "content.md").is_file())
+            self.assertFalse(source.exists())
+
     def test_moving_to_the_same_directory_changes_nothing(self) -> None:
         with temporary_workarea() as workarea:
             source = self._page_directory(workarea, "Page")

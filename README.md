@@ -72,9 +72,10 @@ a page can only be pulled once its parent is present locally, and cflsync names
 the command to run otherwise. When a page is renamed or moved remotely, the next
 `page pull` moves its directory, together with its child pages.
 
-Use `page move PAGE_REF NEW_PARENT_REF` to change a synchronized page's remote
-parent. The new parent must exist remotely in the same Confluence space. The
-local directory moves with the next `page pull` of the page.
+Use `page move PAGE_REF NEW_PARENT_REF` to move a synchronized page, with its
+child pages, below another page in the same Confluence space. The new parent
+must be present locally; the page directory moves into its directory. The root
+page cannot be moved.
 
 Use `page remove PAGE_REF` to delete a managed local page and its remote page.
 It asks for confirmation unless `--force` is supplied. If the remote page no

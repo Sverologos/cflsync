@@ -597,6 +597,18 @@ class Workarea:
 
         return target
 
+    @contextmanager
+    def relocation(self, source: Path, directory: str) -> Iterator[Path]:
+        """Move a page directory as :meth:`relocate` does, and move it back if the enclosed block fails."""
+        target = self.relocate(source, directory)
+        try:
+            yield target
+        except BaseException:
+            if target != source:
+                os.rename(target, source)
+
+            raise
+
     def page_directory_name(self, title: str) -> str:
         """Return the deterministic safe directory name for a page title."""
         if not isinstance(title, str) or not title:

@@ -29,6 +29,11 @@ BODY = json.dumps(
 
 
 class TestPageMove(unittest.TestCase):
+    """Moves in a tree below Root page (100).
+
+    Current parent (456789) contains Example page (123456), which contains Descendant (222222). New parent (987654) is
+    also below the root.
+    """
 
     def setUp(self):
         self.site = self._site()
@@ -39,6 +44,7 @@ class TestPageMove(unittest.TestCase):
         site.add_page("456789", "Current parent", parent_id="100")
         site.add_page("123456", "Example page", parent_id="456789", body=BODY, version=17)
         site.add_attachment("123456", "diagram.png", b"PNG")
+        site.add_page("222222", "Descendant", parent_id="123456")
         site.add_page("987654", "New parent", parent_id="100")
         return site
 
@@ -53,36 +59,45 @@ class TestPageMove(unittest.TestCase):
 
         return output.getvalue(), status
 
-    def _pull(self, workarea):
-        for page_id in ["100", "456789", "123456"]:
+    def _pull(self, workarea, page_ids=("100", "456789", "123456", "987654")):
+        for page_id in page_ids:
             self._run(workarea, lambda: PagePullCommand().run(page_id))
 
-    def _move(self, workarea, parent_id):
+    def _move(self, workarea, parent_id, page_id="123456"):
         self.site.requests.clear()
-        return self._run(workarea, lambda: PageMoveCommand().run("123456", parent_id))
+        return self._run(workarea, lambda: PageMoveCommand().run(page_id, parent_id))
 
     def _snapshot(self, workarea):
         return {
             str(path.relative_to(workarea.root_dir)): path.read_bytes() if path.is_file() else None
             for path in workarea.root_dir.rglob("*")}
 
-    def _without_cache(self, snapshot):
-        return {path: value for path, value in snapshot.items() if not path.replace("\\", "/").startswith(".cflsync/cache/")}
+    def _assert_not_moved(self, workarea, before):
+        self.assertEqual(self._snapshot(workarea), before)
+        self.assertEqual(self.site.content["123456"]["parent_id"], "456789")
+        self.assertEqual([request.method for request in self.site.requests if request.method != "GET"], [])
 
-    def test_moves_the_remote_page_and_updates_only_cached_version(self) -> None:
+    def test_moves_the_page_remotely_and_its_directory_locally(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
-            self._pull(workarea)
-            before = self._snapshot(workarea)
+            self._pull(workarea, ["100", "456789", "123456", "222222", "987654"])
+            (workarea.root_dir / "Root page" / "Current parent" / "Example page" / "notes.txt").write_text(
+                "unmanaged\n", encoding="utf-8")
+            descendant_cache = workarea.cache_path("222222").read_bytes()
 
             _, status = self._move(workarea, "987654")
 
             state = PageState.load(workarea.cache_path("123456"))
             remote = self.site.content["123456"]
+            moved = workarea.root_dir / "Root page" / "New parent" / "Example page"
             self.assertEqual(status, 0)
-            self.assertEqual(self._without_cache(self._snapshot(workarea)), self._without_cache(before))
-            self.assertEqual((state.page.version, state.page.title, state.page.directory), (18, "Example page", "Example page"))
-            # The local directory stays below its cached parent until a pull relocates it.
-            self.assertEqual(state.page.parent_id, "456789")
+            self.assertFalse((workarea.root_dir / "Root page" / "Current parent" / "Example page").exists())
+            self.assertEqual((moved / "notes.txt").read_text(encoding="utf-8"), "unmanaged\n")
+            self.assertEqual((moved / "_attachments" / "diagram.png").read_bytes(), b"PNG")
+            self.assertTrue((moved / "Descendant" / "content.md").is_file())
+            self.assertEqual(workarea.cache_path("222222").read_bytes(), descendant_cache)
+            self.assertEqual(
+                (state.page.parent_id, state.page.directory, state.page.version, state.page.title),
+                ("987654", "Example page", 18, "Example page"))
             self.assertEqual(
                 (remote["parent_id"], remote["version"], remote["title"], remote["body"]), ("987654", 18, "Example page", BODY))
 
@@ -116,13 +131,44 @@ class TestPageMove(unittest.TestCase):
                     with self.assertRaisesRegex(SyncError, error):
                         self._move(workarea, parent_id)
 
-                    self.assertEqual(self._snapshot(workarea), before)
-                    self.assertEqual(self.site.content["123456"]["parent_id"], "456789")
+                    self._assert_not_moved(workarea, before)
 
-    def test_reports_server_hierarchy_rejection_without_changing_local_state(self) -> None:
-        self.site.add_page("222222", "Descendant", parent_id="123456")
+    def test_refuses_to_move_the_root_page(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea)
+            before = self._snapshot(workarea)
+
+            with self.assertRaisesRegex(SyncError, "page '100' is the root page of this workarea and cannot be moved"):
+                self._move(workarea, "987654", page_id="100")
+
+            self._assert_not_moved(workarea, before)
+
+    def test_refuses_a_new_parent_that_is_not_local_before_the_remote_update(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, ["100", "456789", "123456"])
+            before = self._snapshot(workarea)
+
+            with self.assertRaisesRegex(
+                    SyncError, r"parent page 'New parent' \(987654\) is not present locally; run: cflsync page pull 987654"):
+                self._move(workarea, "987654")
+
+            self._assert_not_moved(workarea, before)
+
+    def test_refuses_a_name_used_by_a_cached_sibling_in_the_new_parent_before_the_remote_update(self) -> None:
+        self.site.add_page("333333", "Example page", parent_id="987654")
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, ["100", "456789", "123456", "987654", "333333"])
+            before = self._snapshot(workarea)
+
+            with self.assertRaisesRegex(SyncError,
+                                        r"a sibling page \('333333'\) already uses directory 'Root page/New parent/Example page'"):
+                self._move(workarea, "987654")
+
+            self._assert_not_moved(workarea, before)
+
+    def test_reports_server_hierarchy_rejection_without_changing_local_state(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, ["100", "456789", "123456", "222222"])
             before = self._snapshot(workarea)
 
             with self.assertRaisesRegex(SyncError, "cannot move page '123456' to parent '222222'.*invalid hierarchy"):
@@ -140,20 +186,26 @@ class TestPageMove(unittest.TestCase):
 
             self.assertEqual(status, 0)
             self.assertIn("already a child", output)
-            self.assertEqual(self._snapshot(workarea), before)
-            self.assertTrue(all(request.method == "GET" for request in self.site.requests))
+            self._assert_not_moved(workarea, before)
 
-    def test_reports_incomplete_synchronization_when_cache_write_fails(self) -> None:
+    def test_failed_cache_write_restores_the_directory_and_the_suggested_pull_completes_the_move(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea)
             before = self._snapshot(workarea)
 
             with patch.object(PageState, "save", side_effect=SyncError("injected state failure")):
-                with self.assertRaisesRegex(SyncError, "moved page '123456' remotely"):
+                with self.assertRaisesRegex(
+                        SyncError, "moved page '123456' remotely but could not update local state: injected state failure; "
+                        "run: cflsync page pull 123456"):
                     self._move(workarea, "987654")
 
             self.assertEqual(self._snapshot(workarea), before)
             self.assertEqual(self.site.content["123456"]["parent_id"], "987654")
+
+            self._pull(workarea, ["123456"])
+
+            self.assertTrue((workarea.root_dir / "Root page" / "New parent" / "Example page" / "content.md").is_file())
+            self.assertEqual(PageState.load(workarea.cache_path("123456")).page.parent_id, "987654")
 
 
 # vim: set ts=4 sw=4 et tw=132:

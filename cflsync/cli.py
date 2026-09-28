@@ -401,6 +401,9 @@ class PageMoveCommand:
         return 0
 
     def _move(self, workarea, page, parent, state, cache_path, pandoc, api):
+        if page.id == workarea.root_page_id:
+            raise SyncError(f"page '{page.id}' is the root page of this workarea and cannot be moved")
+
         inspector = PageInspector(pandoc)
         directory = workarea.page_directory(state)
         changes = inspector.inspect(directory, state, page, page.attachments())
@@ -422,6 +425,9 @@ class PageMoveCommand:
         if page.body is None:
             raise SyncError(f"page '{page.id}' has no ADF body")
 
+        # The page directory moves into its new parent's directory, so both must be possible before the remote update.
+        _require_local_parent(workarea, parent.id, api)
+        workarea.page_directory_target(page.id, parent.id, state.page.directory)
         try:
             updated = page.update(page.body, parent_id=parent.id)
         except SyncError as error:
@@ -431,15 +437,16 @@ class PageMoveCommand:
         if updated.title != state.page.title:
             raise SyncError(f"page '{page.id}' was moved remotely with unexpected title '{updated.title}'")
 
-        # The page directory stays below its cached parent until a pull relocates it.
         moved_state = PageState(
-            PageMetadata(
-                updated.id, state.page.title, state.page.parent_id, state.page.directory, updated.version, state.page.content_hash),
+            PageMetadata(updated.id, state.page.title, parent.id, state.page.directory, updated.version, state.page.content_hash),
             state.attachments)
         try:
-            moved_state.save(cache_path)
-        except SyncError as error:
-            raise SyncError(f"moved page '{page.id}' remotely but could not update local state: {error}") from error
+            with workarea.relocation(directory, workarea.relative_directory(parent.id, state.page.directory)):
+                moved_state.save(cache_path)
+        except (OSError, SyncError) as error:
+            raise SyncError(
+                f"moved page '{page.id}' remotely but could not update local state: {filesystem_error_message(error)}; "
+                f"run: cflsync page pull {page.id}") from error
 
 
 class PageRemoveCommand:

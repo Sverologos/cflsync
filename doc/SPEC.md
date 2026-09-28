@@ -44,10 +44,15 @@ non-empty, single-line text without surrounding whitespace. It is the explicit
 local-title operation; `page push` continues to reject an edited title heading.
 
 `page move PAGE_REF NEW_PARENT_REF` requires the referenced managed page to be
-in sync. `NEW_PARENT_REF` resolves to a remote page, which need not be managed
-locally. The command changes the remote parent but leaves the local directory
-and Markdown unchanged; the next `page pull` of the page moves its directory
-below the new parent.
+in sync, and not to be the workarea's root page. `NEW_PARENT_REF` resolves to a
+page in the workarea's tree, which must be present locally. Before the remote
+update, the command checks that the page's directory name is free in the new
+parent's directory. It then changes the remote parent, moves the page
+directory, with its child pages and unmanaged files, into the new parent's
+directory, and records the new parent in the cache. The Markdown is unchanged.
+If the remote move succeeds but the local update fails, the directory is moved
+back and the command reports incomplete synchronization; `page pull` then
+completes the move.
 
 `page remove [-f | --force] PAGE_REF` requires a managed local page directory
 and cache entry. It confirms removal unless `--force` is supplied. When the

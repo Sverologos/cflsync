@@ -428,16 +428,15 @@ class TestPagePullNesting(unittest.TestCase):
             self.assertFalse((workarea.root_dir / "Root" / "Child").exists())
             self.assertEqual(PageState.load(workarea.cache_path("200")).page.parent_id, "400")
 
-    def test_relocates_after_a_move_command_although_the_content_is_in_sync(self) -> None:
+    def test_finds_a_page_moved_by_the_move_command_in_sync(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea, "100", "200", "400")
             run_with_site(self.site, workarea, lambda: PageMoveCommand().run("200", "400"))
-            self.assertTrue((workarea.root_dir / "Root" / "Child").is_dir())
 
-            self._pull(workarea, "200")
+            output = run_with_site(self.site, workarea, lambda: PagePullCommand().run("200"))
 
+            self.assertIn("already in sync", output)
             self.assertTrue((workarea.root_dir / "Root" / "Other" / "Child" / "content.md").is_file())
-            self.assertEqual(PageState.load(workarea.cache_path("200")).page.parent_id, "400")
 
     def test_refuses_a_move_below_a_parent_that_is_not_local(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
