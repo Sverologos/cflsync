@@ -56,14 +56,13 @@ local `content.md` file, or a managed page directory.
 A workarea manages one Confluence page tree: a root page and the pages below
 it. `init ROOT_PAGE_REF` anchors a new workarea at its root page, given as a
 page ID or exact title; it contacts Confluence with the profile's credentials,
-but does not pull any page. After a succesfull init, pull the root page first,
-then the pages below it:
+but does not pull any page. After a successful init, pull any page in the tree.
+cflsync pulls missing ancestor pages first:
 
 ```console
 cflsync auth
 mkdir handbook && cd handbook
 cflsync init "Team handbook"
-cflsync page pull "Team handbook"
 cflsync page pull "Onboarding"
 ```
 
@@ -79,10 +78,18 @@ consequence is that pre-cflsync 0.4 workspaces cannot be managed by cflsync
 
 1. Push any local changes with the cflsync version that created it.
 2. Create a new workarea in an empty directory with `cflsync init ROOT_PAGE_REF`.
-3. Pull the root page, then the pages below it, top-down.
+3. Pull any pages needed from the tree; cflsync installs missing ancestors.
 
 Unmanaged files in old page directories are not carried over; copy them into
 the new page directories if needed.
+
+### Upgrading from cflsync 0.4
+
+cflsync 0.5 changes the encoding of page directory names. On its next pull,
+each page whose title contains non-ASCII characters or whose old directory name
+is over 64 characters is renamed, together with its child pages and unmanaged
+files. Push local changes first, or commit the workarea to version control, so
+the moves can be reviewed.
 
 Pull reports when the page is already in sync. Use `page pull --force PAGE_REF`
 to prefer remote content, overwriting local edits to managed files even when
@@ -95,15 +102,20 @@ rename pages. Use `page rename PAGE_REF TITLE` to change the remote title,
 generated heading, and title-derived local directory as one explicit operation.
 
 Local page directories mirror the page hierarchy below the root page: each
-child page's directory is inside its parent's directory. Pull pages top-down:
-a page can only be pulled once its parent is present locally, and cflsync names
-the command to run otherwise. When a page is renamed or moved remotely, the next
-`page pull` moves its directory, together with its child pages.
+child page's directory is inside its parent's directory. `page pull` can target
+any page in the tree; it installs missing ancestors top-down and prints one
+`Pulled parent 'TITLE' (ID) to PATH` line for each. When a page is renamed or
+moved remotely, the next `page pull` installs a missing new-parent chain first,
+then moves its directory together with its child pages.
+
+`page create PARENT_PAGE_REF TITLE` similarly installs the parent and any
+missing ancestors before creating the remote child page.
 
 Use `page move PAGE_REF NEW_PARENT_REF` to move a synchronized page, with its
 child pages, below another page in the same Confluence space. The new parent
-must be present locally; the page directory moves into its directory. The root
-page cannot be moved.
+and any missing ancestors are installed before the remote move; if Confluence
+rejects that move, those installed pages remain. The page directory then moves
+into the new parent's directory. The root page cannot be moved.
 
 Use `page remove PAGE_REF` to delete a managed local page and its remote page.
 It asks for confirmation unless `--force` is supplied. If the remote page no

@@ -600,7 +600,7 @@ class PageStatusCommand:
 
         current = workarea.relative_directory(state.page.parent_id, state.page.directory)
         if parent_id is not None and not workarea.cache_path(parent_id).exists():
-            return f"moves from '{current}' below page '{parent_id}' on pull, which requires that page to be present locally"
+            return f"moves from '{current}' below page '{parent_id}' on pull, which pulls that page first"
 
         return f"moves from '{current}' to '{workarea.relative_directory(parent_id, name)}' on pull"
 

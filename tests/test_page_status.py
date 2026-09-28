@@ -231,16 +231,14 @@ class TestPageStatusInTree(unittest.TestCase):
                     self.assertIn("remote: changed: page", output)
                     self.assertIn(expected, output)
 
-    def test_reports_a_move_below_a_parent_that_is_not_local(self) -> None:
+    def test_reports_a_move_below_a_parent_that_pull_installs_first(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea, "100", "200")
             self._remote_change("200", parent_id="400")
 
             output = self._status(workarea)
 
-            self.assertIn(
-                "location: moves from 'Root/Child' below page '400' on pull, which requires that page to be present locally",
-                output)
+            self.assertIn("location: moves from 'Root/Child' below page '400' on pull, which pulls that page first", output)
 
     def test_reports_a_page_deleted_remotely_with_its_local_changes(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
