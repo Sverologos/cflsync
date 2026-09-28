@@ -231,7 +231,9 @@ class TestWorkareaMaterialization(unittest.TestCase):
             directory = "x" * 300
             staging = workarea.stage_page(directory, "# Example\n", {})
 
-            with self.assertRaises(OSError) as context:
+            # Which operation meets the limit first depends on the system: on Linux, checking for an existing target
+            # raises the OSError itself; on macOS, the check passes and installing the directory fails.
+            with self.assertRaises((OSError, Workarea.Error)) as context:
                 workarea.install_page(staging, directory)
 
             self.assertRegex(filesystem_error_message(context.exception), r"path is too long for this system \(\d+ characters\)")

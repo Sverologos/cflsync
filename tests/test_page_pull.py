@@ -530,7 +530,8 @@ class TestPagePullPathLength(unittest.TestCase):
         site = FakeConfluence()
         site.add_page("123456", "x" * 300)
         with temporary_workarea() as workarea:
-            with self.assertRaisesRegex(SyncError, r"cannot pull page: path is too long for this system \(\d+ characters\)"):
+            # The operation that reports the limit, and therefore the message prefix, depends on the system.
+            with self.assertRaisesRegex(SyncError, r"path is too long for this system \(\d+ characters\)"):
                 run_with_site(site, workarea, lambda: PagePullCommand().run("123456"))
 
             self.assertEqual(list(workarea.cache_dir.iterdir()), [])
