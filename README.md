@@ -39,6 +39,7 @@ a checkout as `uv run python -m cflsync`.
 ```text
 cflsync auth [-p PROFILE] [--list | --delete]
 cflsync init [-p PROFILE] ROOT_PAGE_REF
+cflsync push [-f | --force]
 cflsync page create PARENT_PAGE_REF TITLE
 cflsync page pull [-f | --force] PAGE_REF
 cflsync page push [-f | --force] PAGE_REF
@@ -100,6 +101,13 @@ changes. Use `page push --force PAGE_REF` to prefer local content. The first
 heading of `content.md` is the page title and cannot be edited; push does not
 rename pages. Use `page rename PAGE_REF TITLE` to change the remote title,
 generated heading, and title-derived local directory as one explicit operation.
+
+Use `push` to apply the same push rules to every cached page with a local
+directory. It processes pages in path order, reports each result and a summary,
+skips cached pages whose directories are missing, and ignores unmanaged
+directories. It continues after a conflict or other page failure, returning a
+non-zero status if any page failed. `push --force` applies `--force` to every
+page it processes.
 
 Local page directories mirror the page hierarchy below the root page: each
 child page's directory is inside its parent's directory. `page pull` can target

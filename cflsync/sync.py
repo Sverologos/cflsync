@@ -40,6 +40,48 @@ class PageChanges:
         return self.page_remotely or bool(self.attachments_remotely)
 
 
+class PageOperationResult:
+    """The outcome of one page in a repository-level operation."""
+
+    def __init__(self, page_id: str, title: str, outcome: str, detail: str | None = None) -> None:
+        self.page_id = page_id
+        self.title = title
+        self.outcome = outcome
+        self.detail = detail
+
+
+class PageOperationResults:
+    """Per-page outcomes and a summary for a repository-level operation."""
+
+    def __init__(self) -> None:
+        self.pages: list[PageOperationResult] = []
+
+    @property
+    def failed(self) -> bool:
+        """Report whether any page operation failed."""
+        return any(result.outcome == "failed" for result in self.pages)
+
+    def add(self, page_id: str, title: str, outcome: str, detail: str | None = None) -> None:
+        """Record one page outcome."""
+        self.pages.append(PageOperationResult(page_id, title, outcome, detail))
+
+    def report(self) -> None:
+        """Print every result followed by its outcome counts."""
+        for result in self.pages:
+            detail = f": {result.detail}" if result.detail is not None else ""
+            print(f"Page '{result.page_id}' ({result.title}): {result.outcome}{detail}")
+
+        if not self.pages:
+            print("Summary: no cached pages.")
+            return
+
+        counts = {
+            outcome: sum(result.outcome == outcome for result in self.pages)
+            for outcome in ["pushed", "unchanged", "skipped", "failed"]}
+        summary = ", ".join(f"{count} {outcome}" for outcome, count in counts.items() if count)
+        print(f"Summary: {summary}.")
+
+
 class PageInspector:
     """Compare a page's local files and remote metadata with its cached state."""
 

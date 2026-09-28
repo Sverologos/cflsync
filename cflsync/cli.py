@@ -21,7 +21,7 @@ from .api import APIClient, APIError
 from .config import Config, Profile
 from .convert import ADFToMarkdownConverter, MarkdownToADFConverter, PandocRunner
 from .errors import SyncError
-from .sync import InstallationPlan, PageInspector, PlannedPage
+from .sync import InstallationPlan, PageInspector, PageOperationResults, PlannedPage
 from .workarea import (
     CONTENT_FILENAME, AttachmentMetadata, MediaResolver, PageMetadata, PageRef, PageState, Workarea, filesystem_error_message)
 
@@ -46,6 +46,47 @@ class InitCommand:
         print(f"Initialised a workarea anchored at page '{page.id}' ({page.title}), using profile '{profile}'.")
         print(f"Pull the root page with 'cflsync page pull {page.id}'.")
         return 0
+
+
+class RepositoryPushCommand:
+
+    def configure(self, subparsers: _SubParsersAction[ArgumentParser]) -> None:
+        push_parser = subparsers.add_parser("push", help="push all cached pages in the workarea")
+        push_parser.add_argument("-f", "--force", action="store_true", help="prefer local content, overwriting remote changes")
+        push_parser.set_defaults(command=self)
+
+    def __call__(self, args: Namespace) -> int:
+        return self.run(force=args.force)
+
+    def run(self, force: bool = False) -> int:
+        try:
+            workarea, api = _open_workarea()
+            tree = workarea.page_tree()
+            states = sorted(tree.states.values(), key=lambda state: tree.directory(state.page.id).casefold())
+        except (OSError, UnicodeError) as error:
+            raise SyncError(f"cannot push workarea: {filesystem_error_message(error)}") from error
+
+        results = PageOperationResults()
+        push = PagePushCommand()
+        pandoc = PandocRunner()
+        for state in states:
+            directory = workarea.page_directory(state, must_exist=False)
+            if not directory.is_dir():
+                results.add(state.page.id, state.page.title, "skipped", "managed directory is missing")
+                continue
+
+            try:
+                page = api.get_page(state.page.id)
+                pushed = push._push(workarea, page, state, workarea.cache_path(state.page.id), pandoc, api, force)
+            except (OSError, UnicodeError) as error:
+                results.add(state.page.id, state.page.title, "failed", filesystem_error_message(error))
+            except SyncError as error:
+                results.add(state.page.id, state.page.title, "failed", str(error))
+            else:
+                results.add(state.page.id, state.page.title, "pushed" if pushed else "unchanged")
+
+        results.report()
+        return 1 if results.failed else 0
 
 
 class AuthCommand:
@@ -248,9 +289,12 @@ class PagePushCommand:
 
             state = PageState.load(cache_path)
             page = api.get_page(reference.page_id)
-            self._push(workarea, page, state, cache_path, PandocRunner(), api, force)
+            pushed = self._push(workarea, page, state, cache_path, PandocRunner(), api, force)
         except (OSError, UnicodeError) as error:
             raise SyncError(f"cannot push page: {filesystem_error_message(error)}") from error
+
+        if not pushed:
+            print(f"Page '{page.id}' is already in sync; nothing pushed. Use --force to upload local content.")
 
         return 0
 
@@ -264,8 +308,7 @@ class PagePushCommand:
                 raise SyncError(f"page '{page.id}' has remote changes; push conflicts")
 
             if not changes.locally:
-                print(f"Page '{page.id}' is already in sync; nothing pushed. Use --force to upload local content.")
-                return
+                return False
 
         markdown = (directory / CONTENT_FILENAME).read_text(encoding="utf-8")
         bodies = self._managed_attachments(directory, state, inspector, markdown)
@@ -284,6 +327,7 @@ class PagePushCommand:
             PageMetadata(
                 updated.id, updated.title, state.page.parent_id, state.page.directory, updated.version,
                 inspector.content_hash(markdown)), attachments).save(cache_path)
+        return True
 
     def _managed_attachments(self, directory, state, inspector, markdown):
         """Return the bytes of every managed attachment still present locally."""
@@ -642,6 +686,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     subparsers = parser.add_subparsers(title="commands", metavar="command")
     AuthCommand().configure(subparsers)
     InitCommand().configure(subparsers)
+    RepositoryPushCommand().configure(subparsers)
     PageCommand().configure(subparsers)
     args = parser.parse_args(argv[1:])
     try:

@@ -5,6 +5,7 @@
 ```text
 cflsync auth [-p PROFILE] [--list | --delete]
 cflsync init [-p PROFILE] ROOT_PAGE_REF
+cflsync push [-f | --force]
 cflsync page create PARENT_PAGE_REF TITLE
 cflsync page pull [-f | --force] PAGE_REF
 cflsync page push [-f | --force] PAGE_REF
@@ -43,6 +44,14 @@ when its content is otherwise unchanged.
 
 `page push PAGE_REF` uploads the local changes of a cached page. It never
 changes the page's title or parent.
+
+`push` applies `page push` to every cached page whose directory exists, in
+deterministic path order. It does not discover remote pages. A cached page with
+a missing directory is reported and skipped; unmanaged directories are ignored.
+Each page is reported as pushed, unchanged, skipped, or failed, followed by a
+summary. The command continues after a per-page failure and exits non-zero if
+any page failed. `push --force` applies the page-push force behavior to every
+page it processes.
 
 `page status PAGE_REF` reports local and remote changes of a cached page, and
 where the next pull would move its directory (see
