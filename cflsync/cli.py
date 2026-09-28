@@ -503,24 +503,57 @@ class PageStatusCommand:
     def run(self, page_ref: str) -> int:
         try:
             workarea, api = _open_workarea()
-            reference = PageRef.resolve(page_ref, workarea, api)
-            cache_path = workarea.cache_path(reference.page_id)
-            if not cache_path.exists():
-                raise SyncError(f"page '{reference.page_id}' is not managed in this workarea")
-
-            state = PageState.load(cache_path)
-            page = api.get_page(reference.page_id)
+            # Status only reports cached pages, which are in the workarea's tree.
+            reference = PageRef.resolve_local(page_ref, workarea)
+            state = PageState.load(workarea.cache_path(reference.page_id))
+            inspector = PageInspector(PandocRunner())
             # A missing page directory is a local change, not a lookup failure.
             directory = workarea.page_directory(state, must_exist=False)
-            changes = PageInspector(PandocRunner()).inspect(directory, state, page, page.attachments())
+            page = self._remote_page(api, state.page.id)
+            location = None
+            if page is None:
+                page_locally, attachments_locally = inspector.inspect_local(directory, state)
+                remote = "not found; the page was deleted, or is not accessible"
+            elif not workarea.contains(page.id, api):
+                page_locally, attachments_locally = inspector.inspect_local(directory, state)
+                remote = "moved outside this workarea's tree"
+            else:
+                changes = inspector.inspect(directory, state, page, page.attachments())
+                page_locally, attachments_locally = changes.page_locally, changes.attachments_locally
+                remote = self._summary(changes.page_remotely, "page", changes.attachments_remotely)
+                location = self._location(workarea, state, page)
         except (OSError, UnicodeError) as error:
             raise SyncError(f"cannot report page status: {filesystem_error_message(error)}") from error
 
         print(f"Page '{state.page.id}' ({state.page.title})")
-        print(f"  local:  {self._summary(changes.page_locally, CONTENT_FILENAME, changes.attachments_locally)}")
-        print(f"  remote: {self._summary(changes.page_remotely, 'page', changes.attachments_remotely)}")
+        print(f"  local:  {self._summary(page_locally, CONTENT_FILENAME, attachments_locally)}")
+        print(f"  remote: {remote}")
+        if location is not None:
+            print(f"  location: {location}")
 
         return 0
+
+    def _remote_page(self, api, page_id):
+        try:
+            return api.get_page(page_id)
+        except APIError as error:
+            if error.status == 404:
+                return None
+
+            raise
+
+    def _location(self, workarea, state, page):
+        # Describe the relocation that the next pull applies after a remote rename or move.
+        parent_id = None if page.id == workarea.root_page_id else page.parent_id
+        name = workarea.page_directory_name(page.title)
+        if parent_id == state.page.parent_id and name == state.page.directory:
+            return None
+
+        current = workarea.relative_directory(state.page.parent_id, state.page.directory)
+        if parent_id is not None and not workarea.cache_path(parent_id).exists():
+            return f"moves from '{current}' below page '{parent_id}' on pull, which requires that page to be present locally"
+
+        return f"moves from '{current}' to '{workarea.relative_directory(parent_id, name)}' on pull"
 
     def _summary(self, page_changed, page_label, attachment_names):
         changed = [page_label] if page_changed else []

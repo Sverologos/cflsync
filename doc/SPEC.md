@@ -88,8 +88,8 @@ tree, such as a folder, is an error, because only pages are supported.
 All successful reference forms produce a page ID. Subsequent command
 semantics, cache keys, concurrency checks, and conflict handling are identical.
 
-`page remove` accepts the same forms, but each must resolve to cached local
-state; it does not resolve an ID or title remotely.
+`page remove` and `page status` accept the same forms, but each must resolve to
+cached local state; they do not resolve an ID or title remotely.
 
 ## Workarea and local representation
 
@@ -209,7 +209,12 @@ locally and remotely.
 
 `page status PAGE_REF` compares local content with its cache entry and fetches
 remote page and attachment metadata. It reports each side as unchanged or
-changed without modifying the workarea.
+changed without modifying the workarea. The remote side is instead reported as
+not found when Confluence returns 404 for the page, which was deleted or is not
+accessible, and as moved outside the workarea's tree when the root page is no
+longer among its ancestors. When the next `page pull` would move the page
+directory after a remote rename or move, a `location:` line shows the current
+and the new directory, or names a new parent that is not present locally.
 
 GET and HEAD requests retry once after a transport failure or HTTP 429, 502,
 503, or 504 response. POST, PUT, and DELETE requests are never retried

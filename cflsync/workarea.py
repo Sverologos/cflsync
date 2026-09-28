@@ -476,6 +476,26 @@ class Workarea:
 
         return paths
 
+    def contains(self, page_id: str, api) -> bool:
+        """Report whether a remote page is this workarea's root page or one of its descendants.
+
+        Ancestors above the root page may be folders; below the root page, only pages are supported.
+        """
+        if page_id == self.root_page_id:
+            return True
+
+        ancestors = api.page_ancestors(page_id)
+        ancestor_ids = [ancestor.id for ancestor in ancestors]
+        if self.root_page_id not in ancestor_ids:
+            return False
+
+        for ancestor in ancestors[ancestor_ids.index(self.root_page_id) + 1:]:
+            if ancestor.type != "page":
+                raise SyncError(
+                    f"page '{page_id}' is below {ancestor.type} '{ancestor.id}' in this workarea's tree; only pages are supported")
+
+        return True
+
     def page_tree(self) -> PageTree:
         """Load every cached page state as a tree anchored at this workarea's root page."""
         states = {page_id: PageState.load(path) for page_id, path in self.page_state_paths().items()}
@@ -857,7 +877,7 @@ class PageRef:
         states = _cached_states(workarea)
         if text.isdigit():
             page_id = api.get_page(text).id
-            if page_id not in states and not _is_in_workarea(page_id, workarea, api):
+            if page_id not in states and not workarea.contains(page_id, api):
                 raise PageRefError(
                     f"page '{page_id}' is not found in this workarea, which is anchored at page '{workarea.root_page_id}'")
 
@@ -868,7 +888,7 @@ class PageRef:
             return cls(_one_cached_page_id(cached_ids, text, states, workarea))
 
         pages = [page for page in api.find_pages_by_title(text) if page.title == text]
-        page_ids = [page.id for page in pages if _is_in_workarea(page.id, workarea, api)]
+        page_ids = [page.id for page in pages if workarea.contains(page.id, api)]
         return cls(_one_page_ref_id(page_ids, f"title '{text}' in this workarea"))
 
     @classmethod
@@ -931,26 +951,6 @@ def _page_ref_path(value: str | Path, cwd: Path | None) -> Path:
 
 def _cached_states(workarea):
     return {page_id: PageState.load(path) for page_id, path in workarea.page_state_paths().items()}
-
-
-def _is_in_workarea(page_id, workarea, api):
-    # A page is in the workarea's tree if it is the root page, or the root page is among its ancestors. Ancestors
-    # above the root may be folders; below the root, only pages are supported.
-    root_page_id = workarea.root_page_id
-    if page_id == root_page_id:
-        return True
-
-    ancestors = api.page_ancestors(page_id)
-    ancestor_ids = [ancestor.id for ancestor in ancestors]
-    if root_page_id not in ancestor_ids:
-        return False
-
-    for ancestor in ancestors[ancestor_ids.index(root_page_id) + 1:]:
-        if ancestor.type != "page":
-            raise SyncError(
-                f"page '{page_id}' is below {ancestor.type} '{ancestor.id}' in this workarea's tree; only pages are supported")
-
-    return True
 
 
 def _one_cached_page_id(page_ids, title, states, workarea):

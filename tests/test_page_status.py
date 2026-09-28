@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 from cflsync import APIClient, Profile, SyncError
 from cflsync.cli import PagePullCommand, PageStatusCommand
-from tests.support import MockResponse, MockTransport, temporary_workarea
+from tests.support import FakeConfluence, MockResponse, MockTransport, run_with_site, temporary_workarea
 from tests.test_api_operations import attachment_fixture, page_fixture
 
 
@@ -67,7 +67,7 @@ class TestPageStatus(unittest.TestCase):
         if attachments is None:
             attachments = [attachment_fixture()]
 
-        responses = [MockResponse.from_json(page), MockResponse.from_json(page), MockResponse.from_json({"results": attachments}), ]
+        responses = [MockResponse.from_json(page), MockResponse.from_json({"results": attachments})]
 
         return self._run(workarea, lambda: PageStatusCommand().run("123456"), responses)
 
@@ -148,7 +148,7 @@ class TestPageStatus(unittest.TestCase):
 
     def test_rejects_a_page_without_a_cache_entry(self) -> None:
         with temporary_workarea() as workarea:
-            with self.assertRaisesRegex(SyncError, "not managed"):
+            with self.assertRaisesRegex(SyncError, "no managed local page matches '123456'"):
                 self._status(workarea)
 
     def test_changes_nothing(self) -> None:
@@ -170,14 +170,112 @@ class TestPageStatus(unittest.TestCase):
             responses = [
                 MockResponse(503, {}, b""),
                 MockResponse.from_json(page),
-                MockResponse.from_json(page),
                 MockResponse.from_json({"results": [attachment_fixture()]})]
 
             _, status, transport = self._run(workarea, lambda: PageStatusCommand().run("123456"), responses)
 
             self.assertEqual(status, 0)
             self.assertEqual(self._snapshot(workarea), before)
-            self.assertEqual([request.method for request in transport.requests], ["GET", "GET", "GET", "GET"])
+            self.assertEqual([request.method for request in transport.requests], ["GET", "GET", "GET"])
+
+
+class TestPageStatusInTree(unittest.TestCase):
+    """Status in a tree of Root (100), with Child (200) and Other (400) below it."""
+
+    def setUp(self):
+        self.site = self._site()
+
+    def _site(self):
+        site = FakeConfluence()
+        site.add_page("100", "Root")
+        site.add_page("200", "Child", parent_id="100")
+        site.add_page("400", "Other", parent_id="100")
+        return site
+
+    def _pull(self, workarea, *page_ids):
+        for page_id in page_ids:
+            run_with_site(self.site, workarea, lambda: PagePullCommand().run(page_id))
+
+    def _status(self, workarea, page_ref="200"):
+        return run_with_site(self.site, workarea, lambda: PageStatusCommand().run(page_ref))
+
+    def _remote_change(self, page_id, **fields):
+        self.site.content[page_id].update(fields)
+        self.site.content[page_id]["version"] += 1
+
+    def test_reports_no_location_for_a_page_in_place(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, "100", "200")
+
+            output = self._status(workarea, str(workarea.root_dir / "Root" / "Child" / "content.md"))
+
+            self.assertIn("Page '200' (Child)", output)
+            self.assertIn("remote: unchanged", output)
+            self.assertNotIn("location:", output)
+
+    def test_reports_the_relocation_of_a_remote_rename_or_move(self) -> None:
+        cases = [
+            ({
+                "title": "Renamed child"}, "location: moves from 'Root/Child' to 'Root/Renamed child' on pull"),
+            ({
+                "parent_id": "400"}, "location: moves from 'Root/Child' to 'Root/Other/Child' on pull"), ]
+        for fields, expected in cases:
+            with self.subTest(fields=fields):
+                self.site = self._site()
+                with temporary_workarea(root_page_id="100") as workarea:
+                    self._pull(workarea, "100", "200", "400")
+                    self._remote_change("200", **fields)
+
+                    output = self._status(workarea)
+
+                    self.assertIn("remote: changed: page", output)
+                    self.assertIn(expected, output)
+
+    def test_reports_a_move_below_a_parent_that_is_not_local(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, "100", "200")
+            self._remote_change("200", parent_id="400")
+
+            output = self._status(workarea)
+
+            self.assertIn(
+                "location: moves from 'Root/Child' below page '400' on pull, which requires that page to be present locally",
+                output)
+
+    def test_reports_a_page_deleted_remotely_with_its_local_changes(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, "100", "200")
+            (workarea.root_dir / "Root" / "Child" / "content.md").write_text("# Child\n\nEdited\n", encoding="utf-8")
+            del self.site.content["200"]
+
+            output = self._status(workarea)
+
+            self.assertIn("local:  changed: content.md", output)
+            self.assertIn("remote: not found; the page was deleted, or is not accessible", output)
+            self.assertNotIn("location:", output)
+
+    def test_reports_a_page_moved_outside_the_tree(self) -> None:
+        self.site.add_page("900", "Outside")
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, "100", "200")
+            self._remote_change("200", parent_id="900")
+
+            output = self._status(workarea)
+
+            self.assertIn("local:  unchanged", output)
+            self.assertIn("remote: moved outside this workarea's tree", output)
+            self.assertNotIn("location:", output)
+
+    def test_reads_only(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, "100", "200")
+            self._remote_change("200", title="Renamed child")
+            self.site.requests.clear()
+
+            self._status(workarea)
+
+            self.assertTrue((workarea.root_dir / "Root" / "Child").is_dir())
+            self.assertTrue(all(request.method == "GET" for request in self.site.requests))
 
 
 # vim: set ts=4 sw=4 et tw=132:

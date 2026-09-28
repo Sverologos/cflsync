@@ -66,13 +66,20 @@ class PageInspector:
 
     def inspect(self, directory: Path, state: PageState, page, attachments) -> PageChanges:
         """Report local and remote changes for one cached page."""
+        page_locally, attachments_locally = self.inspect_local(directory, state)
+
+        return PageChanges(
+            page_locally, attachments_locally, self._page_changed_remotely(page, state),
+            self._attachments_changed_remotely(attachments, state))
+
+    def inspect_local(self, directory: Path, state: PageState) -> tuple[bool, list[str]]:
+        """Report whether a cached page's Markdown changed locally, and which managed attachments did."""
         path = directory / CONTENT_FILENAME
         markdown = path.read_text(encoding="utf-8") if path.is_file() else None
 
-        return PageChanges(
+        return (
             markdown is None or self.content_hash(markdown) != state.page.content_hash,
-            self._attachments_changed_locally(directory, state, markdown), self._page_changed_remotely(page, state),
-            self._attachments_changed_remotely(attachments, state))
+            self._attachments_changed_locally(directory, state, markdown))
 
     def _attachments_changed_locally(self, directory, state, markdown):
         MediaResolver((name, attachment.id) for name, attachment in state.attachments.items())

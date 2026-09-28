@@ -15,8 +15,8 @@ import unittest
 from unittest.mock import patch
 
 from cflsync import APIClient, PageState, Profile, SyncError
-from cflsync.cli import PagePullCommand, PagePushCommand
-from tests.support import MockResponse, MockTransport, temporary_workarea
+from cflsync.cli import PagePullCommand, PagePushCommand, PageStatusCommand
+from tests.support import FakeConfluence, MockResponse, MockTransport, run_with_site, temporary_workarea
 from tests.test_api_operations import attachment_fixture, page_fixture, user_fixture
 
 PULLED_MARKDOWN = "# Example page\n\nExample\n"
@@ -276,6 +276,52 @@ class TestPagePush(unittest.TestCase):
         with temporary_workarea() as workarea:
             with self.assertRaisesRegex(SyncError, "not managed"):
                 self._push(workarea, [MockResponse.from_json(self._page())])
+
+
+class TestPagePushInTree(unittest.TestCase):
+    """Pushes in a tree of Root (100) with Child (200) below it."""
+
+    def setUp(self):
+        self.site = FakeConfluence()
+        self.site.add_page("100", "Root")
+        self.site.add_page("200", "Child", parent_id="100")
+
+    def _run(self, workarea, command):
+        return run_with_site(self.site, workarea, command)
+
+    def _pull(self, workarea):
+        for page_id in ["100", "200"]:
+            self._run(workarea, lambda: PagePullCommand().run(page_id))
+
+    def test_pushes_a_nested_page_and_keeps_its_parent_and_directory(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea)
+            (workarea.root_dir / "Root" / "Child" / "content.md").write_text("# Child\n\nEdited\n", encoding="utf-8")
+
+            self._run(workarea, lambda: PagePushCommand().run(str(workarea.root_dir / "Root" / "Child")))
+
+            state = PageState.load(workarea.cache_path("200"))
+            self.assertIn("Edited", self.site.content["200"]["body"])
+            self.assertEqual((self.site.content["200"]["parent_id"], self.site.content["200"]["title"]), ("100", "Child"))
+            self.assertEqual((state.page.parent_id, state.page.directory, state.page.version), ("100", "Child", 2))
+
+    def test_refuses_to_push_over_a_remote_rename_even_with_force(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea)
+            (workarea.root_dir / "Root" / "Child" / "content.md").write_text("# Child\n\nEdited\n", encoding="utf-8")
+            self.site.content["200"]["title"] = "Renamed child"
+            self.site.content["200"]["version"] += 1
+            body = self.site.content["200"]["body"]
+
+            with self.assertRaisesRegex(SyncError, "push conflicts"):
+                self._run(workarea, lambda: PagePushCommand().run("200"))
+
+            with self.assertRaisesRegex(SyncError, "title heading does not match the page title 'Renamed child'"):
+                self._run(workarea, lambda: PagePushCommand().run("200", force=True))
+
+            self.assertEqual((self.site.content["200"]["title"], self.site.content["200"]["body"]), ("Renamed child", body))
+            output = self._run(workarea, lambda: PageStatusCommand().run("200"))
+            self.assertIn("location: moves from 'Root/Child' to 'Root/Renamed child' on pull", output)
 
 
 # vim: set ts=4 sw=4 et tw=132:
