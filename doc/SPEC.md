@@ -18,10 +18,14 @@ cflsync page status PAGE_REF
 ```
 
 A workarea manages one Confluence page tree: a root page and its descendants.
+No command reads, writes, creates below, or moves to a page outside that tree.
 Commands locate a workarea by walking upward to a directory containing
 `.cflsync/profile`. A workarea without a valid `.cflsync/root` was created by
 an earlier cflsync version; every command except `auth` refuses it and explains
-how to create a new, anchored workarea.
+how to create a new, anchored workarea, or to re-anchor an empty one.
+
+Confirmation prompts require a terminal. Without one, a command that would
+prompt fails before changing anything and suggests `--force`.
 
 `init [-p PROFILE] ROOT_PAGE_REF` resolves `ROOT_PAGE_REF`, a page ID or an
 exact page title, through Confluence with the profile's credentials. It then
@@ -47,8 +51,12 @@ ancestor up to the root, parents before children. An uncached ancestor is
 pulled, while a cached ancestor is retained as-is; a cached ancestor whose
 directory is missing is restored at its cached location. Each installation
 prints `Pulled parent 'TITLE' (ID) to PATH`. If a later ancestor installation
-fails, earlier installations remain and the error lists them. `--force` applies
-only to `PAGE_REF`, not to its ancestors. When a page's remote title or parent
+fails, earlier installations remain and the error lists them. Directory names
+and clashes with unmanaged entries are checked for the whole ancestor chain
+before the first installation. Each installed ancestor's remote parent must
+match the chain; otherwise the command stops with a retry hint, and pages
+already installed remain valid. `--force` applies only to `PAGE_REF`, not to
+its ancestors. When a page's remote title or parent
 changed, the pull installs a missing new-parent chain first, then moves its
 directory, with its child pages and unmanaged files, to the new location, also
 when its content is otherwise unchanged.
@@ -102,15 +110,11 @@ running the command again. The root page is never deleted this way: if it is
 gone, discovery fails first.
 
 `status` discovers the tree and compares it with the cache in the same way, and
-reports one line per page, parents before children: `not in local` (remote page
-not cached, or its directory is missing), `remote removed` (cached page absent
-from the tree: deleted, inaccessible, or moved outside the root), `remote
-removed, local changed` (such a page whose local copy changed), `remote
-changed`, `local changed`, `conflict` (changed on both sides), or `unchanged`,
-followed by counts per state. It changes nothing. If discovery fails, for
-example because a listing is denied or the tree contains a folder, the command
-fails before reporting anything, so an incomplete listing is never reported as
-remote removals.
+reports one line per page, parents before children, with the label of its state
+(see [Page states](#page-states)), followed by counts per state. It changes
+nothing. If discovery fails, for example because a listing is denied or the
+tree contains a folder, the command fails before reporting anything, so an
+incomplete listing is never reported as remote removals.
 
 `page status PAGE_REF` reports local and remote changes of a cached page, and
 where the next pull would move its directory (see
@@ -120,9 +124,11 @@ where the next pull would move its directory (see
 empty child page remotely, then runs the equivalent of `page pull` for its
 returned ID. Before creating the remote child, it installs the parent and any
 missing ancestors. If a cached sibling uses the new page's directory name, the
-created page gets the page-ID suffix (see below). Any other entry of that name
-in the parent directory is refused before the page is created remotely. It has no offline mode, so each local page begins
-with Confluence-authoritative metadata.
+created page gets the page-ID suffix (see
+[Workarea and local representation](#workarea-and-local-representation)). Any
+other entry of that name in the parent directory is refused before the page is
+created remotely. It has no offline mode, so each local page begins with
+Confluence-authoritative metadata.
 
 `page rename PAGE_REF TITLE` requires the referenced managed page to be in
 sync. It updates the remote title with optimistic concurrency, rewrites the
@@ -242,6 +248,12 @@ downloaded attachment files. `.cflsync/profile` selects the credential profile.
 `.cflsync/cache/<page-id>.json` is private synchronization state, not page
 content.
 
+A page directory's managed entries are `content.md`, `_attachments/`, and the
+directories of its cached child pages. A subdirectory is a child page only if
+the cache records it as one; all other entries are unmanaged. Unmanaged entries
+move with their page directory and are deleted with it, but cflsync never
+deletes a directory that has no cache state on its own.
+
 The page directory name is a deterministic filesystem-safe encoding of the
 remote title, normalized to Unicode NFC. Non-ASCII characters are kept as they
 are, unless they do not print, such as zero-width or non-breaking spaces. ASCII
@@ -281,9 +293,15 @@ otherwise it stops without overwriting data. An unmanaged entry with the same
 name as a page's directory is never suffixed around: the page fails, and the
 entry is left untouched.
 
-On Windows, a page directory cannot be renamed or moved when cflsync is
-running from inside it. The command stops before mutation and asks the user to
-run it from the workarea or another directory before retrying.
+On Windows, a page directory cannot be renamed, moved, or removed when cflsync
+is running from inside it. The command stops before mutation and asks the user
+to run it from the workarea or another directory before retrying.
+
+cflsync does not limit path lengths itself. When the operating system rejects a
+path as too long (`ENAMETOOLONG`, or Windows error 206), the command reports the
+path and its length, and the failed page installation leaves local state
+unchanged. On Windows, paths are limited to 260 characters unless long path
+support is enabled; see the README.
 
 Attachments use relative Markdown URLs:
 
@@ -450,6 +468,47 @@ attachments, updates content with optimistic concurrency, applies managed
 attachment deletions, and writes cache only after complete success. A failed
 remote sequence is reported as incomplete; the next `page status` detects the
 resulting remote change.
+
+### Page states
+
+`pull`, `push`, `status`, and `page remove` compare remote pages with the cache
+and classify each page by combining its local and remote change:
+
+| State | Meaning | `status` label |
+| --- | --- | --- |
+| `absent-local` | Remote page present, but no cache state or no local directory | not in local |
+| `absent-remote` | Cached page absent from the tree (deleted, inaccessible, or moved outside the root); its local copy is unchanged or missing | remote removed |
+| `conflict-absent-remote` | Cached page absent from the tree; its local copy changed | remote removed, local changed |
+| `remote-changed` | Changed remotely only, including a remote rename or move | remote changed |
+| `local-changed` | Changed locally only | local changed |
+| `conflict` | Changed on both sides | conflict |
+| `unchanged` | Unchanged on both sides | unchanged |
+
+`conflict-absent-remote` is a conflict too, but a separate state, because every
+command resolves `conflict` by assuming that the remote page exists. Push skips
+it; pull without `--delete` keeps it; `pull --delete` and `page remove` delete
+it only with `--force`.
+
+### Failure model
+
+- **Structural failures** make the tree's boundary unknown: an inaccessible
+  root, an incomplete listing, non-page content inside the tree, or an invalid
+  cache. They stop the command before any change, and an incomplete listing is
+  never interpreted as a remote deletion.
+- **Checks before execution.** A repository command and `page remove` perform
+  every check before they change anything: conflicts (which abort unless
+  `--force` is given), terminal availability, and confirmation. A failed check
+  or a declined prompt leaves the workarea and Confluence untouched.
+- **Per-page failures** during execution are reported; repository commands
+  continue with the other pages and block the pages below a failed one, and
+  exit non-zero if any page failed. `page remove` stops at its first failure.
+- **Atomicity.** Remote and local work cannot form one transaction. Each page
+  is installed atomically and its state persisted immediately; deletions remove
+  children before parents, and a page's directory before its cache entry. An
+  interrupted command leaves a valid cache, and running it again completes it.
+- **Deletion.** Local deletions never propagate to Confluence. `page remove` is
+  the only command that deletes remote pages; remote deletions reach the
+  workarea only through `pull --delete`.
 
 ## Content hierarchy requests
 
