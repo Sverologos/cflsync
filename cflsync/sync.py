@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Sven Rosiers
+# Copyright (c) 2026 Sverologos BV
 #
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this

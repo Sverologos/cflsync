@@ -18,8 +18,8 @@ footer = """
 
 This release contains Object Code under the Mozilla Public License, version 2.0.
 
-The corresponding Source Code Form is available at https://github.com/sven-prive/cflsync
-under the [Mozilla Public License 2.0](https://github.com/sven-prive/cflsync/blob/main/LICENSE.md).
+The corresponding Source Code Form is available at https://github.com/sverologos/cflsync
+under the [Mozilla Public License 2.0](https://github.com/sverologos/cflsync/blob/main/LICENSE.md).
 """
 trim = true
 

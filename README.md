@@ -12,7 +12,7 @@ as publishing platform rather than authoring environment.
 Install from a [scoop](https://scoop.sh) bucket:
 
 ```console
-scoop bucket add sven https://github.com/sven-prive/scoop
+scoop bucket add sverologos https://github.com/sverologos/scoop
 scoop install cflsync
 ```
 
@@ -26,7 +26,7 @@ Install using [uv](https://docs.astral.sh/uv/).
 Install `cflsync` as a standalone command in its own environment:
 
 ```console
-uv tool install git+https://github.com/sven-prive/cflsync
+uv tool install git+https://github.com/sverologos/cflsync
 ```
 
 From a local checkout, `uv tool install .` does the same. Either way the
@@ -239,6 +239,6 @@ site.
 
 ## License
 
-Copyright (c) 2026 Sven Rosiers.
+Copyright (c) 2026 Sverologos BV.
 
 This project is licensed under the [Mozilla Public License 2.0](LICENSE.md).

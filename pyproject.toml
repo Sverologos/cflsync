@@ -19,7 +19,7 @@ dependencies = [
 cflsync = "cflsync.cli:main"
 
 [project.urls]
-Repository = "https://github.com/sven-prive/cflsync"
+Repository = "https://github.com/sverologos/cflsync"
 
 [build-system]
 requires = ["hatchling"]
