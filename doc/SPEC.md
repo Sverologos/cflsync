@@ -27,8 +27,17 @@ how to create a new, anchored workarea.
 exact page title, through Confluence with the profile's credentials. It then
 creates `.cflsync/` with an empty `cache/`, `profile`, and `root`, which records
 the root page ID, as one atomic installation. A failed lookup leaves no
-`.cflsync/` behind. `init` refuses a directory inside any existing workarea,
-and does not pull pages.
+`.cflsync/` behind. `init` does not pull pages.
+
+`init` also re-anchors an existing workarea, of either version, when run at its
+root and when its cache holds no page state: after the root page was removed, a
+workarea anchored at the wrong root and never pulled, or an empty version-1
+workarea, which is converted in place. The new root is resolved first; then
+`profile` and `root` are each replaced atomically, the root last. `-p` has its
+usual meaning, so omitting it sets the profile to `default`. The new root may
+be the old one. Local entries without cache state are unmanaged; the next pull
+reports clashes with them. `init` refuses a workarea with cached pages, and any
+directory below an existing workarea.
 
 `page pull PAGE_REF` resolves `PAGE_REF` and creates or updates its page
 directory and cache entry. The root page's directory is directly below the
@@ -163,15 +172,12 @@ removed before it; running the command again completes it. Removing the root
 page removes the whole tree and leaves an empty workarea: only `.cflsync`, with
 its profile, root page ID, and an empty cache, remains. Commands that then refer
 to pages, and `pull`, `push`, and `status`, report that the root page no longer
-exists; the directory can be re-used by deleting `.cflsync` and running `init`
-again.
+exists; `init ROOT_PAGE_REF` re-anchors the workarea.
 
 ## Current limitations
 
 The following situations are refused with an error that explains what to do:
 
-- A workarea cannot be re-anchored at another root page; after removing the
-  root page, delete `.cflsync` and run `init` again.
 - Folders and other non-page content inside the tree are not supported.
 
 ## Page references

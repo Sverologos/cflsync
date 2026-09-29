@@ -98,17 +98,47 @@ class TestWorkareaInitialization(unittest.TestCase):
 
             self.assertEqual(list(root.iterdir()), [])
 
-    def test_refuses_to_initialise_inside_any_existing_workarea(self) -> None:
+    def test_refuses_to_initialise_below_any_existing_workarea(self) -> None:
         with temporary_workarea() as workarea:
             (workarea.cflsync_dir / "root").unlink()
             nested = workarea.root_dir / "nested"
             nested.mkdir()
-            for path in [workarea.root_dir, nested]:
-                with self.subTest(path=path):
-                    with self.assertRaisesRegex(Workarea.Error, "already part of a cflsync workarea"):
-                        Workarea.init(path, "789012")
+
+            with self.assertRaisesRegex(Workarea.Error, "already part of a cflsync workarea"):
+                Workarea.init(nested, "789012")
 
             self.assertFalse((nested / ".cflsync").exists())
+
+    def test_re_anchors_an_empty_workarea_of_either_version_at_its_root(self) -> None:
+        for version in [1, 2]:
+            with self.subTest(version=version):
+                with temporary_workarea(profile="old") as workarea:
+                    if version == 1:
+                        (workarea.cflsync_dir / "root").unlink()
+
+                    reanchored = Workarea.init(workarea.root_dir, "789012", "new")
+
+                    self.assertEqual(reanchored.root_dir, workarea.root_dir)
+                    self.assertEqual((reanchored.root_page_id, reanchored.profile), ("789012", "new"))
+                    self.assertEqual(sorted(path.name for path in workarea.cflsync_dir.iterdir()), ["cache", "profile", "root"])
+
+    def test_refuses_to_re_anchor_a_workarea_with_cached_pages(self) -> None:
+        with temporary_workarea() as workarea:
+            example_page_state().save(workarea.cache_path("123456"))
+
+            with self.assertRaisesRegex(Workarea.Error, "cached pages and cannot be re-anchored"):
+                Workarea.init(workarea.root_dir, "789012")
+
+            self.assertEqual(workarea.root_page_id, "123456")
+
+    def test_a_failed_file_replacement_leaves_the_previous_anchor(self) -> None:
+        with temporary_workarea() as workarea:
+            with patch("cflsync.workarea.os.replace", side_effect=OSError("injected failure")):
+                with self.assertRaisesRegex(Workarea.Error, "cannot re-anchor workarea"):
+                    Workarea.init(workarea.root_dir, "789012", "new")
+
+            self.assertEqual((workarea.root_page_id, workarea.profile), ("123456", "default"))
+            self.assertEqual(sorted(path.name for path in workarea.cflsync_dir.iterdir()), ["cache", "profile", "root"])
 
 
 class TestWorkareaFormat(unittest.TestCase):

@@ -39,10 +39,13 @@ class InitCommand:
 
     def run(self, root_page_ref: str, profile: str = "default") -> int:
         api = _api_client(profile)
+        # The new root is resolved and verified before anything changes.
         reference = PageRef.resolve_remote(root_page_ref, api)
         page = api.get_page(reference.page_id)
+        existing = (Path.cwd() / ".cflsync" / "profile").is_file()
         Workarea.init(Path.cwd(), page.id, profile)
-        print(f"Initialised a workarea anchored at page '{page.id}' ({page.title}), using profile '{profile}'.")
+        action = "Re-anchored the workarea" if existing else "Initialised a workarea anchored"
+        print(f"{action} at page '{page.id}' ({page.title}), using profile '{profile}'.")
         print("Pull the page tree with 'cflsync pull'.")
         return 0
 

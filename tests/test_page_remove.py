@@ -12,7 +12,8 @@ from unittest.mock import patch
 
 from cflsync import SyncError
 from cflsync.cli import (
-    PageCreateCommand, PagePullCommand, PageRemoveCommand, RepositoryPullCommand, RepositoryPushCommand, RepositoryStatusCommand)
+    InitCommand, PageCreateCommand, PagePullCommand, PageRemoveCommand, RepositoryPullCommand, RepositoryPushCommand,
+    RepositoryStatusCommand)
 from tests.support import FakeConfluence, run_with_site, temporary_workarea
 
 
@@ -261,9 +262,15 @@ class TestPageRemove(unittest.TestCase):
                 lambda: RepositoryPullCommand().run(), lambda: RepositoryPushCommand().run(),
                 lambda: RepositoryStatusCommand().run()]
             for command in commands:
-                with self.assertRaisesRegex(SyncError,
-                                            "root page '100' of this workarea no longer exists; to re-use this directory, delete"):
+                with self.assertRaisesRegex(SyncError, "root page '100' of this workarea no longer exists; .* re-anchor"):
                     self._run(workarea, command)
+
+            # The empty workarea is re-anchored at another root, and pulled again.
+            self.site.add_page("901", "New root", parent_id="900")
+            self._run(workarea, lambda: InitCommand().run("901"))
+            self._run(workarea, lambda: RepositoryPullCommand().run())
+            self.assertEqual(workarea.root_page_id, "901")
+            self.assertTrue((workarea.root_dir / "New root" / "content.md").is_file())
 
 
 # vim: set ts=4 sw=4 et tw=132:

@@ -149,8 +149,12 @@ remotely and locally. It lists the pages and asks for confirmation unless
 `--force` is supplied; every page must be in sync. Pages already removed
 remotely lose only their local copy; if such a page has local changes, only
 `--force` removes it. Removing the root page removes the whole tree and leaves
-an empty workarea, which can be re-used by deleting `.cflsync` and running
-`init` again.
+an empty workarea.
+
+Run `init ROOT_PAGE_REF` at the root of an empty workarea, one without cached
+pages, to re-anchor it at another root page, for example after removing the
+root page, or when a workarea was anchored at the wrong page and not pulled yet.
+An empty workarea created by cflsync 0.3 is converted the same way.
 
 Use `cflsync --help` for top-level help, `cflsync page --help` for page-command
 help, and `cflsync page COMMAND --help` for a command's arguments.

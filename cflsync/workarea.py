@@ -384,7 +384,11 @@ class Workarea:
 
     @classmethod
     def init(cls, p: Path, root_page_id: str, profile: str = "default"):
-        """Initialise an empty workarea at path p, anchored at a root page and using the named auth profile."""
+        """Initialise a workarea at path p, anchored at a root page and using the named auth profile.
+
+        An existing workarea at p, of either version, is re-anchored if its cache holds no page state: its profile and
+        root are replaced. Any other existing workarea at or above p is refused.
+        """
         if not p.is_dir():
             raise Workarea.Error(f"'{p}' is not a directory")
         if re.fullmatch(r"[0-9]+", root_page_id) is None:
@@ -394,8 +398,13 @@ class Workarea:
 
         # Any existing workarea counts, including a version-1 workarea that find() refuses.
         existing = cls._locate(p)
-        if existing is not None:
+        if existing is not None and existing != p.resolve():
             raise Workarea.Error(f"'{p}' is already part of a cflsync workarea ({existing})")
+
+        if existing is not None:
+            workarea = cls(existing)
+            workarea._reanchor(root_page_id, profile)
+            return workarea
 
         cflsync_dir = p / ".cflsync"
         if cflsync_dir.exists():
@@ -427,6 +436,27 @@ class Workarea:
 
         return cls(p)
 
+    def is_empty(self) -> bool:
+        """Report whether the cache holds no page state, which allows re-anchoring the workarea."""
+        return not self.cache_dir.is_dir() or not self.page_state_paths()
+
+    def _reanchor(self, root_page_id, profile):
+        # The cache, not the directory contents, decides whether the workarea is empty: without cache state, local
+        # entries are unmanaged, and the next pull reports clashes with them.
+        if not self.is_empty():
+            raise Workarea.Error(
+                f"'{self.root_dir}' is a workarea with cached pages and cannot be re-anchored; remove its pages first "
+                "with 'cflsync page remove'")
+
+        try:
+            self.cache_dir.mkdir(mode=0o700, exist_ok=True)
+            # Each file is replaced atomically. The root goes last, so that a version-1 workarea only becomes a
+            # version-2 workarea once its profile is set.
+            _write_private_file(self.cflsync_dir / "profile", f"{profile}\n")
+            _write_private_file(self.cflsync_dir / "root", f"{root_page_id}\n")
+        except OSError as error:
+            raise Workarea.Error(f"cannot re-anchor workarea: {filesystem_error_message(error)}") from error
+
     @property
     def cflsync_dir(self) -> Path:
         return self.root_dir / ".cflsync"
@@ -449,7 +479,8 @@ class Workarea:
         except FileNotFoundError as error:
             raise Workarea.Error(
                 f"'{self.root_dir}' is a version-1 cflsync workarea, which this version of cflsync does not support; "
-                "create a new workarea anchored at a root page with 'cflsync init ROOT_PAGE_REF'") from error
+                "create a new workarea anchored at a root page with 'cflsync init ROOT_PAGE_REF', or re-anchor this one "
+                "the same way if it has no cached pages") from error
         except (OSError, UnicodeError) as error:
             raise Workarea.Error(f"cannot read '{path}': {filesystem_error_message(error)}") from error
 
@@ -536,8 +567,8 @@ class Workarea:
     def missing_root_error(self) -> SyncError:
         """Return the error that reports this workarea's root page as no longer existing."""
         return PageRefError(
-            f"root page '{self.root_page_id}' of this workarea no longer exists; to re-use this directory, delete "
-            f"'{self.cflsync_dir}' and run 'cflsync init ROOT_PAGE_REF'")
+            f"root page '{self.root_page_id}' of this workarea no longer exists; once its local pages are removed with "
+            "'cflsync page remove', re-anchor the workarea with 'cflsync init ROOT_PAGE_REF'")
 
     def check_removable(self, directory: Path) -> None:
         """Refuse to remove *directory* while it contains the current directory, which Windows does not allow."""
@@ -1111,6 +1142,25 @@ def _one_page_ref_id(page_ids: list[str], description: str) -> str:
 _WINDOWS_RESERVED_NAMES = {
     "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3",
     "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9", }
+
+
+def _write_private_file(path, text):
+    # Write *text* to a temporary file next to *path*, then rename it over *path*.
+    temporary_path = None
+    try:
+        with NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", suffix=".tmp",
+                                delete=False) as file:
+            temporary_path = Path(file.name)
+            if not _is_windows():
+                temporary_path.chmod(0o600)
+            file.write(text)
+            file.flush()
+            os.fsync(file.fileno())
+
+        os.replace(temporary_path, path)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
 def _is_windows() -> bool:
