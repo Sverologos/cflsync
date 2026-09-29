@@ -151,13 +151,38 @@ class TestRepositoryPull(unittest.TestCase):
             self.assertEqual(lines[-1], "Summary: 1 pulled, 1 unchanged, 1 blocked, 1 failed.")
             self.assertFalse(workarea.cache_path("400").exists())
 
-    def test_reports_a_sibling_name_clash_as_a_page_failure(self) -> None:
+    def test_suffixes_every_new_page_of_a_clashing_group(self) -> None:
         self.site.add_page("500", "beta", parent_id="100")
         with temporary_workarea(root_page_id="100") as workarea:
-            lines, status = self._pull(workarea)
+            _, status = self._pull(workarea)
 
-            self.assertEqual(status, 1)
-            self.assertIn("Page '500' (beta): failed: a sibling page ('300') already uses directory 'Root/beta'", lines)
+            root = workarea.root_dir / "Root"
+            self.assertEqual(status, 0)
+            self.assertTrue((root / "Beta_300" / "content.md").is_file())
+            self.assertTrue((root / "beta_500" / "content.md").is_file())
+            self.assertTrue((root / "Alpha" / "content.md").is_file())
+
+    def test_suffixes_only_the_newcomer_next_to_an_existing_directory(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea)
+            self.site.add_page("500", "Beta", parent_id="100")
+
+            _, status = self._pull(workarea)
+
+            self.assertEqual(status, 0)
+            self.assertEqual(PageState.load(workarea.cache_path("300")).page.directory, "Beta")
+            self.assertEqual(PageState.load(workarea.cache_path("500")).page.directory, "Beta_500")
+
+    def test_suffixes_a_literal_title_that_equals_a_suffixed_name(self) -> None:
+        self.site.add_page("500", "Beta", parent_id="100")
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea)
+            self.site.add_page("600", "Beta_300", parent_id="100")
+
+            _, status = self._pull(workarea)
+
+            self.assertEqual(status, 0)
+            self.assertEqual(PageState.load(workarea.cache_path("600")).page.directory, "Beta_300_600")
 
     def test_completes_an_interrupted_pull_on_the_next_run(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:

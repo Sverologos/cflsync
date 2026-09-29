@@ -70,7 +70,9 @@ cflsync pull
 ```
 
 Each page is a directory containing the page content in `content.md`, its
-attachments in `_attachments/`, and any child pages in subdirectories.
+attachments in `_attachments/`, and any child pages in subdirectories. Sibling
+pages whose titles give the same directory name are told apart by the page ID,
+as in `Release notes_123456`; once added, the suffix is kept.
 
 ### Upgrading from cflsync 0.3
 

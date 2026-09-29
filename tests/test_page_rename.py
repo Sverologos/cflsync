@@ -191,15 +191,24 @@ class TestPageRenameInTree(unittest.TestCase):
             self.assertEqual(workarea.page_directory(PageState.load(workarea.cache_path("300"))), renamed / "Grandchild")
             self.assertEqual(self.site.content["200"]["title"], "Renamed child")
 
-    def test_refuses_a_name_used_by_a_cached_sibling_before_the_remote_update(self) -> None:
+    def test_suffixes_a_rename_into_a_name_a_cached_sibling_uses(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea, "100", "200", "400")
 
-            with self.assertRaisesRegex(SyncError, r"a sibling page \('200'\) already uses directory 'Root/child'"):
-                run_with_site(self.site, workarea, lambda: PageRenameCommand().run("400", "child"))
+            run_with_site(self.site, workarea, lambda: PageRenameCommand().run("400", "child"))
 
-            self.assertEqual(self.site.content["400"]["title"], "Other")
-            self.assertTrue((workarea.root_dir / "Root" / "Other" / "content.md").is_file())
+            self.assertEqual(self.site.content["400"]["title"], "child")
+            self.assertTrue((workarea.root_dir / "Root" / "child_400" / "content.md").is_file())
+            self.assertTrue((workarea.root_dir / "Root" / "Child" / "content.md").is_file())
+
+    def test_a_rename_keeps_an_existing_suffix(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, "100", "200", "400")
+            run_with_site(self.site, workarea, lambda: PageRenameCommand().run("400", "child"))
+
+            run_with_site(self.site, workarea, lambda: PageRenameCommand().run("400", "Other again"))
+
+            self.assertEqual(PageState.load(workarea.cache_path("400")).page.directory, "Other again_400")
 
     def _snapshot(self, workarea):
         return {

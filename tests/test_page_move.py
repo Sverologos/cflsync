@@ -153,17 +153,30 @@ class TestPageMove(unittest.TestCase):
             self.assertEqual(output, "Pulled parent 'New parent' (987654) to Root page/New parent\n")
             self.assertTrue((workarea.root_dir / "Root page" / "New parent" / "Example page" / "content.md").is_file())
 
-    def test_refuses_a_name_used_by_a_cached_sibling_in_the_new_parent_before_the_remote_update(self) -> None:
+    def test_suffixes_a_name_used_by_a_cached_sibling_in_the_new_parent(self) -> None:
         self.site.add_page("333333", "Example page", parent_id="987654")
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea, ["100", "456789", "123456", "987654", "333333"])
-            before = self._snapshot(workarea)
 
-            with self.assertRaisesRegex(SyncError,
-                                        r"a sibling page \('333333'\) already uses directory 'Root page/New parent/Example page'"):
-                self._move(workarea, "987654")
+            _, status = self._move(workarea, "987654")
 
-            self._assert_not_moved(workarea, before)
+            new_parent = workarea.root_dir / "Root page" / "New parent"
+            self.assertEqual(status, 0)
+            self.assertTrue((new_parent / "Example page_123456" / "_attachments" / "diagram.png").is_file())
+            self.assertTrue((new_parent / "Example page" / "content.md").is_file())
+            self.assertEqual(PageState.load(workarea.cache_path("123456")).page.directory, "Example page_123456")
+            self.assertEqual(PageState.load(workarea.cache_path("333333")).page.directory, "Example page")
+
+    def test_a_move_keeps_an_existing_suffix(self) -> None:
+        self.site.add_page("333333", "Example page", parent_id="987654")
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, ["100", "456789", "123456", "987654", "333333"])
+            self._move(workarea, "987654")
+
+            self._move(workarea, "456789")
+
+            self.assertTrue((workarea.root_dir / "Root page" / "Current parent" / "Example page_123456").is_dir())
+            self.assertEqual(PageState.load(workarea.cache_path("123456")).page.directory, "Example page_123456")
 
     def test_reports_server_hierarchy_rejection_without_changing_local_state(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:

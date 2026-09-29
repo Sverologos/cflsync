@@ -450,16 +450,51 @@ class TestPagePullNesting(unittest.TestCase):
 
             self.assertEqual(root.read_text(encoding="utf-8"), "# Root\n\nLocal edit\n")
 
-    def test_refuses_a_name_used_by_a_cached_sibling(self) -> None:
+    def test_suffixes_a_remote_rename_into_a_name_a_cached_sibling_uses(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea, "100", "200", "400")
             self._remote_change("400", title="child")
-            before = self._snapshot(workarea)
 
-            with self.assertRaisesRegex(SyncError, r"a sibling page \('200'\) already uses directory 'Root/child'"):
-                self._pull(workarea, "400")
+            self._pull(workarea, "400")
 
-            self.assertEqual(self._snapshot(workarea), before)
+            root = workarea.root_dir / "Root"
+            self.assertEqual(sorted(path.name for path in root.iterdir() if path.is_dir()), ["Child", "_attachments", "child_400"])
+            self.assertEqual(PageState.load(workarea.cache_path("200")).page.directory, "Child")
+
+    def test_keeps_a_suffix_after_the_clash_disappears_and_across_renames(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, "100", "200", "400")
+            self._remote_change("400", title="child")
+            self._pull(workarea, "400")
+            del self.site.content["200"]
+            self._remote_change("400", title="Renamed")
+
+            self._pull(workarea, "400")
+
+            self.assertEqual(PageState.load(workarea.cache_path("400")).page.directory, "Renamed_400")
+            self.assertTrue((workarea.root_dir / "Root" / "Renamed_400" / "content.md").is_file())
+
+    def test_suffixes_a_missing_ancestor_whose_name_a_cached_sibling_uses(self) -> None:
+        self.site.add_page("500", "CHILD", parent_id="100")
+        self.site.add_page("600", "Leaf", parent_id="500")
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, "100", "200")
+
+            self._pull(workarea, "600")
+
+            self.assertTrue((workarea.root_dir / "Root" / "CHILD_500" / "Leaf" / "content.md").is_file())
+            self.assertEqual(PageState.load(workarea.cache_path("500")).page.directory, "CHILD_500")
+
+    def test_suffixes_a_new_page_whose_name_a_cached_sibling_uses(self) -> None:
+        self.site.add_page("500", "CHILD", parent_id="100")
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, "100", "200")
+            before = (workarea.root_dir / "Root" / "Child" / "content.md").read_bytes()
+
+            self._pull(workarea, "500")
+
+            self.assertTrue((workarea.root_dir / "Root" / "CHILD_500" / "content.md").is_file())
+            self.assertEqual((workarea.root_dir / "Root" / "Child" / "content.md").read_bytes(), before)
 
     def test_refuses_an_unmanaged_entry_with_the_same_name(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:

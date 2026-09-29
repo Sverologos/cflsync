@@ -544,6 +544,31 @@ class Workarea:
         except OSError as error:
             raise Workarea.Error(f"cannot remove managed page directory: {filesystem_error_message(error)}") from error
 
+    def sibling_uses(self, page_id: str | None, parent_id: str | None, name: str) -> bool:
+        """Report whether a cached page other than *page_id* below *parent_id* uses directory *name*."""
+        for other_id, other in self.page_tree().states.items():
+            if other_id != page_id and other.page.parent_id == parent_id and same_directory_name(other.page.directory, name):
+                return True
+
+        return False
+
+    def has_suffix(self, state: PageState) -> bool:
+        """Report whether a cached page's directory name carries the disambiguation suffix."""
+        return state.page.directory == self.page_directory_name(state.page.title, state.page.id)
+
+    def sibling_directory_name(self, page_id: str, parent_id: str | None, title: str, suffixed: bool = False) -> str:
+        """Return the directory name of page *page_id* titled *title* below cached parent *parent_id*.
+
+        The name is the title's plain name, unless *suffixed* is true or a cached sibling already uses it; the name
+        then ends in the disambiguation suffix ``_<page_id>``. Unmanaged entries are checked by
+        :meth:`page_directory_target`.
+        """
+        name = self.page_directory_name(title)
+        if suffixed or self.sibling_uses(page_id, parent_id, name):
+            return self.page_directory_name(title, page_id)
+
+        return name
+
     def page_directory_target(self, page_id: str | None, parent_id: str | None, name: str) -> Path:
         """Return the safe, unoccupied path for page *page_id* named *name* below cached parent *parent_id*.
 
@@ -1078,9 +1103,14 @@ def _directory_name_piece(character):
     return character
 
 
+def directory_name_key(name: str) -> str:
+    """Return the form in which a case-insensitive, normalizing filesystem compares directory names."""
+    return unicodedata.normalize("NFC", name).casefold()
+
+
 def same_directory_name(first: str, second: str) -> bool:
     """Report whether two directory names are equal on a case-insensitive, normalizing filesystem."""
-    return unicodedata.normalize("NFC", first).casefold() == unicodedata.normalize("NFC", second).casefold()
+    return directory_name_key(first) == directory_name_key(second)
 
 
 def filesystem_error_message(error: Exception) -> str:

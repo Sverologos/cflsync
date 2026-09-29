@@ -244,11 +244,16 @@ class TestPageCreateInTree(unittest.TestCase):
 
             self._refused(workarea, "100", "New page", "page directory 'Root/New page' already exists")
 
-    def test_refuses_a_name_used_by_a_cached_sibling_before_creating(self) -> None:
+    def test_suffixes_a_new_page_whose_name_a_cached_sibling_uses(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea, "100", "200")
 
-            self._refused(workarea, "100", "child", r"a sibling page \('200'\) already uses directory 'Root/child'")
+            self._run(workarea, lambda: PageCreateCommand().run("100", "child"))
+
+            [created] = [item["id"] for item in self.site.content.values() if item["title"] == "child"]
+            self.assertTrue((workarea.root_dir / "Root" / f"child_{created}" / "content.md").is_file())
+            self.assertTrue((workarea.root_dir / "Root" / "Child" / "content.md").is_file())
+            self.assertEqual(PageState.load(workarea.cache_path(created)).page.directory, f"child_{created}")
 
     def test_refuses_a_parent_outside_the_tree_before_creating(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
