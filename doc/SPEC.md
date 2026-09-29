@@ -5,7 +5,7 @@
 ```text
 cflsync auth [-p PROFILE] [--list | --delete]
 cflsync init [-p PROFILE] ROOT_PAGE_REF
-cflsync pull [-f | --force]
+cflsync pull [-f | --force] [-d | --delete]
 cflsync push [-f | --force]
 cflsync status
 cflsync page create PARENT_PAGE_REF TITLE
@@ -69,14 +69,34 @@ conflicting and unchanged pages are also pulled, overwriting local changes to
 managed files. A page whose parent could not be pulled is reported as blocked.
 Cached pages that are no longer in the tree, because they were deleted or moved
 outside the root, are kept unchanged and reported last. Each page is reported
-as pulled, unchanged, skipped, blocked, kept, or failed, followed by a summary;
-the command exits non-zero if any page failed. An interrupted pull is completed
-by running it again.
+as pulled, deleted, unchanged, skipped, blocked, kept, or failed, followed by a
+summary; the command exits non-zero if any page failed. An interrupted pull is
+completed by running it again.
+
+`pull --delete` (`-d`) also deletes the local copies of pages that are no longer
+in the tree: each page's directory, including unmanaged files, and its cache
+entry. Nothing is deleted remotely. Every check runs before any change:
+
+- Without `--force`, a page removed remotely whose local copy changed is a
+  conflict, and aborts the command like any other conflict.
+- Without `--force`, the command lists the pages to delete, marking unmanaged
+  files that Confluence cannot restore, and asks for confirmation. Declining
+  aborts the command; without a terminal, the command fails and suggests
+  `--force`. `--force` deletes without confirmation, including local changes.
+
+Deletions run after all pulls and relocations, children before parents. A
+page's directory is deleted only if every cached page below it is deleted too;
+a child whose relocation out of the directory failed keeps its parent, which is
+reported as blocked. A page whose directory is already missing only loses its
+cache entry. An interrupted deletion leaves a valid cache and is completed by
+running the command again. The root page is never deleted this way: if it is
+gone, discovery fails first.
 
 `status` discovers the tree and compares it with the cache in the same way, and
 reports one line per page, parents before children: `not in local` (remote page
 not cached, or its directory is missing), `remote removed` (cached page absent
 from the tree: deleted, inaccessible, or moved outside the root), `remote
+removed, local changed` (such a page whose local copy changed), `remote
 changed`, `local changed`, `conflict` (changed on both sides), or `unchanged`,
 followed by counts per state. It changes nothing. If discovery fails, for
 example because a listing is denied or the tree contains a folder, the command
@@ -118,7 +138,8 @@ parent's directory, and records the new parent in the cache. The Markdown is
 unchanged. If Confluence rejects the update, installed ancestors remain.
 
 `page remove [-f | --force] PAGE_REF` requires a managed local page directory
-and cache entry. It confirms removal unless `--force` is supplied. When the
+and cache entry. It confirms removal unless `--force` is supplied; without a
+terminal, it fails instead of prompting. When the
 remote page exists, the command requires it to be synchronized, deletes it,
 then removes the local directory and cache entry. A remote 404 is treated as
 an already-removed remote page, so only the local copy is removed. A page with
@@ -137,8 +158,6 @@ The following situations are refused with an error that explains what to do:
 - A workarea cannot be re-anchored at another root page; after removing the
   root page, delete `.cflsync` and run `init` again.
 - Folders and other non-page content inside the tree are not supported.
-- Cached pages that are no longer in the tree are not deleted locally; remove
-  their directories and cache entries with `page remove`.
 
 ## Page references
 

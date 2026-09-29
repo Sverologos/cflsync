@@ -39,7 +39,7 @@ a checkout as `uv run python -m cflsync`.
 ```text
 cflsync auth [-p PROFILE] [--list | --delete]
 cflsync init [-p PROFILE] ROOT_PAGE_REF
-cflsync pull [-f | --force]
+cflsync pull [-f | --force] [-d | --delete]
 cflsync push [-f | --force]
 cflsync status
 cflsync page create PARENT_PAGE_REF TITLE
@@ -111,7 +111,10 @@ pages that changed remotely or are missing locally, parents first, moves
 directories after remote renames and moves, and reports each result and a
 summary. Without `--force`, any conflict aborts the command before a page is
 pulled, and locally changed pages are skipped. `pull --force` also overwrites
-local changes. Pages no longer in the tree are reported but kept locally.
+local changes. Pages no longer in the tree are reported but kept locally;
+`pull --delete` deletes their local copies after asking for confirmation, which
+`--force` skips. With `--delete`, a page removed remotely whose local copy
+changed is a conflict. Nothing is ever deleted in Confluence by `pull`.
 
 Use `push` to compare the complete remote page tree with the local cache and
 apply page pushes parents before children. It pushes locally changed pages and

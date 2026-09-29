@@ -533,9 +533,12 @@ class Workarea:
 
         return directory
 
-    def remove_page(self, state: PageState) -> None:
-        """Remove one complete managed page directory."""
-        directory = self.page_directory(state)
+    def remove_page(self, state: PageState, must_exist: bool = True) -> None:
+        """Remove one complete managed page directory; with *must_exist* false, a missing directory is not an error."""
+        directory = self.page_directory(state, must_exist=must_exist)
+        if not directory.exists():
+            return
+
         if _is_windows() and _current_directory_is_inside(directory):
             raise Workarea.Error("cannot remove a page directory while it is the current directory; run cflsync from outside it")
 
@@ -543,6 +546,34 @@ class Workarea:
             shutil.rmtree(directory)
         except OSError as error:
             raise Workarea.Error(f"cannot remove managed page directory: {filesystem_error_message(error)}") from error
+
+    def unmanaged_entries(self, state: PageState) -> list[str]:
+        """Return the entries of a cached page's directory that cflsync does not manage, relative to that directory.
+
+        Managed entries are the content file, managed attachments, and the directories of cached child pages.
+        """
+        directory = self.page_directory(state, must_exist=False)
+        if not directory.is_dir():
+            return []
+
+        children = {other.page.directory for other in self.page_tree().states.values() if other.page.parent_id == state.page.id}
+        entries = []
+        for entry in sorted(directory.iterdir()):
+            if entry.name == CONTENT_FILENAME and entry.is_file():
+                continue
+
+            if entry.name == "_attachments" and entry.is_dir():
+                for attachment in sorted(entry.iterdir()):
+                    if attachment.name not in state.attachments:
+                        entries.append(f"_attachments/{attachment.name}")
+                continue
+
+            if entry.name in children and entry.is_dir():
+                continue
+
+            entries.append(entry.name)
+
+        return entries
 
     def sibling_uses(self, page_id: str | None, parent_id: str | None, name: str) -> bool:
         """Report whether a cached page other than *page_id* below *parent_id* uses directory *name*."""

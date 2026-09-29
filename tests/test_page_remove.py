@@ -85,8 +85,9 @@ class TestPageRemove(unittest.TestCase):
         with temporary_workarea() as workarea:
             self._pull(workarea)
 
-            with patch("builtins.input", return_value="yes") as confirm:
-                _, status, _ = self._remove(workarea, force=False)
+            with patch("cflsync.cli._terminal_available", return_value=True):
+                with patch("builtins.input", return_value="yes") as confirm:
+                    _, status, _ = self._remove(workarea, force=False)
 
             self.assertEqual(status, 0)
             self.assertIn("Remove remote and local copy of page 'Example page' (123456)", confirm.call_args.args[0])
@@ -97,12 +98,24 @@ class TestPageRemove(unittest.TestCase):
             self._pull(workarea)
             before = self._snapshot(workarea)
 
-            with patch("builtins.input", return_value="no"):
-                _, status, transport = self._remove(workarea, force=False)
+            with patch("cflsync.cli._terminal_available", return_value=True):
+                with patch("builtins.input", return_value="no"):
+                    _, status, transport = self._remove(workarea, force=False)
 
             self.assertEqual(status, 0)
             self.assertEqual(self._snapshot(workarea), before)
             self.assertTrue(all(request.method == "GET" for request in transport.requests))
+
+    def test_refuses_to_prompt_without_a_terminal(self) -> None:
+        with temporary_workarea() as workarea:
+            self._pull(workarea)
+            before = self._snapshot(workarea)
+
+            with patch("cflsync.cli._terminal_available", return_value=False):
+                with self.assertRaisesRegex(SyncError, "confirmation requires a terminal; use --force"):
+                    self._remove(workarea, force=False)
+
+            self.assertEqual(self._snapshot(workarea), before)
 
     def test_force_bypasses_confirmation(self) -> None:
         with temporary_workarea() as workarea:
@@ -118,8 +131,9 @@ class TestPageRemove(unittest.TestCase):
             self._pull(workarea)
             responses = [MockResponse.from_json({"message": "not found"}, status=404)]
 
-            with patch("builtins.input", return_value="yes") as confirm:
-                _, status, transport = self._run(workarea, lambda: PageRemoveCommand().run("123456"), responses)
+            with patch("cflsync.cli._terminal_available", return_value=True):
+                with patch("builtins.input", return_value="yes") as confirm:
+                    _, status, transport = self._run(workarea, lambda: PageRemoveCommand().run("123456"), responses)
 
             self.assertEqual(status, 0)
             self.assertEqual([request.method for request in transport.requests], ["GET"])

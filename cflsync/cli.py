@@ -20,7 +20,7 @@ from .config import Config, Profile
 from .convert import MarkdownToADFConverter, PandocRunner
 from .errors import SyncError
 from .sync import (
-    PageChangeDetector, PageChangeStatus, PagePullOperation, PagePushOperation, PageStatus, PageStatusState,
+    PageChangeDetector, PageChangeStatus, PageDeletion, PagePullOperation, PagePushOperation, PageStatus, PageStatusState,
     RepositoryPullOperation, RepositoryPushOperation, TreeStatus)
 from .workarea import (CONTENT_FILENAME, PageMetadata, PageRef, PageState, Workarea, filesystem_error_message)
 
@@ -74,22 +74,40 @@ class RepositoryPullCommand:
     def configure(self, subparsers: _SubParsersAction[ArgumentParser]) -> None:
         pull_parser = subparsers.add_parser("pull", help="pull every page of the workarea's tree")
         pull_parser.add_argument(
-            "-f", "--force", action="store_true", help="prefer remote content, overwriting local changes to managed files")
+            "-f",
+            "--force",
+            action="store_true",
+            help="prefer remote content, overwriting local changes to managed files; delete without confirmation")
+        pull_parser.add_argument(
+            "-d", "--delete", action="store_true", help="delete local copies of pages that are no longer in the tree")
         pull_parser.set_defaults(command=self)
 
     def __call__(self, args: Namespace) -> int:
-        return self.run(force=args.force)
+        return self.run(force=args.force, delete=args.delete)
 
-    def run(self, force: bool = False) -> int:
+    def run(self, force: bool = False, delete: bool = False) -> int:
         try:
             workarea, api = _open_workarea()
             status = TreeStatus.for_workarea(workarea, api, PageChangeDetector(PandocRunner()))
         except (OSError, UnicodeError) as error:
             raise SyncError(f"cannot pull workarea: {filesystem_error_message(error)}") from error
 
-        results = RepositoryPullOperation().pull(workarea, api, status, force)
+        results = RepositoryPullOperation().pull(workarea, api, status, force, delete, self._confirm_deletions)
         results.report()
         return 1 if results.failed else 0
+
+    def _confirm_deletions(self, deletions: list[PageDeletion]) -> bool:
+        print("These pages are no longer in the tree (deleted or moved outside the root):")
+        for deletion in deletions:
+            page_status = deletion.status
+            unmanaged = ""
+            if deletion.unmanaged:
+                unmanaged = f"; unmanaged files, which cannot be restored: {', '.join(deletion.unmanaged)}"
+
+            print(f"  Page '{page_status.id}' ({page_status.title}): {deletion.directory}{unmanaged}")
+
+        copies = "copy" if len(deletions) == 1 else "copies"
+        return _confirm(f"Delete {len(deletions)} local page {copies}?")
 
 
 class RepositoryStatusCommand:
@@ -101,6 +119,7 @@ class RepositoryStatusCommand:
         PageStatusState.REMOTE_CHANGED: "remote changed",
         PageStatusState.LOCAL_CHANGED: "local changed",
         PageStatusState.CONFLICT: "conflict",
+        PageStatusState.CONFLICT_ABSENT_REMOTE: "remote removed, local changed",
         PageStatusState.UNCHANGED: "unchanged"}
 
     def configure(self, subparsers: _SubParsersAction[ArgumentParser]) -> None:
@@ -482,8 +501,7 @@ class PageRemoveCommand:
 
     def _confirm(self, state: PageState, remote_exists: bool) -> bool:
         scope = "remote and local copy of" if remote_exists else "local copy of"
-        response = input(f"Remove {scope} page '{state.page.title}' ({state.page.id})? [y/N] ")
-        return response.lower() in {"y", "yes"}
+        return _confirm(f"Remove {scope} page '{state.page.title}' ({state.page.id})?")
 
 
 class PageStatusCommand:
@@ -599,6 +617,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     except SyncError as error:
         print(f"{parser.prog}: {error}", file=sys.stderr)
         return 1
+
+
+def _confirm(question: str) -> bool:
+    # A confirmation needs someone to answer it; without a terminal, the command fails before any change.
+    if not _terminal_available():
+        raise SyncError("confirmation requires a terminal; use --force to proceed without confirmation")
+
+    return input(f"{question} [y/N] ").lower() in {"y", "yes"}
+
+
+def _terminal_available():
+    return sys.stdin.isatty()
 
 
 def _open_workarea():

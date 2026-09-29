@@ -102,7 +102,14 @@ class TestPageCommandDispatch(unittest.TestCase):
             result = main(["cflsync", "pull", "--force"])
 
         self.assertEqual(result, 0)
-        run.assert_called_once_with(force=True)
+        run.assert_called_once_with(force=True, delete=False)
+
+    def test_dispatches_repository_pull_with_delete(self) -> None:
+        with patch.object(RepositoryPullCommand, "run", return_value=0) as run:
+            result = main(["cflsync", "pull", "-d"])
+
+        self.assertEqual(result, 0)
+        run.assert_called_once_with(force=False, delete=True)
 
     def test_dispatches_repository_status(self) -> None:
         with patch.object(RepositoryStatusCommand, "run", return_value=0) as run:

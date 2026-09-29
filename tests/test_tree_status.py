@@ -66,6 +66,34 @@ class TestTreeStatus(unittest.TestCase):
                     ("300", PageStatusState.REMOTE_CHANGED), ("400", PageStatusState.LOCAL_CHANGED),
                     ("500", PageStatusState.CONFLICT), ("600", PageStatusState.ABSENT_REMOTE)])
 
+    def test_distinguishes_absent_remote_pages_by_their_local_changes(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            states = [
+                self._cache_page(workarea, "100", "Root", None, "Root"),
+                self._cache_page(workarea, "600", "Unchanged", "100", "Unchanged"),
+                self._cache_page(workarea, "700", "Edited", "100", "Edited", markdown="# Page\n\nEdited\n"),
+                self._cache_page(workarea, "800", "Missing", "100", "Missing", create=False)]
+            status = TreeStatus.from_pages(workarea, self._site().client(), self._references()[:1], states, self.detector)
+
+            self.assertEqual(
+                [(page.id, page.status) for page in status.pages], [
+                    ("100", PageStatusState.UNCHANGED), ("600", PageStatusState.ABSENT_REMOTE),
+                    ("700", PageStatusState.CONFLICT_ABSENT_REMOTE), ("800", PageStatusState.ABSENT_REMOTE)])
+
+    def test_classifies_a_page_that_disappears_during_comparison_by_its_local_changes(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            states = [
+                self._cache_page(workarea, "100", "Root", None, "Root"),
+                self._cache_page(workarea, "400", "Local changed", "100", "Local changed", markdown="# Page\n\nEdited\n")]
+            site = self._site()
+            del site.content["400"]
+
+            status = TreeStatus.from_pages(
+                workarea, site.client(), [self._references()[0], self._references()[3]], states, self.detector)
+
+            self.assertEqual(status.pages[1].status, PageStatusState.CONFLICT_ABSENT_REMOTE)
+            self.assertIsNone(status.pages[1].remote)
+
     def test_marks_a_cached_page_without_its_directory_absent_local(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             states = [

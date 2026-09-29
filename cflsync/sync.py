@@ -14,9 +14,11 @@
 # 2. List all local pages by loading the local cache.
 # 3. For each remote page, match its cached page. No cached state or local directory is ``absent-local``. Otherwise,
 #    classify the remote representation against the cached version.
-# 4. Every cached page absent from the remote list is ``absent-remote``. For matched pages, combine local and remote
-#    change states (PageChangeDetector): both changed is ``conflict``; otherwise one changed is ``local-changed`` or
-#    ``remote-changed``; neither changed is ``unchanged``.
+# 4. Every cached page absent from the remote list is ``absent-remote``, or ``conflict-absent-remote`` if its local copy
+#    changed. For matched pages, combine local and remote change states (PageChangeDetector): both changed is
+#    ``conflict``; otherwise one changed is ``local-changed`` or ``remote-changed``; neither changed is ``unchanged``.
+#    ``conflict-absent-remote`` is a conflict too, but a separate state, because every operation resolves ``conflict``
+#    by assuming that the remote page exists.
 # 5. Sort the statuses topologically, parents before children.
 #
 # Report (``cflsync status``, in the CLI) maps each PageStatusState to a label, parents first:
@@ -26,23 +28,30 @@
 # - ``local-changed``: local changed.
 # - ``conflict``: conflict.
 # - ``absent-remote``: remote removed.
+# - ``conflict-absent-remote``: remote removed, local changed.
 # - ``unchanged``: unchanged.
 #
-# Execute:
+# Execute: every check runs before any page operation, so a failed check or a declined confirmation changes nothing.
 #
-# - If any ``conflict`` entry exists, abort unless ``--force`` was specified.
+# - Without ``--force``, any ``conflict`` entry aborts; for ``pull --delete``, so does any ``conflict-absent-remote``.
 # - For pull (RepositoryPullOperation), walk the statuses parents before children, since a page directory lives inside
 #   its parent's. Execute ``remote-changed`` and ``absent-local`` entries (an ``absent-local`` entry with cached state
 #   restores the missing directory); with ``--force``, also execute ``conflict`` and ``unchanged`` entries as pulls.
 #   Each pull places the page below its current remote parent and relocates its directory, with its subtree, after a
 #   remote rename or move. Its directory name is the title's plain name, or carries the stable page-ID suffix when a
 #   cached sibling uses the plain name or it already has one; new siblings with the same name are all suffixed. A page
-#   below a page that failed is blocked. Skip ``local-changed`` entries. Keep
-#   ``absent-remote`` entries unchanged and report them last, after every relocation out of their directories.
+#   below a page that failed is blocked. Skip ``local-changed`` entries. Handle absent pages last, after every
+#   relocation out of their directories:
+#   - Without ``--delete``, keep ``absent-remote`` and ``conflict-absent-remote`` entries unchanged and report them.
+#   - With ``--delete``, the CLI first confirms the deletions (PageDeletion) unless ``--force`` is given; declining
+#     aborts. Then delete each absent page's local directory, with unmanaged files, and its cache entry, children
+#     before parents, so that every remaining cached page keeps its cached parent after an interruption. The cache is
+#     reloaded first, because the pull phase may have relocated pages. A directory is deleted only if every cached page
+#     below it is deleted too; otherwise the page is blocked. A missing directory only loses its cache entry.
 # - For push (RepositoryPushOperation), walk the statuses parents before children; a page push changes no hierarchy, so
 #   order is only deterministic. Execute ``local-changed`` entries; with ``--force``, also execute ``conflict`` and
-#   ``unchanged`` entries as pushes. Never push ``absent-remote`` entries; recreate those pages with ``page create``
-#   instead.
+#   ``unchanged`` entries as pushes. Never push ``absent-remote`` or ``conflict-absent-remote`` entries; recreate those
+#   pages with ``page create`` instead.
 #
 # TreeStatus only compares and orders; each repository operation is a separate class mapping a page operation over it.
 
@@ -106,7 +115,7 @@ class PageOperationResults:
 
         counts = {
             outcome: sum(result.outcome == outcome for result in self.pages)
-            for outcome in ["pulled", "pushed", "unchanged", "skipped", "kept", "blocked", "failed"]}
+            for outcome in ["pulled", "pushed", "deleted", "unchanged", "skipped", "kept", "blocked", "failed"]}
         summary = ", ".join(f"{count} {outcome}" for outcome, count in counts.items() if count)
         print(f"Summary: {summary}.")
 
@@ -207,6 +216,9 @@ class PageStatusState(StrEnum):
     REMOTE_CHANGED = "remote-changed"
     LOCAL_CHANGED = "local-changed"
     CONFLICT = "conflict"
+    # A conflict on a page removed remotely and changed locally. It is separate from CONFLICT, which every operation
+    # resolves by assuming that the remote page exists.
+    CONFLICT_ABSENT_REMOTE = "conflict-absent-remote"
     UNCHANGED = "unchanged"
 
 
@@ -312,16 +324,24 @@ class TreeStatus:
             except APIError as error:
                 if error.status != 404:
                     raise
-                pages.append(PageStatus(PageStatusState.ABSENT_REMOTE, None, local))
+                pages.append(PageStatus(cls._absent_remote_status(local_status), None, local))
                 continue
 
             remote_status = detector.remote_status(page, page.attachments(), local)
             pages.append(PageStatus(cls._status(local_status, remote_status), remote, local))
 
         for local in locals_.values():
-            pages.append(PageStatus(PageStatusState.ABSENT_REMOTE, None, local))
+            local_status = detector.local_status(workarea.page_directory(local, must_exist=False), local)
+            pages.append(PageStatus(cls._absent_remote_status(local_status), None, local))
 
         return cls(pages)
+
+    @staticmethod
+    def _absent_remote_status(local: PageChangeStatus) -> PageStatusState:
+        """Map the local change state of a page absent remotely to one synchronization state."""
+        if local is PageChangeStatus.CHANGED:
+            return PageStatusState.CONFLICT_ABSENT_REMOTE
+        return PageStatusState.ABSENT_REMOTE
 
     @staticmethod
     def _status(local: PageChangeStatus, remote: PageChangeStatus) -> PageStatusState:
@@ -571,19 +591,54 @@ class PagePullOperation:
         return True
 
 
+class PageDeletion:
+    """One local page copy that ``pull --delete`` deletes, because its page is no longer in the tree.
+
+    *directory* is relative to the workarea root, with "/" separators. *unmanaged* lists the entries of that directory
+    that Confluence cannot restore.
+    """
+
+    def __init__(self, status: PageStatus, directory: str, unmanaged: list[str]) -> None:
+        self.status = status
+        self.directory = directory
+        self.unmanaged = unmanaged
+
+
 class RepositoryPullOperation:
     """Apply page pull operations to a complete tree-status comparison."""
+
+    ABSENT = {PageStatusState.ABSENT_REMOTE, PageStatusState.CONFLICT_ABSENT_REMOTE}
 
     def __init__(self, page_pull: PagePullOperation | None = None) -> None:
         self._page_pull = page_pull or PagePullOperation()
 
-    def pull(self, workarea: Workarea, api, status: TreeStatus, force: bool = False) -> PageOperationResults:
-        """Pull remotely changed and missing pages parents first, rejecting detected conflicts unless *force*.
+    def pull(
+            self,
+            workarea: Workarea,
+            api,
+            status: TreeStatus,
+            force: bool = False,
+            delete: bool = False,
+            confirm: Callable[[list[PageDeletion]], bool] | None = None) -> PageOperationResults:
+        """Pull remotely changed and missing pages parents first; with *delete*, delete pages absent from the tree.
 
-        A page below a page that failed is blocked. Cached pages absent from the tree are kept and reported.
+        Every check runs before any change. Without *force*, a conflict aborts the command; with *delete*, so does a
+        page removed remotely and changed locally. With *delete* and without *force*, *confirm* receives the planned
+        deletions, and declining aborts the command. A page below a page that failed is blocked. Without *delete*,
+        cached pages absent from the tree are kept and reported.
         """
-        if not force and any(page.status is PageStatusState.CONFLICT for page in status.pages):
+        conflicts = {PageStatusState.CONFLICT}
+        if delete:
+            conflicts.add(PageStatusState.CONFLICT_ABSENT_REMOTE)
+
+        if not force and any(page.status in conflicts for page in status.pages):
             raise SyncError("repository pull conflicts; resolve conflicts or use --force")
+
+        deletions = []
+        if delete:
+            deletions = self._deletions(workarea, status)
+            if deletions and not force and (confirm is None or not confirm(deletions)):
+                raise SyncError("repository pull cancelled; nothing was changed")
 
         results = PageOperationResults()
         unsuccessful: set[str] = set()
@@ -593,7 +648,7 @@ class RepositoryPullOperation:
             pulled |= {PageStatusState.CONFLICT, PageStatusState.UNCHANGED}
 
         for page_status in status.pages:
-            if page_status.status is PageStatusState.ABSENT_REMOTE:
+            if page_status.status in self.ABSENT:
                 continue
 
             if page_status.parent_id in unsuccessful:
@@ -622,14 +677,60 @@ class RepositoryPullOperation:
             else:
                 results.add(page_status.id, page_status.title, "pulled" if changed else "unchanged")
 
-        # Absent pages are reported last, after every relocation out of their directories has been applied.
-        for page_status in status.pages:
-            if page_status.status is PageStatusState.ABSENT_REMOTE:
-                results.add(
-                    page_status.id, page_status.title, "kept",
-                    "no longer in the tree (deleted or moved outside the root); the local copy is unchanged")
+        # Absent pages are handled last, after every relocation out of their directories has been applied.
+        if delete:
+            self._delete(workarea, deletions, results)
+        else:
+            for page_status in status.pages:
+                if page_status.status in self.ABSENT:
+                    results.add(
+                        page_status.id, page_status.title, "kept",
+                        "no longer in the tree (deleted or moved outside the root); the local copy is unchanged")
 
         return results
+
+    def _deletions(self, workarea, status):
+        # The deletions follow the statuses' parents-first order.
+        tree = workarea.page_tree()
+        deletions = []
+        for page_status in status.pages:
+            if page_status.status in self.ABSENT:
+                assert page_status.local is not None
+                deletions.append(
+                    PageDeletion(page_status, tree.directory(page_status.id), workarea.unmanaged_entries(page_status.local)))
+
+        return deletions
+
+    @staticmethod
+    def _delete(workarea, deletions, results):
+        # The cache is reloaded, since the pull phase may have relocated pages out of absent directories. Children are
+        # deleted before parents, so that every remaining cached page keeps its cached parent after an interruption.
+        tree = workarea.page_tree()
+        children: dict[str | None, list[str]] = {}
+        for page_id, state in tree.states.items():
+            children.setdefault(state.page.parent_id, []).append(page_id)
+
+        deleted: set[str] = set()
+        for deletion in reversed(deletions):
+            page_status = deletion.status
+            # A directory is deleted only if every cached page below it is deleted too.
+            remaining = [page_id for page_id in _descendants(children, page_status.id) if page_id not in deleted]
+            if remaining:
+                results.add(
+                    page_status.id, page_status.title, "blocked", f"its directory contains page '{remaining[0]}', which is kept")
+                continue
+
+            try:
+                workarea.remove_page(tree.states[page_status.id], must_exist=False)
+                workarea.cache_path(page_status.id).unlink()
+            except (OSError, UnicodeError) as error:
+                results.add(page_status.id, page_status.title, "failed", filesystem_error_message(error))
+            except SyncError as error:
+                results.add(page_status.id, page_status.title, "failed", str(error))
+            else:
+                deleted.add(page_status.id)
+                results.add(
+                    page_status.id, page_status.title, "deleted", "no longer in the tree (deleted or moved outside the root)")
 
     @staticmethod
     def _clashing_new_pages(workarea, status):
@@ -641,6 +742,18 @@ class RepositoryPullOperation:
                 groups.setdefault(key, []).append(page_status.id)
 
         return {page_id for page_ids in groups.values() if len(page_ids) > 1 for page_id in page_ids}
+
+
+def _descendants(children, page_id):
+    # Every cached page below *page_id*, from a mapping of cached parent IDs to cached child IDs.
+    result = []
+    pending = list(children.get(page_id, []))
+    while pending:
+        child_id = pending.pop()
+        result.append(child_id)
+        pending.extend(children.get(child_id, []))
+
+    return result
 
 
 def _require_local_parent(workarea, parent_id, api):

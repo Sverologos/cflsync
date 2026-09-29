@@ -65,6 +65,17 @@ class TestRepositoryStatus(unittest.TestCase):
             self.assertEqual(
                 lines[-1], "Summary: 1 not in local, 1 remote removed, 1 remote changed, 1 local changed, 1 conflict, 1 unchanged.")
 
+    def test_reports_a_removed_page_with_local_changes(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, "100", "200")
+            self._edit(workarea, "200")
+            del self.site.content["200"]
+
+            lines, status = self._status(workarea)
+
+            self.assertEqual(status, 0)
+            self.assertIn("Page '200' (Alpha): remote removed, local changed", lines)
+
     def test_reports_a_cached_page_with_a_missing_directory_as_not_in_local(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea, "100", "200")
