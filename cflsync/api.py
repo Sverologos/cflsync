@@ -430,6 +430,10 @@ class APIClient:
             if user.email is not None and user.email.casefold() == email.casefold()]
         return matches[0] if len(matches) == 1 else None
 
+    def delete_page(self, page_id: str) -> None:
+        """Delete the page *page_id*; Confluence moves it to the space's trash."""
+        self.make_request("DELETE", f"/pages/{page_id}")
+
     def create_page(self, space_id: str, parent_id: str, title: str) -> RemotePage:
         """Create an empty child page in *space_id*."""
         response = self.make_json_request(

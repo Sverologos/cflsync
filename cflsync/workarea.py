@@ -533,14 +533,24 @@ class Workarea:
 
         return directory
 
+    def missing_root_error(self) -> SyncError:
+        """Return the error that reports this workarea's root page as no longer existing."""
+        return PageRefError(
+            f"root page '{self.root_page_id}' of this workarea no longer exists; to re-use this directory, delete "
+            f"'{self.cflsync_dir}' and run 'cflsync init ROOT_PAGE_REF'")
+
+    def check_removable(self, directory: Path) -> None:
+        """Refuse to remove *directory* while it contains the current directory, which Windows does not allow."""
+        if _is_windows() and _current_directory_is_inside(directory):
+            raise Workarea.Error("cannot remove a page directory while it is the current directory; run cflsync from outside it")
+
     def remove_page(self, state: PageState, must_exist: bool = True) -> None:
         """Remove one complete managed page directory; with *must_exist* false, a missing directory is not an error."""
         directory = self.page_directory(state, must_exist=must_exist)
         if not directory.exists():
             return
 
-        if _is_windows() and _current_directory_is_inside(directory):
-            raise Workarea.Error("cannot remove a page directory while it is the current directory; run cflsync from outside it")
+        self.check_removable(directory)
 
         try:
             shutil.rmtree(directory)
@@ -982,7 +992,7 @@ class PageRef:
                 page_id = api.get_page(text).id
             except APIError as error:
                 if error.status == 404 and text == workarea.root_page_id:
-                    raise _root_missing_error(workarea) from error
+                    raise workarea.missing_root_error() from error
 
                 raise
 
@@ -1072,15 +1082,9 @@ def _require_root_page(workarea, api):
         api.get_page(workarea.root_page_id)
     except APIError as error:
         if error.status == 404:
-            raise _root_missing_error(workarea) from error
+            raise workarea.missing_root_error() from error
 
         raise
-
-
-def _root_missing_error(workarea):
-    return PageRefError(
-        f"root page '{workarea.root_page_id}' of this workarea no longer exists; to re-use this directory, delete "
-        f"'{workarea.cflsync_dir}' and run 'cflsync init ROOT_PAGE_REF'")
 
 
 def _one_cached_page_id(page_ids, title, states, workarea):

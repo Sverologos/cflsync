@@ -53,6 +53,16 @@
 #   ``unchanged`` entries as pushes. Never push ``absent-remote`` or ``conflict-absent-remote`` entries; recreate those
 #   pages with ``page create`` instead.
 #
+# Remove a page and its subtree (PageRemoveOperation, ``page remove``):
+#
+# 1. Compare the subtree: the page and its remote descendants against the cached subtree, as a TreeStatus. A cached
+#    page missing from the remote subtree is looked up: a 404 means removed, an existing page means moved elsewhere.
+# 2. Check before any change: every page is ``unchanged``, ``absent-local`` (remote only, or no local directory), or
+#    ``absent-remote``; ``conflict-absent-remote`` only with ``--force``. A page moved into or out of the subtree
+#    aborts, as does a current directory inside the page's directory on Windows. Then confirm unless ``--force``.
+# 3. Remove children first: remotely (a 404 counts as removed), then the local directory, then the cache entry. A
+#    failure stops the removal; the page given is removed last and stays resolvable, so a rerun completes it.
+#
 # TreeStatus only compares and orders; each repository operation is a separate class mapping a page operation over it.
 
 """Change detection, tree comparison, and synchronization operations linking the workarea with Confluence."""
@@ -291,7 +301,14 @@ class TreeStatus:
         Discovery either returns the complete page hierarchy below the root page or raises, so a cached page is only
         classified as ``absent-remote`` after a complete listing.
         """
-        root = api.get_page(workarea.root_page_id)
+        try:
+            root = api.get_page(workarea.root_page_id)
+        except APIError as error:
+            if error.status == 404:
+                raise workarea.missing_root_error() from error
+
+            raise
+
         # The root page's parent is outside the workarea's tree.
         remote_pages = [RemoteContentRef(root.id, "page", root.title, None), *api.page_descendants(root.id)]
         return cls.from_pages(workarea, api, remote_pages, list(workarea.page_tree().states.values()), detector)
@@ -592,13 +609,13 @@ class PagePullOperation:
 
 
 class PageDeletion:
-    """One local page copy that ``pull --delete`` deletes, because its page is no longer in the tree.
+    """One page that ``pull --delete`` or ``page remove`` deletes.
 
-    *directory* is relative to the workarea root, with "/" separators. *unmanaged* lists the entries of that directory
-    that Confluence cannot restore.
+    *directory* is its local directory relative to the workarea root, with "/" separators, or ``None`` for a page that
+    is not cached. *unmanaged* lists the entries of that directory that Confluence cannot restore.
     """
 
-    def __init__(self, status: PageStatus, directory: str, unmanaged: list[str]) -> None:
+    def __init__(self, status: PageStatus, directory: str | None, unmanaged: list[str]) -> None:
         self.status = status
         self.directory = directory
         self.unmanaged = unmanaged
@@ -721,8 +738,7 @@ class RepositoryPullOperation:
                 continue
 
             try:
-                workarea.remove_page(tree.states[page_status.id], must_exist=False)
-                workarea.cache_path(page_status.id).unlink()
+                _delete_local_copy(workarea, tree.states[page_status.id])
             except (OSError, UnicodeError) as error:
                 results.add(page_status.id, page_status.title, "failed", filesystem_error_message(error))
             except SyncError as error:
@@ -742,6 +758,139 @@ class RepositoryPullOperation:
                 groups.setdefault(key, []).append(page_status.id)
 
         return {page_id for page_ids in groups.values() if len(page_ids) > 1 for page_id in page_ids}
+
+
+class PageRemoveOperation:
+    """Remove a cached page and all its descendants, remotely and locally."""
+
+    ALLOWED = {PageStatusState.UNCHANGED, PageStatusState.ABSENT_LOCAL, PageStatusState.ABSENT_REMOTE}
+
+    def __init__(self, pandoc: PandocRunner | None = None) -> None:
+        self._detector = PageChangeDetector(pandoc or PandocRunner())
+
+    def remove(
+            self,
+            workarea: Workarea,
+            api,
+            page_id: str,
+            force: bool = False,
+            confirm: Callable[[list[PageDeletion]], bool] | None = None) -> list[PageDeletion] | None:
+        """Remove cached page *page_id* and its subtree, returning the removed pages, or ``None`` if not confirmed.
+
+        Every check runs before any change: the page's directory must exist, every page of the subtree must be in sync
+        (a page removed remotely with local changes only with *force*), and no page may have moved into or out of the
+        subtree remotely. Without *force*, *confirm* receives the planned deletions, children first. Pages are then
+        deleted children first: remotely (a 404 counts as deleted), then their directory, then their cache entry. A
+        failure stops the removal; the error names the pages removed before it.
+        """
+        tree = workarea.page_tree()
+        state = tree.states.get(page_id)
+        if state is None:
+            raise SyncError(f"page '{page_id}' is not managed in this workarea")
+
+        directory = workarea.page_directory(state)
+        status = self._subtree_status(workarea, api, tree, page_id)
+        self._check(status, page_id, force)
+        workarea.check_removable(directory)
+        deletions = []
+        for page_status in reversed(status.pages):
+            local = page_status.local
+            if local is None:
+                deletions.append(PageDeletion(page_status, None, []))
+            else:
+                deletions.append(PageDeletion(page_status, tree.directory(local.page.id), workarea.unmanaged_entries(local)))
+
+        if not force and (confirm is None or not confirm(deletions)):
+            return None
+
+        removed: list[PageDeletion] = []
+        for deletion in deletions:
+            try:
+                self._delete(workarea, api, deletion.status)
+            except (OSError, UnicodeError, SyncError) as error:
+                message = filesystem_error_message(error) if isinstance(error, OSError) else str(error)
+                pages = ", ".join(f"'{item.status.title}' ({item.status.id})" for item in removed) or "none"
+                raise SyncError(
+                    f"cannot remove page '{deletion.status.id}': {message}; pages removed before the failure: {pages}") from error
+
+            removed.append(deletion)
+
+        return removed
+
+    def _subtree_status(self, workarea, api, tree, page_id):
+        # The cached subtree follows cached parents; the remote subtree follows remote parents. A stale cache can make
+        # them differ.
+        children: dict[str | None, list[str]] = {}
+        for other_id, other in tree.states.items():
+            children.setdefault(other.page.parent_id, []).append(other_id)
+
+        cached_ids = [page_id, *_descendants(children, page_id)]
+        try:
+            page = api.get_page(page_id)
+        except APIError as error:
+            if error.status != 404:
+                raise
+            remote_pages = []
+        else:
+            # The page's parent is outside the subtree.
+            remote_pages = [RemoteContentRef(page.id, "page", page.title, None), *api.page_descendants(page_id)]
+
+        for remote in remote_pages:
+            if remote.id in tree.states and remote.id not in cached_ids:
+                raise SyncError(
+                    f"page '{remote.id}' was moved remotely into the subtree of page '{page_id}'; run 'cflsync pull' first")
+
+        states = [tree.states[cached_id] for cached_id in cached_ids]
+        status = TreeStatus.from_pages(workarea, api, remote_pages, states, self._detector)
+        for page_status in status.pages:
+            # A cached page missing from the remote subtree was either deleted, or moved elsewhere in the tree.
+            if page_status.remote is None and page_status.id != page_id and _remote_page_exists(api, page_status.id):
+                raise SyncError(
+                    f"page '{page_status.id}' was moved remotely out of the subtree of page '{page_id}'; "
+                    "run 'cflsync pull' first")
+
+        return status
+
+    def _check(self, status, page_id, force):
+        for page_status in status.pages:
+            if page_status.status is PageStatusState.CONFLICT_ABSENT_REMOTE:
+                if not force:
+                    raise SyncError(
+                        f"page '{page_status.id}' was removed remotely but has local changes; remove conflicts; "
+                        "use --force to remove its local copy")
+            elif page_status.status not in self.ALLOWED:
+                raise SyncError(f"page '{page_status.id}' has local or remote changes; remove conflicts")
+
+    @staticmethod
+    def _delete(workarea, api, page_status):
+        if page_status.remote is not None:
+            try:
+                api.delete_page(page_status.id)
+            except APIError as error:
+                if error.status != 404:
+                    raise
+
+        if page_status.local is not None:
+            _delete_local_copy(workarea, page_status.local)
+
+
+def _remote_page_exists(api, page_id):
+    try:
+        api.get_page(page_id)
+    except APIError as error:
+        if error.status == 404:
+            return False
+
+        raise
+
+    return True
+
+
+def _delete_local_copy(workarea, state):
+    # The directory goes first: after an interruption, the remaining cache entry still describes the page, and
+    # deleting it again completes the deletion.
+    workarea.remove_page(state, must_exist=False)
+    workarea.cache_path(state.page.id).unlink()
 
 
 def _descendants(children, page_id):

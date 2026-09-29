@@ -20,8 +20,8 @@ from .config import Config, Profile
 from .convert import MarkdownToADFConverter, PandocRunner
 from .errors import SyncError
 from .sync import (
-    PageChangeDetector, PageChangeStatus, PageDeletion, PagePullOperation, PagePushOperation, PageStatus, PageStatusState,
-    RepositoryPullOperation, RepositoryPushOperation, TreeStatus)
+    PageChangeDetector, PageChangeStatus, PageDeletion, PagePullOperation, PagePushOperation, PageRemoveOperation, PageStatus,
+    PageStatusState, RepositoryPullOperation, RepositoryPushOperation, TreeStatus)
 from .workarea import (CONTENT_FILENAME, PageMetadata, PageRef, PageState, Workarea, filesystem_error_message)
 
 
@@ -449,59 +449,44 @@ class PageRemoveCommand:
         try:
             workarea, api = _open_workarea()
             reference = PageRef.resolve_local(page_ref, workarea)
-            cache_path = workarea.cache_path(reference.page_id)
-            if not cache_path.exists():
-                raise SyncError(f"page '{reference.page_id}' is not managed in this workarea")
-
-            state = PageState.load(cache_path)
-            workarea.page_directory(state)
-            try:
-                page = api.get_page(reference.page_id)
-            except APIError as error:
-                if error.status != 404:
-                    raise
-                page = None
-
-            self._require_no_children(workarea, state, page, api)
-            if page is not None:
-                detector = PageChangeDetector(PandocRunner())
-                directory = workarea.page_directory(state)
-                attachments = page.attachments()
-                if detector.local_status(directory, state) != PageChangeStatus.UNCHANGED or detector.remote_status(
-                        page, attachments, state) != PageChangeStatus.UNCHANGED:
-                    raise SyncError(f"page '{page.id}' has local or remote changes; remove conflicts")
-
-            if not force and not self._confirm(state, remote_exists=page is not None):
-                return 0
-
-            if page is not None:
-                page.delete()
-
-            try:
-                workarea.remove_page(state)
-                cache_path.unlink()
-            except (OSError, SyncError) as error:
-                scope = "removed remotely but could not remove local state" if page is not None else "could not remove local state"
-                raise SyncError(f"page '{state.page.id}' {scope}: {filesystem_error_message(error)}") from error
+            removed = PageRemoveOperation().remove(
+                workarea, api, reference.page_id, force, lambda deletions: self._confirm(workarea, deletions))
         except (OSError, UnicodeError) as error:
             raise SyncError(f"cannot remove page: {filesystem_error_message(error)}") from error
 
+        if removed is not None and len(removed) > 1:
+            print(f"Removed page '{removed[-1].status.title}' ({removed[-1].status.id}) and {len(removed) - 1} descendants.")
+
         return 0
 
-    def _require_no_children(self, workarea, state, page, api):
-        # Removing a page with children is not supported yet; its directory contains theirs.
-        children = {page_id for page_id, other in workarea.page_tree().states.items() if other.page.parent_id == state.page.id}
-        if page is not None:
-            children.update(child.id for child in api.page_children(page.id))
+    def _confirm(self, workarea: Workarea, deletions: list[PageDeletion]) -> bool:
+        # The deletions run children first; the page given is the last one.
+        page = deletions[-1].status
+        if len(deletions) == 1:
+            scope = "remote and local copy of" if page.remote is not None else "local copy of"
+            return _confirm(f"Remove {scope} page '{page.title}' ({page.id})?")
 
-        if len(children) == 1:
-            raise SyncError(f"page '{state.page.id}' has 1 child page; remove it first")
-        if children:
-            raise SyncError(f"page '{state.page.id}' has {len(children)} child pages; remove them first")
+        if page.id == workarea.root_page_id:
+            print("This removes the root page, and with it the whole tree of this workarea, remotely and locally:")
+        else:
+            print(f"This removes page '{page.title}' ({page.id}) and all pages below it, remotely and locally:")
 
-    def _confirm(self, state: PageState, remote_exists: bool) -> bool:
-        scope = "remote and local copy of" if remote_exists else "local copy of"
-        return _confirm(f"Remove {scope} page '{state.page.title}' ({state.page.id})?")
+        for deletion in reversed(deletions):
+            notes = []
+            if deletion.directory is None:
+                notes.append("not present locally")
+            if deletion.status.remote is None:
+                notes.append("already removed remotely")
+            if deletion.unmanaged:
+                notes.append(f"unmanaged files, which cannot be restored: {', '.join(deletion.unmanaged)}")
+
+            location = deletion.directory or "-"
+            suffix = f"; {'; '.join(notes)}" if notes else ""
+            print(f"  Page '{deletion.status.id}' ({deletion.status.title}): {location}{suffix}")
+
+        descendants = len(deletions) - 1
+        pages = "page" if descendants == 1 else "pages"
+        return _confirm(f"Remove page '{page.title}' ({page.id}) and {descendants} descendant {pages}?")
 
 
 class PageStatusCommand:

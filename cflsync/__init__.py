@@ -14,7 +14,7 @@ from .convert import ADFToMarkdownConverter, ConversionError, MarkdownToADFConve
 from .errors import SyncError
 from .sync import (
     InstallationPlan, PageChangeDetector, PageChangeStatus, PageDeletion, PageOperationResult, PageOperationResults,
-    PagePullOperation, PagePushOperation, PageStatus, PageStatusState, PlannedPage, RepositoryPullOperation,
+    PagePullOperation, PagePushOperation, PageRemoveOperation, PageStatus, PageStatusState, PlannedPage, RepositoryPullOperation,
     RepositoryPushOperation, TreeStatus)
 from .transport import Transport, TransportError, TransportResponse, UrllibTransport
 from .workarea import AttachmentMetadata, MediaResolutionError, MediaResolver, PageMetadata, PageRef, PageRefError, PageState, StateError, Workarea

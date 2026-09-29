@@ -500,15 +500,19 @@ class TestTreeAcceptanceWorkflow(unittest.TestCase):
             self.assertNotIn(new_page_id, self.site.content)
             self.assertFalse((renamed / "New page").exists())
 
-            status, _, errors = self._run(root, "page", "remove", "--force", "100")
-            self.assertEqual(status, 1)
-            self.assertIn("page '100' has 2 child pages; remove them first", errors)
-
             for page_ref in ["100", "Renamed child", "300", "400"]:
                 output = self._succeeds(root, "page", "status", page_ref)
                 self.assertIn("local:  unchanged", output)
                 self.assertIn("remote: unchanged", output)
                 self.assertNotIn("location:", output)
+
+            self._succeeds(root, "page", "remove", "--force", "400")
+            self.assertEqual(sorted(self.site.content), ["100", "200"])
+            self.assertFalse((tree / "Other").exists())
+
+            self._succeeds(root, "page", "remove", "--force", "100")
+            self.assertEqual(self.site.content, {})
+            self.assertEqual([path.name for path in root.iterdir()], [".cflsync"])
 
 
 # vim: set ts=4 sw=4 et tw=132:

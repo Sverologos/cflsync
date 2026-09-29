@@ -144,12 +144,13 @@ and any missing ancestors are installed before the remote move; if Confluence
 rejects that move, those installed pages remain. The page directory then moves
 into the new parent's directory. The root page cannot be moved.
 
-Use `page remove PAGE_REF` to delete a managed local page and its remote page.
-It asks for confirmation unless `--force` is supplied. If the remote page no
-longer exists, it removes only the local page and cache state. Pages with child
-pages cannot be removed yet; remove the children first. Removing the root page
-leaves an empty workarea, which can be re-used by deleting `.cflsync` and
-running `init` again.
+Use `page remove PAGE_REF` to delete a managed page and all pages below it,
+remotely and locally. It lists the pages and asks for confirmation unless
+`--force` is supplied; every page must be in sync. Pages already removed
+remotely lose only their local copy; if such a page has local changes, only
+`--force` removes it. Removing the root page removes the whole tree and leaves
+an empty workarea, which can be re-used by deleting `.cflsync` and running
+`init` again.
 
 Use `cflsync --help` for top-level help, `cflsync page --help` for page-command
 help, and `cflsync page COMMAND --help` for a command's arguments.

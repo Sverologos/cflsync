@@ -137,24 +137,39 @@ the page directory, with its child pages and unmanaged files, into the new
 parent's directory, and records the new parent in the cache. The Markdown is
 unchanged. If Confluence rejects the update, installed ancestors remain.
 
-`page remove [-f | --force] PAGE_REF` requires a managed local page directory
-and cache entry. It confirms removal unless `--force` is supplied; without a
-terminal, it fails instead of prompting. When the
-remote page exists, the command requires it to be synchronized, deletes it,
-then removes the local directory and cache entry. A remote 404 is treated as
-an already-removed remote page, so only the local copy is removed. A page with
-child pages, cached locally or existing remotely, is refused before the
-confirmation; its children must be removed first. Removing the root page, once
-it has no children, leaves an empty workarea: only `.cflsync`, with its
-profile, root page ID, and an empty cache, remains. Commands that then refer to
-pages report that the root page no longer exists; the directory can be re-used
-by deleting `.cflsync` and running `init` again.
+`page remove [-f | --force] PAGE_REF` removes a page and all pages below it,
+remotely and locally. It requires a managed local page directory and cache
+entry. It compares the page's subtree, remote and cached, and runs every check
+before any change:
+
+- Every page of the subtree must be in sync. A page removed remotely whose
+  local copy changed is refused unless `--force` is given; `--force` does not
+  override other changes.
+- A page moved remotely into or out of the subtree is refused, with a hint to
+  run `cflsync pull` first, so that no page still in the tree is removed with a
+  directory it is no longer below.
+- On Windows, removing a directory that contains the current directory is
+  refused.
+- Unless `--force` is given, the command asks for confirmation; without a
+  terminal, it fails instead of prompting. For a page with descendants, it
+  lists them, marking pages without a local copy and directories with
+  unmanaged files. Declining changes nothing.
+
+Pages are then removed children first: remotely (a 404 counts as already
+removed), then their local directory, including unmanaged files, then their
+cache entry. Remote-only descendants are removed remotely, and pages already
+removed remotely only locally. A failure stops the removal and names the pages
+removed before it; running the command again completes it. Removing the root
+page removes the whole tree and leaves an empty workarea: only `.cflsync`, with
+its profile, root page ID, and an empty cache, remains. Commands that then refer
+to pages, and `pull`, `push`, and `status`, report that the root page no longer
+exists; the directory can be re-used by deleting `.cflsync` and running `init`
+again.
 
 ## Current limitations
 
 The following situations are refused with an error that explains what to do:
 
-- A page with child pages cannot be removed; remove its children first.
 - A workarea cannot be re-anchored at another root page; after removing the
   root page, delete `.cflsync` and run `init` again.
 - Folders and other non-page content inside the tree are not supported.
@@ -411,13 +426,12 @@ version, last. If that fails after the remote move, the directory is moved back
 and the command reports incomplete synchronization, naming the `page pull` that
 completes the move.
 
-`page remove` resolves only local managed state, refuses a page with children,
-checks the remote page if it still exists, and asks for confirmation
-immediately before deletion. `--force`
-only bypasses that prompt. A remote deletion failure leaves the local directory
-and cache intact. After a successful remote deletion, it removes the complete
-local directory, including unmanaged files, then its cache entry. If the remote
-page is already absent, it performs that local cleanup without a remote delete.
+`page remove` resolves only local managed state. It lists the page's remote
+descendants, which fails on a folder below the page, and looks up each cached
+descendant missing from that list to tell a removed page from a moved one. The
+confirmation comes after all checks and before any deletion. Each page's remote
+deletion precedes its local removal, so a remote failure leaves that page's
+local directory and cache intact.
 
 `page pull` stages downloads, conversion, attachment-path validation, and
 content validation in a temporary directory. For an existing page it preserves
@@ -434,8 +448,9 @@ resulting remote change.
 ## Content hierarchy requests
 
 The API client lists a page's ancestors, which page references and ancestor
-installation use to check that a page is in the workarea's tree, and its direct
-children, which `page remove` checks. Their behaviour was verified against
+installation use to check that a page is in the workarea's tree, and its
+direct children, from which it lists all page descendants for the repository
+commands and `page remove`. Their behaviour was verified against
 Confluence Cloud:
 
 - `GET /pages/{id}/ancestors` returns `id` and `type` for every ancestor,
