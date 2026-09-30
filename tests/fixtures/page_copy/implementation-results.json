@@ -1,0 +1,59 @@
+{
+  "date": "2026-09-30",
+  "authentication": "Existing site-bound Basic email/API-token profile",
+  "checks": [
+    {
+      "check": "same_space_copy",
+      "success": true,
+      "current_bytes": true,
+      "labels": [
+        "cflsync-copy-implementation-probe"
+      ],
+      "owned_media": true,
+      "excluded_properties_restrictions_comments_children": true,
+      "version": 1
+    },
+    {
+      "check": "real_push_round_trip",
+      "success": true,
+      "image_and_inline_file": true,
+      "opaque_macro": true,
+      "source_url_preserved": true,
+      "labels_preserved": true,
+      "source_unchanged": true
+    },
+    {
+      "check": "native_disambiguation",
+      "success": true,
+      "suffix": " (2)"
+    },
+    {
+      "check": "restricted_parent",
+      "rejected": true,
+      "no_workaround": true
+    },
+    {
+      "check": "cross_space_attachments_labels",
+      "success": true,
+      "owned_media": true,
+      "bytes": true,
+      "source_unchanged": true
+    },
+    {
+      "check": "server_rendered_view",
+      "available": true,
+      "image": true,
+      "inline_file": true,
+      "toc": true
+    },
+    {
+      "check": "repository_cache_unchanged",
+      "success": true
+    }
+  ],
+  "cleanup": {
+    "disposable_pages": 8,
+    "all_trashed": true
+  },
+  "browser_limit": "An isolated native body.view screenshot was produced in Firefox; signed-in Confluence components and third-party apps were not validated."
+}

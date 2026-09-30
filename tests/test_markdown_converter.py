@@ -834,6 +834,31 @@ class TestMarkdownToADFConverter(unittest.TestCase):
                                     "t": "Image",
                                     "c": [["", [], []], [], [url, ""]]}]}]))
 
+    def test_inline_file_round_trip_uses_destination_file_id_not_local_url(self) -> None:
+        media = MediaResolver([("report.pdf", "copied-file-id")])
+        source = {
+            "type":
+            "doc",
+            "version":
+            1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [{
+                        "type": "mediaInline",
+                        "attrs": {
+                            "id": "copied-file-id",
+                            "collection": "contentId-300"}}]}]}
+        pandoc = PandocRunner()
+
+        markdown = ADFToMarkdownConverter(pandoc, media).convert(source)
+        uploaded = MarkdownToADFConverter(pandoc, media, "contentId-300").convert(markdown)
+
+        self.assertIn("[report.pdf](_attachments/report.pdf)", markdown)
+        attrs = uploaded["content"][0]["content"][0]["attrs"]
+        self.assertEqual((attrs["id"], attrs["collection"]), ("copied-file-id", "contentId-300"))
+        self.assertEqual(uploaded["content"][0]["content"][0]["type"], "mediaInline")
+
     def test_maps_an_image_beside_other_content_to_inline_media(self) -> None:
         pandoc = self._mixed_paragraph("_attachments/diagram.png")
 

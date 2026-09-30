@@ -56,6 +56,10 @@ headings in the page body.
 Nest list items with indentation. Images or files in `_attachments/` are
 uploaded and maintained with the page. Links outside `_attachments/` remain
 ordinary links; external images are supported as external media.
+File links such as `[Report](_attachments/report.pdf)` become inline Confluence
+file references using that page's attachment manifest. After page copy, these
+references resolve to the copied files; ordinary source download URLs remain
+unchanged.
 
 ## Tables
 

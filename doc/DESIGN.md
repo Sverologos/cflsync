@@ -28,7 +28,15 @@ the workarea. The anchor is an ownership boundary, not only a traversal
 starting point: it is what makes repository-wide and destructive operations
 safe, because every page an operation touches is provably below the root.
 
-No command crosses the root boundary. Local references (a `content.md` file, a
+Only `page copy` may read an external source on the configured site; its new
+page and destination parent remain inside the root boundary. Other commands
+do not cross that boundary. Copy checks current ancestry even for cached
+references and requires a synchronized in-tree source before installation.
+Normal pull writes the copy's own baseline, without a cache schema change or
+separate remote inventory. Recovery pulls a known new ID rather than repeating
+copy, which would create another page.
+
+Local references (a `content.md` file, a
 page directory, a cached page ID) are checked against the cache, which records
 only in-scope pages. Remote-only references are checked with one page-ancestors
 request. A narrow check-then-update race remains, in which a target moves out of
@@ -130,7 +138,8 @@ one.
 Remote and local work cannot form one transaction. Each page is installed
 atomically and its state persisted immediately; deletions run children first
 and remove the directory before the cache entry. An interrupted command
-therefore always leaves a valid cache, and running it again completes it.
+therefore always leaves a valid cache. Synchronization can be resumed; a
+partially installed copy is recovered by pulling its created ID.
 Local deletions never propagate to Confluence: `page remove` is the only
 command that deletes remote pages, and remote deletions reach the workarea only
 through `pull --delete`.

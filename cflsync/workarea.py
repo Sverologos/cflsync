@@ -1046,6 +1046,48 @@ class PageRef:
         return cls(_one_page_ref_id(page_ids, f"title '{text}' in this workarea"))
 
     @classmethod
+    def resolve_copy_source(cls, value: str | Path, workarea: Workarea, api, cwd: Path | None = None) -> "PageRef":
+        """Resolve a copy source, preferring managed matches over same-site external pages.
+
+        Selection preserves cached identity; copy must independently check its current
+        ancestry and synchronization before installation or mutation.
+        """
+        text = str(value)
+        states = workarea.page_tree().states
+        path = _page_ref_path(value, cwd)
+        if path.exists():
+            return cls._from_path(path, workarea)
+
+        if text.isdigit():
+            if text in states:
+                return cls(text)
+
+            try:
+                page_id = api.get_page(text).id
+            except APIError as error:
+                if error.status == 404 and text == workarea.root_page_id:
+                    raise workarea.missing_root_error() from error
+
+                raise
+
+            if not workarea.contains(page_id, api):
+                _require_root_page(workarea, api)
+
+            return cls(page_id)
+
+        cached_ids = [state.page.id for state in states.values() if state.page.title == text]
+        if cached_ids:
+            return cls(_one_cached_page_id(cached_ids, text, states, workarea))
+
+        pages = [page for page in api.find_pages_by_title(text) if page.title == text]
+        managed_ids = [page.id for page in pages if workarea.contains(page.id, api)]
+        if managed_ids:
+            return cls(_one_page_ref_id(managed_ids, f"title '{text}' in this workarea"))
+
+        _require_root_page(workarea, api)
+        return cls(_one_page_ref_id([page.id for page in pages], f"title '{text}' on the configured site"))
+
+    @classmethod
     def resolve_remote(cls, value: str, api) -> "PageRef":
         """Resolve a page ID or title to one Confluence page ID through the API, without a workarea."""
         if value.isdigit():

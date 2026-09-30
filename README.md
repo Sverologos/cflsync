@@ -43,6 +43,7 @@ cflsync pull [-f | --force] [-d | --delete]
 cflsync push [-f | --force]
 cflsync status
 cflsync page create PARENT_PAGE_REF TITLE
+cflsync page copy [--parent PARENT_PAGE_REF] SOURCE_PAGE_REF NEW_TITLE
 cflsync page pull [-f | --force] PAGE_REF
 cflsync page push [-f | --force] PAGE_REF
 cflsync page rename PAGE_REF TITLE
@@ -137,6 +138,41 @@ then moves its directory together with its child pages.
 
 `page create PARENT_PAGE_REF TITLE` similarly installs the parent and any
 missing ancestors before creating the remote child page.
+
+`page copy SOURCE_PAGE_REF NEW_TITLE` creates one page from the remote source,
+including current attachments and labels, then pulls it immediately. Sources
+inside the workarea must already be synchronized; synchronize local/remote
+changes first. Source lookup prefers workarea matches, and ambiguity is an
+error. External sources may be in another space on the configured site.
+
+```console
+cflsync page copy "Source page" "Copy of source"
+cflsync page copy --parent "Destination page" "Source page" "New title"
+cflsync page copy --parent ROOT_PAGE_ID ROOT_PAGE_ID "Root copy"
+cflsync page copy --parent "Destination page" EXTERNAL_PAGE_ID "Shared template copy"
+```
+
+The destination must currently be a page inside the managed tree. An external
+source or the root requires `--parent`; other copies default to the source's
+current parent. Copying under the source or one of its in-tree descendants is
+allowed. Managed directories and `content.md` paths still select page identity,
+not content to upload. Confluence chooses title disambiguation and enforces
+copy permissions; success reports the actual title, new ID, and local path.
+
+This copies no descendants, comments, history, unmanaged local files, source
+restrictions, content properties, or app-owned custom content. Labels remain
+remote metadata, without a local label synchronization baseline. Structured
+owned media resolves to copied attachments, but ordinary download URLs, Smart
+Links, version parameters, and foreign-page media remain unchanged and may
+depend on source access. App macros can depend on excluded metadata. Folder,
+cross-site, recursive, force, and native-template operations are unsupported.
+
+If creation succeeds but local pull fails, the error identifies the new ID and
+the recovery command, for example `cflsync page pull 123456`. Resolve the local
+clash, access problem, or other reported cause, then pull that ID. The remote
+copy and installed ancestors remain. If the creation response is lost or
+unusable, the outcome is uncertain; inspect Confluence before repeating copy,
+because another invocation may create another page. Mutations are not retried.
 
 Use `page move PAGE_REF NEW_PARENT_REF` to move a synchronized page, with its
 child pages, below another page in the same Confluence space. The new parent

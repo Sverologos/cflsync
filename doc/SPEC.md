@@ -9,6 +9,7 @@ cflsync pull [-f | --force] [-d | --delete]
 cflsync push [-f | --force]
 cflsync status
 cflsync page create PARENT_PAGE_REF TITLE
+cflsync page copy [--parent PARENT_PAGE_REF] SOURCE_PAGE_REF NEW_TITLE
 cflsync page pull [-f | --force] PAGE_REF
 cflsync page push [-f | --force] PAGE_REF
 cflsync page rename PAGE_REF TITLE
@@ -18,7 +19,8 @@ cflsync page status PAGE_REF
 ```
 
 A workarea manages one Confluence page tree: a root page and its descendants.
-No command reads, writes, creates below, or moves to a page outside that tree.
+Commands do not write, create below, or move to a page outside that tree.
+Only `page copy` may read an external source page on the configured site.
 Commands locate a workarea by walking upward to a directory containing
 `.cflsync/profile`. A workarea without a valid `.cflsync/root` was created by
 an earlier cflsync version; every command except `auth` refuses it and explains
@@ -180,6 +182,95 @@ its profile, root page ID, and an empty cache, remains. Commands that then refer
 to pages, and `pull`, `push`, and `status`, report that the root page no longer
 exists; `init ROOT_PAGE_REF` re-anchors the workarea.
 
+### Page copy
+
+`page copy [--parent PARENT_PAGE_REF] SOURCE_PAGE_REF NEW_TITLE` copies one
+remote page and immediately installs it locally. Source lookup preserves the
+usual path/ID/exact-title classification and gives cached matches precedence.
+Without a cached title match, exact remote candidates inside the workarea take
+precedence over external candidates. Ambiguity at either stage is an error,
+not a reason to fall back. Local paths must still identify managed pages.
+Sources may be in another space on the configured site; cross-site references
+and folder references are unsupported.
+
+For a cached or current in-tree source, content and managed attachments must
+be unchanged locally and remotely, including title and current parent. Missing
+local state or an unpulled in-tree source requires synchronization first.
+A cached source moved outside the tree is refused rather than treated as an
+external source. These checks finish before installing any destination ancestor
+or creating a remote page. External sources without cached state are copied
+directly; local content is never uploaded by copy.
+
+The destination parent must currently be inside the managed tree, including
+when resolved from cache. Without `--parent`, use the source's current parent.
+An external source or the root requires an explicit parent. The source itself
+or an in-tree descendant is an eligible explicit parent. Missing destination
+ancestors are preflighted and installed under the same rules as `page create`.
+Dirty cached ancestors are retained, and earlier installations survive failure.
+
+Use the native v1 single-page copy endpoint with `copyAttachments` and
+`copyLabels` true, and `copyPermissions`, `copyProperties`, and
+`copyCustomContents` false. Copy the body, current attachment bytes, and labels,
+excluding descendants, comments, history, source restrictions/properties/custom
+content, and unmanaged local files. Labels remain remote metadata; there is no
+local label baseline or label-only change detection.
+
+Confluence determines title disambiguation and restricted-parent permissions.
+Accept the actual title, fetch the returned ID through v2, and use normal pull
+to install content, attachments, and a new format-2 baseline. Success reports
+the actual title, ID, and local path. Final local naming/clash checks use that
+actual title and can fail after remote creation. No force mode, title uniqueness
+preflight, manual fallback, permission workaround, or mutation retry is added.
+
+Structured source-owned media is remapped natively to copied attachment file
+IDs. Ordinary download URLs, Smart Links, version parameters, and foreign-page
+media remain unchanged and can still depend on the source. This is page copying,
+not template instantiation or a guarantee of a self-contained page.
+
+If a known created ID cannot be pulled, report failure and
+`cflsync page pull NEW_ID`, retaining the remote page and installed ancestors.
+Do not copy again or automatically delete it. A lost or unusable creation
+response reports an uncertain outcome; repeating copy may create a duplicate.
+Concurrent edits/moves after preflight remain subject to the existing
+check-then-mutate race, without a pinned snapshot or cross-system transaction.
+
+Native evidence dated 2026-09-30: disposable probes using the existing Basic
+email/API-token profile verified version-1 copies, current attachments with
+fresh IDs, labels, excluded source restrictions/properties/comments/children,
+owned-media remapping, unchanged URL strings, same-site cross-space copying,
+native ` (2)` disambiguation, and restricted-parent HTTP 403. The original
+cross-space fixture contained no attachments or labels. A sanitized media
+fixture is stored in `tests/fixtures/page_copy/source-adf.json`; image and
+inline-file mappings are checked individually after correcting the original
+aggregate comparison. Browser rendering, app-specific macros, and real push
+round trips require separate verification and are not inferred from these probes.
+
+The [single-page endpoint documentation](https://developer.atlassian.com/cloud/confluence/rest/v1/api-group-content---children-and-descendants/#api-wiki-rest-api-content-id-copy-post),
+checked 2026-09-30, requires destination-space Add permission. It lists classic
+OAuth scope `write:confluence-content`, or granular scopes
+`read:content-details:confluence` and `write:page:confluence`. These are endpoint
+scopes, not a complete scope set for cflsync's lookup/download/pull operations.
+Current profiles use site-bound Basic authentication; scoped-token gateway
+support remains separate work. Source reads and final pull also require access
+to their pages and attachments, and native restricted-parent rejection remains
+authoritative even when ordinary page creation there succeeds.
+
+Implementation validation on 2026-09-30 additionally verified live command
+copy/pull, no-op push and real edited push of copied images and inline files,
+preserved source download URLs and labels, same-site cross-space copies with
+attachments/labels, source preservation, title disambiguation, and native
+restricted-parent rejection. Copied properties, read restrictions, comments,
+and children were absent. The native core TOC extension survived opaque ADF
+and real push, and appeared in server-rendered view metadata. Disposable pages
+were trashed and the repository workarea cache was unchanged. Sanitized results
+are in `tests/fixtures/page_copy/implementation-results.json`.
+
+An isolated Firefox rendering of `body.view` is not a signed-in Confluence
+browser test: interactive attachment cards and macro components require the
+Confluence frontend. Signed-in rendering and third-party app macros remain
+unverified. Preservation of ADF is not a guarantee that an app depending on
+excluded properties/custom content will render correctly.
+
 ## Current limitations
 
 The following situations are refused with an error that explains what to do:
@@ -205,7 +296,8 @@ otherwise it is looked up remotely. Both must produce exactly one page. Zero
 and multiple matches are errors; an ambiguous cached title reports the page IDs
 and local paths, and an ambiguous remote title the page IDs.
 
-References only resolve to pages in the workarea's tree: the root page and its
+For the commands listed above, references only resolve to pages in the
+workarea's tree: the root page and its
 descendants. Cached pages are in the tree. Any other page must be the root
 page, or have the root page among its Confluence ancestors, which one ancestors
 request checks. Otherwise the reference fails with "not found in this

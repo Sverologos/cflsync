@@ -449,6 +449,48 @@ class APIClient:
                     "value": _empty_adf()}})
         return RemotePage.from_json(self, self._json_object(response))
 
+    def copy_page(self, source_id: str, parent_id: str, title: str) -> str:
+        """Copy one remote page and return its ID without a follow-up read.
+
+        An unusable creation response may leave a remote copy with an unknown ID.
+        """
+        transport = self._transport.clone("/wiki/rest/api")
+        request = {
+            "pageTitle": title,
+            "destination": {
+                "type": "parent_page",
+                "value": parent_id},
+            "copyAttachments": True,
+            "copyLabels": True,
+            "copyPermissions": False,
+            "copyProperties": False,
+            "copyCustomContents": False}
+        uncertain = "copy outcome is uncertain; a remote page may exist; repeating copy may create a duplicate"
+        try:
+            response = self._request(
+                transport,
+                "POST",
+                f"/content/{source_id}/copy",
+                headers={"Content-Type": "application/json"},
+                body=json.dumps(request).encode("utf-8"))
+        except TransportError as error:
+            raise APIError(f"{uncertain}: {error}") from error
+        except APIError as error:
+            # Server failures can occur after a write has taken effect.
+            if error.status is not None and error.status >= 500:
+                raise APIError(f"{uncertain}: {error}", error.status) from error
+
+            raise APIError(f"cannot copy page '{source_id}' below '{parent_id}': {error}", error.status) from error
+
+        try:
+            page_id = _required_string(self._json_object(response), "copy", "id")
+            if not page_id.isascii() or not page_id.isdigit():
+                raise APIError("copy.id must be a numeric page identifier")
+        except APIError as error:
+            raise APIError(f"{uncertain}: {error}") from error
+
+        return page_id
+
     def _v1_multipart_request(self, method: str, path: str, filename: str, body: bytes) -> APIResponse:
         boundary, multipart_body = _multipart_body(filename, body)
         transport = self._transport.clone("/wiki/rest/api")

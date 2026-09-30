@@ -13,8 +13,8 @@ from unittest.mock import patch
 
 from cflsync import SyncError
 from cflsync.cli import (
-    InitCommand, PageCreateCommand, PageMoveCommand, PagePullCommand, PagePushCommand, PageRemoveCommand, PageRenameCommand,
-    PageStatusCommand, RepositoryPullCommand, RepositoryPushCommand, RepositoryStatusCommand, main)
+    InitCommand, PageCopyCommand, PageCreateCommand, PageMoveCommand, PagePullCommand, PagePushCommand, PageRemoveCommand,
+    PageRenameCommand, PageStatusCommand, RepositoryPullCommand, RepositoryPushCommand, RepositoryStatusCommand, main)
 
 
 class TestInitCommandDispatch(unittest.TestCase):
@@ -38,6 +38,17 @@ class TestInitCommandDispatch(unittest.TestCase):
 
 
 class TestPageCommandDispatch(unittest.TestCase):
+
+    def test_dispatches_page_copy_with_default_and_explicit_parent(self) -> None:
+        for args in [["200", "New"], ["--parent", "100", "200", "New"], ["200", "New", "--parent", "100"]]:
+            with self.subTest(args=args), patch.object(PageCopyCommand, "run", return_value=0) as run:
+                self.assertEqual(main(["cflsync", "page", "copy", *args]), 0)
+                run.assert_called_once_with("200", "New", "100" if "--parent" in args else None)
+
+    def test_copy_requires_source_and_title_and_has_no_force_or_recursive_option(self) -> None:
+        for args in [[], ["200"], ["--parent"], ["--force", "200", "New"], ["--recursive", "200", "New"]]:
+            with self.subTest(args=args), redirect_stderr(StringIO()), self.assertRaises(SystemExit):
+                main(["cflsync", "page", "copy", *args])
 
     def test_dispatches_page_create_arguments_to_its_command(self) -> None:
         with patch.object(PageCreateCommand, "run", return_value=0) as run:
@@ -125,7 +136,7 @@ class TestPageCommandDispatch(unittest.TestCase):
                 main(["cflsync", "page", "--help"])
 
         self.assertEqual(raised.exception.code, 0)
-        for command_name in ["create", "pull", "push", "rename", "move", "remove", "status"]:
+        for command_name in ["create", "copy", "pull", "push", "rename", "move", "remove", "status"]:
             self.assertIn(command_name, output.getvalue())
 
 

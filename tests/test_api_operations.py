@@ -10,7 +10,7 @@ import json
 import unittest
 
 from cflsync import APIClient, APIError, RemoteAttachment, RemotePage, RemoteUser
-from tests.support import MockResponse, MockTransport
+from tests.support import COPY_FLAGS, FakeConfluence, LostCopyResponseTransport, MockResponse, MockTransport
 
 
 def page_fixture(page_id: str = "123456", title: str = "Example page") -> dict[str, object]:
@@ -434,6 +434,70 @@ class TestAPIClientAttachmentOperations(unittest.TestCase):
         self.assertEqual(transport.requests[0].path, "/content/123456/child/attachment/att567890/data")
         self.assertEqual(transport.requests[1].method, "DELETE")
         self.assertEqual(transport.requests[1].path, "/attachments/att567890")
+
+
+class TestAPIClientCopy(unittest.TestCase):
+
+    def test_copies_through_v1_and_returns_id_without_follow_up_reads(self) -> None:
+        transport = MockTransport([MockResponse.from_json({"id": "300"})])
+        client = APIClient("example.atlassian.net", "user", "token", transport=transport)
+
+        self.assertEqual(client.copy_page("100", "200", "New title"), "300")
+        self.assertEqual(transport.clone_prefixes, ["/wiki/rest/api"])
+        self.assertEqual(len(transport.requests), 1)
+        request = transport.requests[0]
+        self.assertEqual((request.method, request.path), ("POST", "/content/100/copy"))
+        self.assertEqual(request.headers["Content-Type"], "application/json")
+        self.assertEqual(
+            request.json_body(), {
+                **COPY_FLAGS, "pageTitle": "New title",
+                "destination": {
+                    "type": "parent_page",
+                    "value": "200"}})
+
+    def test_unusable_accepted_responses_report_uncertainty(self) -> None:
+        responses = [MockResponse(200, {}, b"{"), MockResponse(200, {}, b"\xff")]
+        responses += [
+            MockResponse.from_json(value)
+            for value in [[], None, {}, {
+                "id": ""}, {
+                    "id": 300}, {
+                        "id": "att300"}, {
+                            "id": "../300"}, {
+                                "id": "٣٠٠"}]]
+        for response in responses:
+            with self.subTest(body=response.body):
+                transport = MockTransport([response])
+                client = APIClient("example.atlassian.net", "user", "token", transport=transport)
+                with self.assertRaisesRegex(APIError, "outcome is uncertain.*duplicate"):
+                    client.copy_page("100", "200", "New")
+
+                self.assertEqual(len(transport.requests), 1)
+
+    def test_native_errors_preserve_status_without_retry_or_fallback(self) -> None:
+        for status in [400, 401, 403, 404, 429, 500, 502, 503, 504]:
+            with self.subTest(status=status):
+                transport = MockTransport([MockResponse.from_json({"message": "native failure"}, status)])
+                client = APIClient("example.atlassian.net", "user", "token", transport=transport)
+                with self.assertRaisesRegex(APIError, "native failure") as raised:
+                    client.copy_page("100", "200", "New")
+
+                self.assertEqual(raised.exception.status, status)
+                self.assertEqual(len(transport.requests), 1)
+
+    def test_lost_response_can_leave_one_remote_copy_without_known_id(self) -> None:
+        site = FakeConfluence()
+        site.add_page("100", "Source")
+        site.add_page("200", "Parent")
+        transport = LostCopyResponseTransport(site, "/wiki/api/v2")
+        client = APIClient("example.atlassian.net", "user", "token", transport=transport)
+
+        with self.assertRaisesRegex(APIError, "outcome is uncertain.*duplicate"):
+            client.copy_page("100", "200", "New")
+
+        self.assertEqual(len(site.content), 3)
+        self.assertEqual(
+            [(request.method, request.path) for request in site.requests], [("POST", "/wiki/rest/api/content/100/copy")])
 
 
 # vim: set ts=4 sw=4 et tw=132:

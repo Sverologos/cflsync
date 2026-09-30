@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 from collections import deque
+from copy import deepcopy
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager, redirect_stdout
 from dataclasses import dataclass
@@ -23,7 +24,7 @@ from typing import Any
 from unittest.mock import patch
 from urllib.parse import parse_qsl, quote, unquote, urlsplit
 
-from cflsync import APIClient, AttachmentMetadata, PageMetadata, PageState, Profile, TransportResponse, Workarea
+from cflsync import APIClient, AttachmentMetadata, PageMetadata, PageState, Profile, TransportError, TransportResponse, Workarea
 
 
 @contextmanager
@@ -109,6 +110,18 @@ class MockTransport:
 
 EMPTY_DOCUMENT = json.dumps({"type": "doc", "version": 1, "content": []})
 
+COPY_FLAGS = {
+    "copyAttachments": True,
+    "copyLabels": True,
+    "copyPermissions": False,
+    "copyProperties": False,
+    "copyCustomContents": False}
+
+
+def copy_source_document() -> dict[str, Any]:
+    """Return the sanitized, recorded native media-copy fixture."""
+    return json.loads((Path(__file__).parent / "fixtures" / "page_copy" / "source-adf.json").read_text(encoding="utf-8"))
+
 
 def run_with_site(site: FakeConfluence, workarea: Workarea, command: Callable[[], object]) -> str:
     """Run a command in *workarea*, with its API requests served by *site*, and return its standard output."""
@@ -139,6 +152,8 @@ class FakeConfluence:
         self.requests: list[RecordedRequest] = []
         self._failures = {}
         self._next_id = 900000
+        # Tests select observed native outcomes; this is not a title-numbering policy.
+        self.copy_titles: list[str] = []
 
     def client(self) -> APIClient:
         """Return an API client whose requests this site serves."""
@@ -159,7 +174,12 @@ class FakeConfluence:
             "parent_id": parent_id,
             "body": body,
             "version": version,
-            "space_id": space_id}
+            "space_id": space_id,
+            "labels": [],
+            "restrictions": {},
+            "properties": {},
+            "custom_content": [],
+            "comments": []}
 
     def add_folder(self, folder_id: str, title: str, parent_id: str | None = None, space_id: str = "98765") -> None:
         self.content[folder_id] = {"type": "folder", "id": folder_id, "title": title, "parent_id": parent_id, "space_id": space_id}
@@ -246,6 +266,9 @@ class FakeConfluence:
         return None
 
     def _v1(self, method, parts, body):
+        if len(parts) == 3 and parts[0] == "content" and parts[2] == "copy" and method == "POST":
+            return self._copy_page(parts[1], json.loads(body))
+
         if len(parts) == 4 and parts[0] == "content" and parts[2:] == ["child", "attachment"] and method == "PUT":
             return self._create_attachment(parts[1], body)
 
@@ -254,6 +277,52 @@ class FakeConfluence:
                 return self._update_attachment(parts[1], parts[4], body)
 
         return None
+
+    def _copy_page(self, source_id, request):
+        for flag, expected in COPY_FLAGS.items():
+            if request.get(flag) is not expected:
+                raise AssertionError(f"FakeConfluence only models copy with {flag}={expected}")
+
+        destination = request["destination"]
+        if destination["type"] != "parent_page":
+            raise AssertionError("FakeConfluence only models page-parent copying")
+
+        source = self._page(source_id)
+        parent = self._page(destination["value"])
+        if source is None or parent is None:
+            return self._not_found()
+
+        page_id = str(self._new_id())
+        title = request["pageTitle"]
+        if self.copy_titles:
+            title = self.copy_titles.pop(0)
+
+        self.add_page(page_id, title, parent["id"], space_id=parent["space_id"])
+        self.content[page_id]["labels"] = deepcopy(source["labels"])
+        file_ids = {}
+        for attachment in list(self.attachments.values()):
+            if attachment["page_id"] == source_id:
+                new_id = self.add_attachment(page_id, attachment["filename"], attachment["body"])
+                file_ids[attachment["file_id"]] = self.attachments[new_id]["file_id"]
+
+        document = json.loads(source["body"])
+
+        def remap(node):
+            if isinstance(node, dict):
+                attrs = node.get("attrs", {})
+                if node.get("type") in {"media", "mediaInline"} and attrs.get("id") in file_ids:
+                    attrs["id"] = file_ids[attrs["id"]]
+                    attrs["collection"] = f"contentId-{page_id}"
+
+                for value in node.values():
+                    remap(value)
+            elif isinstance(node, list):
+                for value in node:
+                    remap(value)
+
+        remap(document)
+        self.content[page_id]["body"] = json.dumps(document)
+        return MockResponse.from_json({"id": page_id, "type": "page", "title": title, "version": {"number": 1}})
 
     def _find_pages(self, query):
         pages = [
@@ -480,6 +549,30 @@ class FakeTransport:
             headers: Mapping[str, str] | None = None,
             body: bytes | None = None) -> TransportResponse:
         return self._site.handle(method, f"{self._prefix}{path}", parameters, headers, body)
+
+
+class LostCopyResponseTransport(FakeTransport):
+    """Execute native copy, then lose or replace its response, preserving cloned prefixes."""
+
+    def __init__(self, site: FakeConfluence, prefix: str, response: TransportResponse | None = None) -> None:
+        super().__init__(site, prefix)
+        self._response = response
+
+    def clone(self, prefix: str | None = None) -> "LostCopyResponseTransport":
+        if prefix is None:
+            prefix = self._prefix
+
+        return LostCopyResponseTransport(self._site, prefix, self._response)
+
+    def make_request(self, method, path="", parameters=None, headers=None, body=None) -> TransportResponse:
+        result = super().make_request(method, path, parameters, headers, body)
+        if method == "POST" and path.endswith("/copy"):
+            if self._response is None:
+                raise TransportError("copy response lost")
+
+            return self._response
+
+        return result
 
 
 # vim: set ts=4 sw=4 et tw=132:

@@ -12,7 +12,7 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
 
-from cflsync import PageRef, PageRefError, SyncError
+from cflsync import APIError, PageRef, PageRefError, SyncError
 from tests.support import FakeConfluence, example_page_state, temporary_workarea
 
 
@@ -237,6 +237,118 @@ class TestPageRefScope(unittest.TestCase):
             with self.assertRaisesRegex(PageRefError,
                                         r"multiple pages match cached title 'Duplicate': 400 \(First\), 500 \(Second\)"):
                 self._resolve(workarea, "Duplicate")
+
+
+class TestCopySourceResolution(unittest.TestCase):
+
+    def setUp(self):
+        self.site = FakeConfluence()
+        self.site.add_page("100", "Root")
+        self.site.add_page("200", "Shared", parent_id="100")
+        self.site.add_page("900", "Shared", space_id="other")
+
+    def _resolve(self, workarea, value):
+        return PageRef.resolve_copy_source(value, workarea, self.site.client(), cwd=workarea.root_dir).page_id
+
+    def _cache(self, workarea, page_id, title, parent_id=None, directory=None):
+        state = example_page_state(page_id, title=title, parent_id=parent_id, directory=directory or title)
+        state.save(workarea.cache_path(page_id))
+        path = workarea.page_directory(state, must_exist=False)
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "content.md").touch()
+        return path
+
+    def test_remote_in_tree_title_wins_over_cross_space_external_match(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self.assertEqual(self._resolve(workarea, "Shared"), "200")
+            self.assertEqual(sum(request.path == "/wiki/api/v2/pages" for request in self.site.requests), 1)
+
+    def test_cached_identity_and_all_local_forms_win_without_remote_lookup(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._cache(workarea, "100", "Root")
+            path = self._cache(workarea, "200", "Shared", "100", "300")
+            self.site.content["200"]["title"] = "Remotely renamed"
+            self.site.add_page("800", "Shared", parent_id="100")
+            for ref in ["200", "Shared", path, path / "content.md", "Root/300"]:
+                with self.subTest(ref=ref):
+                    self.assertEqual(self._resolve(workarea, ref), "200")
+
+            self.assertEqual(self.site.requests, [])
+
+    def test_unique_external_id_or_title_resolves_only_for_copy(self) -> None:
+        self.site.content["900"]["title"] = "External"
+        with temporary_workarea(root_page_id="100") as workarea:
+            for ref in ["900", "External"]:
+                with self.subTest(ref=ref):
+                    self.assertEqual(self._resolve(workarea, ref), "900")
+                    with self.assertRaises(PageRefError):
+                        PageRef.resolve(ref, workarea, self.site.client(), cwd=workarea.root_dir)
+
+    def test_cached_ambiguity_reports_paths_without_fallback(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._cache(workarea, "100", "Root")
+            self._cache(workarea, "200", "Shared", "100", "First")
+            self._cache(workarea, "300", "Shared", "100", "Second")
+            with self.assertRaisesRegex(PageRefError, r"200 \(Root/First\).*300 \(Root/Second\)"):
+                self._resolve(workarea, "Shared")
+
+            self.assertEqual(self.site.requests, [])
+
+    def test_remote_ambiguity_in_either_scope_fails(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self.site.add_page("300", "Shared", parent_id="100")
+            with self.assertRaisesRegex(PageRefError, "200.*300"):
+                self._resolve(workarea, "Shared")
+
+            del self.site.content["200"]
+            del self.site.content["300"]
+            self.site.add_page("800", "Shared", space_id="third")
+            with self.assertRaisesRegex(PageRefError, "900.*800"):
+                self._resolve(workarea, "Shared")
+
+    def test_invalid_paths_and_cache_never_fall_back(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            path = workarea.root_dir / "notes.md"
+            path.touch()
+            with self.assertRaises(PageRefError):
+                self._resolve(workarea, path)
+
+            with TemporaryDirectory() as outside:
+                external_path = Path(outside) / "content.md"
+                external_path.touch()
+                with self.assertRaises(PageRefError):
+                    self._resolve(workarea, external_path)
+
+            example_page_state("200", parent_id="999").save(workarea.cache_path("200"))
+            with self.assertRaisesRegex(SyncError, "cached parent page '999'.*missing"):
+                self._resolve(workarea, "900")
+
+            self.assertEqual(self.site.requests, [])
+
+    def test_folder_ancestry_permission_and_missing_root_are_not_no_match(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self.site.add_folder("600", "Folder", parent_id="100")
+            self.site.add_page("700", "Shared", parent_id="600")
+            with self.assertRaisesRegex(SyncError, "below folder"):
+                self._resolve(workarea, "Shared")
+
+            self.site.fail("GET", "/wiki/api/v2/pages", 403)
+            with self.assertRaises(APIError) as error:
+                self._resolve(workarea, "Shared")
+
+            self.assertEqual(error.exception.status, 403)
+            del self.site.content["100"]
+            with self.assertRaisesRegex(SyncError, "root page.*no longer exists"):
+                self._resolve(workarea, "900")
+
+    def test_missing_id_title_and_cross_site_url_never_route_to_another_site(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            for value in ["999", "Missing", "https://other.atlassian.net/wiki/pages/900"]:
+                with self.subTest(value=value):
+                    with self.assertRaises(SyncError):
+                        self._resolve(workarea, value)
+
+            self.assertTrue(all(request.path.startswith("/wiki/api/v2/") for request in self.site.requests))
 
 
 # vim: set ts=4 sw=4 et tw=132:

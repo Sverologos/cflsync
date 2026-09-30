@@ -10,6 +10,20 @@ import json
 import unittest
 
 from tests.support import MockResponse, MockTransport, RecordedRequest
+from cflsync import UrllibTransport
+
+
+class TestCopyTransportContext(unittest.TestCase):
+
+    def test_v1_clone_preserves_configured_host_credentials_and_opener(self) -> None:
+        transport = UrllibTransport("example.atlassian.net", "user", "token", "/wiki/api/v2")
+        clone = transport.clone("/wiki/rest/api")
+
+        self.assertEqual(
+            clone._request_url("/content/100/copy", None), "https://example.atlassian.net/wiki/rest/api/content/100/copy")
+        self.assertEqual(clone._request_headers(None), transport._request_headers(None))
+        self.assertIs(clone._opener, transport._opener)
+        self.assertEqual(transport.base_url(), "https://example.atlassian.net/wiki/api/v2")
 
 
 class TestMockTransport(unittest.TestCase):

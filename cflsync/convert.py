@@ -1608,6 +1608,19 @@ class MarkdownToADFConverter:
         if not isinstance(href, str) or not href or not isinstance(title, str):
             raise ConversionError("Pandoc link has invalid target")
 
+        if href.startswith("_attachments/"):
+            attrs = {"type": "file", "id": self._media_id(href), "collection": self._media_collection()}
+            label = self._plain_text(content)
+            if label:
+                attrs["alt"] = label
+
+            node: dict[str, object] = {"type": "mediaInline", "attrs": attrs}
+            if marks:
+                node["marks"] = list(marks)
+
+            inlines.append(node)
+            return
+
         if self._convert_mailto_mention(href, title, content, inlines, marks):
             return
 

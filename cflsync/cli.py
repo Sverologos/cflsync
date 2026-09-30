@@ -222,6 +222,47 @@ class PageCreateCommand:
             raise SyncError(f"created page '{page.id}' remotely but could not pull it: {error}") from error
 
 
+class PageCopyCommand:
+
+    def configure(self, subparsers: _SubParsersAction[ArgumentParser]) -> None:
+        parser = subparsers.add_parser("copy", help="copy a synchronized or external remote page and pull it immediately")
+        parser.add_argument(
+            "--parent", dest="parent_page_ref", help="destination page ID, title, content.md file, or page directory")
+        parser.add_argument("source_page_ref", help="source page ID, title, managed content.md file, or page directory")
+        parser.add_argument("title", help="requested title for the new page; Confluence may disambiguate it")
+        parser.set_defaults(command=self)
+
+    def __call__(self, args: Namespace) -> int:
+        return self.run(args.source_page_ref, args.title, args.parent_page_ref)
+
+    def run(self, source_page_ref: str, title: str, parent_page_ref: str | None = None) -> int:
+        _validate_page_title(title)
+        try:
+            workarea, api = _open_workarea()
+            source, in_tree = _copy_source(workarea, api, source_page_ref)
+            operation = PagePullOperation()
+            parent = _prepare_copy_parent(workarea, api, source, in_tree, parent_page_ref, operation)
+            page_id = api.copy_page(source.id, parent.id, title)
+        except (OSError, UnicodeError) as error:
+            raise SyncError(f"cannot copy page: {filesystem_error_message(error)}") from error
+
+        try:
+            page = api.get_page(page_id)
+            if not workarea.contains(page.id, api):
+                raise SyncError(f"copied page '{page.id}' is no longer in this workarea's tree")
+
+            operation.install_ancestors(workarea, api, page.id)
+            operation.pull(workarea, api, page)
+            directory = workarea.page_tree().directory(page.id)
+        except (SyncError, OSError, UnicodeError) as error:
+            raise SyncError(
+                f"copied page '{page_id}' remotely but could not install it: {filesystem_error_message(error)}; "
+                f"run: cflsync page pull {page_id}") from error
+
+        print(f"Copied page '{page.title}' ({page.id}) to {directory}")
+        return 0
+
+
 class PagePullCommand:
 
     def configure(self, subparsers: _SubParsersAction[ArgumentParser]) -> None:
@@ -573,6 +614,7 @@ class PageCommand:
         self.page_parser.set_defaults(command=self)
         page_subparsers = self.page_parser.add_subparsers(title="page commands", metavar="command")
         PageCreateCommand().configure(page_subparsers)
+        PageCopyCommand().configure(page_subparsers)
         PagePullCommand().configure(page_subparsers)
         PagePushCommand().configure(page_subparsers)
         PageRenameCommand().configure(page_subparsers)
@@ -640,6 +682,58 @@ def _print_usage(parser: ArgumentParser) -> int:
 def _validate_page_title(title: str) -> None:
     if not title.strip() or title.strip() != title or "\n" in title or "\r" in title or "\t" in title:
         raise SyncError("page title must be non-empty single-line text without surrounding whitespace")
+
+
+def _copy_source(workarea: Workarea, api, source_page_ref: str):
+    """Fetch a copy source and establish unchanged managed state without installing anything."""
+    reference = PageRef.resolve_copy_source(source_page_ref, workarea, api)
+    state = workarea.page_tree().states.get(reference.page_id)
+    hint = f"synchronize the source first with cflsync page pull {reference.page_id} or cflsync page push {reference.page_id}"
+    try:
+        page = api.get_page(reference.page_id)
+    except APIError as error:
+        if error.status == 404 and reference.page_id == workarea.root_page_id:
+            raise workarea.missing_root_error() from error
+        if error.status == 404 and state is not None:
+            raise SyncError(f"source page '{reference.page_id}' is missing or inaccessible; {hint}") from error
+
+        raise
+
+    in_tree = workarea.contains(page.id, api)
+    if state is not None:
+        if not in_tree:
+            raise SyncError(f"source page '{page.id}' moved outside this workarea; {hint}")
+
+        directory = workarea.page_directory(state, must_exist=False)
+        detector = PageChangeDetector(PandocRunner())
+        attachments = page.attachments()
+        parent_id = None if page.id == workarea.root_page_id else page.parent_id
+        if detector.local_status(directory, state) != PageChangeStatus.UNCHANGED or detector.remote_status(
+                page, attachments, state) != PageChangeStatus.UNCHANGED or parent_id != state.page.parent_id:
+            raise SyncError(f"source page '{page.id}' has local or remote changes or missing local state; {hint}")
+    elif in_tree:
+        raise SyncError(f"source page '{page.id}' has no synchronization baseline; pull it first: cflsync page pull {page.id}")
+
+    return page, in_tree
+
+
+def _prepare_copy_parent(workarea: Workarea, api, source, in_tree: bool, parent_page_ref: str | None, operation: PagePullOperation):
+    """Select a current in-tree page parent, then preflight and install its missing chain."""
+    if parent_page_ref is None:
+        if not in_tree or source.id == workarea.root_page_id:
+            raise SyncError("copying the root or an external source requires --parent with an in-tree page")
+        if source.parent_id is None:
+            raise SyncError(f"source page '{source.id}' has no parent; specify --parent with an in-tree page")
+
+        parent_page_ref = source.parent_id
+
+    reference = PageRef.resolve(parent_page_ref, workarea, api)
+    parent = api.get_page(reference.page_id)
+    if not workarea.contains(parent.id, api):
+        raise SyncError(f"destination parent '{parent.id}' is not in this workarea's tree")
+
+    operation.install_ancestors(workarea, api, parent.id, include_page=True)
+    return parent
 
 
 # vim: set ts=4 sw=4 et tw=132:

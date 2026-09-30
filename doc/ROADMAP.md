@@ -84,3 +84,4 @@ Confluence content types remain unsupported.
 4. Test page and folder roots, mixed page-and-folder trees, nested folders,
    name clashes, moves, partial failures, and deletion. An incomplete folder
    listing must fail before it can be mistaken for remote deletion.
+

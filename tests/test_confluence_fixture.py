@@ -10,7 +10,7 @@ import json
 import unittest
 
 from cflsync import APIError
-from tests.support import FakeConfluence
+from tests.support import COPY_FLAGS, FakeConfluence, copy_source_document
 
 
 class TestFakeConfluencePages(unittest.TestCase):
@@ -110,6 +110,84 @@ class TestFakeConfluencePages(unittest.TestCase):
 
         with self.assertRaisesRegex(AssertionError, "which has children"):
             page.delete()
+
+
+class TestFakeConfluenceCopy(unittest.TestCase):
+
+    def test_copies_current_content_without_cloning_identity_metadata_or_descendants(self) -> None:
+        site = FakeConfluence()
+        site.add_page("100", "Destination", space_id="1")
+        site.add_page("400", "Source", body=json.dumps(copy_source_document()), space_id="2", version=7)
+        site.add_page("500", "Child", parent_id="400", space_id="2")
+        source = site.content["400"]
+        source.update(
+            labels=["example"],
+            restrictions={"read": ["user"]},
+            properties={"app": "value"},
+            comments=["comment"],
+            custom_content=["app-content"])
+        site.add_attachment("400", "owned-image.png", b"PNG", "att1", version=2)
+        site.add_attachment("400", "owned-document.txt", b"current", "att2", version=3)
+        site.add_attachment("400", "unreferenced.txt", b"other", "att3")
+        before = json.dumps(source, sort_keys=True)
+        client = site.client()
+        response = client._request(
+            client._transport.clone("/wiki/rest/api"),
+            "POST",
+            "/content/400/copy",
+            body=json.dumps({
+                **COPY_FLAGS, "pageTitle": "Copied",
+                "destination": {
+                    "type": "parent_page",
+                    "value": "100"}}).encode())
+        page_id = json.loads(response.body)["id"]
+        copied = site.content[page_id]
+
+        self.assertEqual(
+            (copied["parent_id"], copied["space_id"], copied["version"], copied["labels"]), ("100", "1", 1, ["example"]))
+        self.assertEqual(json.dumps(source, sort_keys=True), before)
+        self.assertEqual(len(site.content), 4)
+        for field in ["restrictions", "properties", "comments", "custom_content"]:
+            self.assertFalse(copied[field])
+
+        attachments = client.get_page(page_id).attachments()
+        self.assertEqual(
+            {item.filename: item.download()
+             for item in attachments}, {
+                 "owned-image.png": b"PNG",
+                 "owned-document.txt": b"current",
+                 "unreferenced.txt": b"other"})
+        self.assertTrue(all(item.version == 1 and item.id not in {"att1", "att2", "att3"} for item in attachments))
+        document = json.loads(copied["body"])
+        new_files = {item.filename: item.file_id for item in attachments}
+        image = document["content"][1]["content"][0]["attrs"]
+        inline = document["content"][3]["content"][0]["attrs"]
+        self.assertEqual(image["id"], new_files["owned-image.png"])
+        self.assertEqual(inline["id"], new_files["owned-document.txt"])
+        self.assertEqual(image["collection"], f"contentId-{page_id}")
+        self.assertEqual(inline["collection"], f"contentId-{page_id}")
+        self.assertEqual(document["content"][5:], copy_source_document()["content"][5:])
+        self.assertEqual(site.requests[0].path, "/wiki/rest/api/content/400/copy")
+
+    def test_allows_copy_under_source_or_descendant_and_controlled_native_title(self) -> None:
+        site = FakeConfluence()
+        site.add_page("100", "Source")
+        site.add_page("200", "Descendant", parent_id="100")
+        site.copy_titles = ["Title (2)", "Title (3)"]
+        client = site.client()
+        for parent in ["100", "200"]:
+            response = client._request(
+                client._transport.clone("/wiki/rest/api"),
+                "POST",
+                "/content/100/copy",
+                body=json.dumps({
+                    **COPY_FLAGS, "pageTitle": "Title",
+                    "destination": {
+                        "type": "parent_page",
+                        "value": parent}}).encode())
+            copied = site.content[json.loads(response.body)["id"]]
+            self.assertEqual(copied["parent_id"], parent)
+            self.assertIn(copied["title"], ["Title (2)", "Title (3)"])
 
 
 class TestFakeConfluenceHierarchy(unittest.TestCase):

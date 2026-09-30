@@ -156,7 +156,8 @@ inlines when the page attachment manifest resolves the ADF media identifier to
 a managed local `_attachments/<filename>` path. `Image` is used for filenames
 with an image suffix and `Link` otherwise, since the ADF media node carries no
 media type. External media uses its own URL and needs no manifest. The reverse
-mapping uses the manifest to reconstruct the corresponding ADF media node.
+mapping uses the manifest to reconstruct images as ADF media; file links become
+`mediaInline` references, so their original block container is not retained.
 Media that the manifest cannot resolve stays opaque. Layout, width, and height
 attributes are dropped.
 
@@ -271,6 +272,12 @@ file ID. The synchronization layer performs the attachment API operations and
 supplies the manifest; it never emits a guessed local path. `MediaResolver`
 receives ordered `(filename, file ID)` manifest entries and exposes the two pure
 lookups `path_for()` and `id_for()`.
+
+Managed `_attachments/<filename>` links become `mediaInline` file references
+on push, using the manifest's file ID and the destination page's collection.
+This restores downloaded inline-file references rather than publishing a local
+filesystem URL. Plain link labels become media alt text; ordinary Confluence
+download URLs remain unchanged links and are not redirected to copied files.
 
 ## Required tests
 

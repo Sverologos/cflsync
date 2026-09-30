@@ -20,7 +20,7 @@ from unittest.mock import patch
 
 from cflsync import APIClient, Config, Profile, TransportResponse
 from cflsync.cli import main
-from tests.support import FakeConfluence, RecordedRequest
+from tests.support import FakeConfluence, RecordedRequest, copy_source_document
 
 
 def _paragraph(text: str) -> dict[str, object]:
@@ -513,6 +513,82 @@ class TestTreeAcceptanceWorkflow(unittest.TestCase):
             self._succeeds(root, "page", "remove", "--force", "100")
             self.assertEqual(self.site.content, {})
             self.assertEqual([path.name for path in root.iterdir()], [".cflsync"])
+
+    def test_copies_media_then_noop_push_real_push_and_id_based_recovery(self) -> None:
+        document = copy_source_document()
+        macro = {"type": "extension", "attrs": {"extensionType": "com.atlassian.confluence.macro.core", "extensionKey": "toc"}}
+        document["content"].append(macro)
+        self.site.content["400"].update(body=json.dumps(document), labels=["template"])
+        self.site.add_attachment("400", "owned-image.png", b"PNG", "att1", version=2)
+        self.site.add_attachment("400", "owned-document.txt", b"current", "att2", version=3)
+        self.site.add_attachment("400", "unreferenced.txt", b"unreferenced", "att3")
+        source_before = self.site.content["400"]["body"]
+        with TemporaryDirectory(prefix="cflsync-copy-acceptance-") as temporary:
+            root = Path(temporary)
+            self._succeeds(root, "init", "100")
+            self._succeeds(root, "page", "pull", "400")
+
+            self._succeeds(root, "page", "copy", "400", "Copied media")
+
+            page_id = next(key for key, value in self.site.content.items() if value["title"] == "Copied media")
+            path = root / "Root" / "Copied media" / "content.md"
+            markdown = path.read_text(encoding="utf-8")
+            self.assertIn("_attachments/owned-image.png", markdown)
+            self.assertIn("_attachments/owned-document.txt", markdown)
+            self.assertIn("https://example.atlassian.net/wiki/download/attachments/400/owned-document.txt", markdown)
+            self.assertIn("atlas_doc_format", markdown)
+            self.site.requests.clear()
+
+            output = self._succeeds(root, "page", "push", page_id)
+
+            self.assertIn("already in sync", output)
+            self.assertTrue(all(request.method == "GET" for request in self.site.requests))
+            path.write_text(markdown + "\nSupported local edit.\n", encoding="utf-8")
+
+            self._succeeds(root, "page", "push", page_id)
+
+            uploaded = json.loads(self.site.content[page_id]["body"])
+            files = {item["filename"]: item["file_id"] for item in self.site.attachments.values() if item["page_id"] == page_id}
+            nodes = []
+
+            def collect(node):
+                if isinstance(node, dict):
+                    nodes.append(node)
+                    for value in node.values():
+                        collect(value)
+                elif isinstance(node, list):
+                    for value in node:
+                        collect(value)
+
+            collect(uploaded)
+            for filename in ["owned-image.png", "owned-document.txt"]:
+                self.assertTrue(
+                    any(
+                        node.get("attrs", {}).get("id") == files[filename]
+                        and node["attrs"].get("collection") == f"contentId-{page_id}" for node in nodes))
+
+            self.assertTrue(
+                any(
+                    node.get("attrs", {}).get("id") == "file-foreign" and node["attrs"].get("collection") == "contentId-900"
+                    for node in nodes))
+            self.assertIn(macro, nodes)
+            self.assertEqual(self.site.content[page_id]["labels"], ["template"])
+            self.assertEqual(self.site.content["400"]["body"], source_before)
+            self.assertEqual(self.site.attachments["att1"]["version"], 2)
+            self._succeeds(root, "page", "pull", "--force", page_id)
+            self.assertIn("Supported local edit.", path.read_text(encoding="utf-8"))
+            (root / "Root" / "Recovery").mkdir()
+
+            status, output, error = self._run(root, "page", "copy", "400", "Recovery")
+
+            self.assertEqual(status, 1)
+            recovery_id = next(key for key, value in self.site.content.items() if value["title"] == "Recovery")
+            self.assertIn(f"cflsync page pull {recovery_id}", error)
+            self.site.requests.clear()
+            (root / "Root" / "Recovery").rmdir()
+            self._succeeds(root, "page", "pull", recovery_id)
+            self.assertTrue((root / "Root" / "Recovery" / "content.md").is_file())
+            self.assertTrue(all(request.method == "GET" for request in self.site.requests))
 
 
 # vim: set ts=4 sw=4 et tw=132:
