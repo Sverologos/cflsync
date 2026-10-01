@@ -69,6 +69,8 @@ class TestWorkareaInitialization(unittest.TestCase):
             workarea = Workarea.find(root)
             self.assertEqual((workarea.root_page_id, workarea.profile), ("789012", "work"))
             self.assertEqual((root / ".cflsync" / "root").read_text(encoding="utf-8"), "789012\n")
+            self.assertEqual((root / ".cflsync" / "version").read_text(encoding="utf-8"), "3\n")
+            self.assertEqual(workarea.version, 3)
             self.assertEqual(list(workarea.cache_dir.iterdir()), [])
 
     def test_failed_root_write_leaves_no_partial_workarea(self) -> None:
@@ -109,10 +111,14 @@ class TestWorkareaInitialization(unittest.TestCase):
 
             self.assertFalse((nested / ".cflsync").exists())
 
-    def test_re_anchors_an_empty_workarea_of_either_version_at_its_root(self) -> None:
-        for version in [1, 2]:
+    def test_re_anchors_an_empty_workarea_of_any_version_at_its_root(self) -> None:
+        for version in [1, 2, 3]:
             with self.subTest(version=version):
                 with temporary_workarea(profile="old") as workarea:
+                    # Version 1 has neither a root nor a version file; version 2, written by cflsync 0.4, has no
+                    # version file.
+                    if version < 3:
+                        (workarea.cflsync_dir / "version").unlink()
                     if version == 1:
                         (workarea.cflsync_dir / "root").unlink()
 
@@ -120,7 +126,10 @@ class TestWorkareaInitialization(unittest.TestCase):
 
                     self.assertEqual(reanchored.root_dir, workarea.root_dir)
                     self.assertEqual((reanchored.root_page_id, reanchored.profile), ("789012", "new"))
-                    self.assertEqual(sorted(path.name for path in workarea.cflsync_dir.iterdir()), ["cache", "profile", "root"])
+                    self.assertEqual(reanchored.version, 3)
+                    self.assertEqual(
+                        sorted(path.name for path in workarea.cflsync_dir.iterdir()), ["cache", "profile", "root", "version"])
+                    self.assertEqual(Workarea.find(workarea.root_dir).root_dir, workarea.root_dir)
 
     def test_refuses_to_re_anchor_a_workarea_with_cached_pages(self) -> None:
         with temporary_workarea() as workarea:
@@ -138,7 +147,7 @@ class TestWorkareaInitialization(unittest.TestCase):
                     Workarea.init(workarea.root_dir, "789012", "new")
 
             self.assertEqual((workarea.root_page_id, workarea.profile), ("123456", "default"))
-            self.assertEqual(sorted(path.name for path in workarea.cflsync_dir.iterdir()), ["cache", "profile", "root"])
+            self.assertEqual(sorted(path.name for path in workarea.cflsync_dir.iterdir()), ["cache", "profile", "root", "version"])
 
 
 class TestWorkareaFormat(unittest.TestCase):
@@ -149,6 +158,36 @@ class TestWorkareaFormat(unittest.TestCase):
 
             with self.assertRaisesRegex(Workarea.Error, "is a version-1 cflsync workarea.*'cflsync init ROOT_PAGE_REF'"):
                 Workarea.find(workarea.root_dir)
+
+    def test_reports_a_missing_root_before_a_missing_version(self) -> None:
+        with temporary_workarea() as workarea:
+            (workarea.cflsync_dir / "root").unlink()
+            (workarea.cflsync_dir / "version").unlink()
+
+            with self.assertRaisesRegex(Workarea.Error, "is a version-1 cflsync workarea"):
+                Workarea.find(workarea.root_dir)
+
+    def test_refuses_a_workarea_created_by_cflsync_0_4(self) -> None:
+        with temporary_workarea() as workarea:
+            (workarea.cflsync_dir / "version").unlink()
+
+            with self.assertRaisesRegex(Workarea.Error,
+                                        "created by cflsync 0.4 or earlier.*push its local changes.*'cflsync init ROOT_PAGE_REF'"):
+                Workarea.find(workarea.root_dir)
+
+    def test_refuses_an_unsupported_workarea_version(self) -> None:
+        cases = [
+            ("2\n", "workarea version 2, which this version of cflsync does not support; push its local changes"),
+            ("4\n", "workarea version 4 and was created by a newer version of cflsync"),
+            ("abc\n", "must contain one workarea version number"), ("", "must contain one workarea version number"),
+            ("3\n3\n", "must contain one workarea version number"), ]
+        for content, message in cases:
+            with self.subTest(content=content):
+                with temporary_workarea() as workarea:
+                    (workarea.cflsync_dir / "version").write_text(content, encoding="utf-8")
+
+                    with self.assertRaisesRegex(Workarea.Error, message):
+                        Workarea.find(workarea.root_dir)
 
     def test_refuses_an_invalid_root_file(self) -> None:
         for content in ["", "\n", "abc\n", "12 34\n", "12\n34\n"]:

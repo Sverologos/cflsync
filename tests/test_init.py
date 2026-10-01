@@ -94,7 +94,7 @@ class TestInitCommand(unittest.TestCase):
             self.assertIn("Re-anchored the workarea at page '123456' (Root page), using profile 'default'", output)
             self.assertEqual((workarea.root_page_id, workarea.profile), ("123456", "default"))
             self.assertEqual((root / "notes.txt").read_text(encoding="utf-8"), "unmanaged\n")
-            self.assertEqual(sorted(path.name for path in (root / ".cflsync").iterdir()), ["cache", "profile", "root"])
+            self.assertEqual(sorted(path.name for path in (root / ".cflsync").iterdir()), ["cache", "profile", "root", "version"])
 
     def test_re_anchors_at_the_same_root_again(self) -> None:
         with TemporaryDirectory(prefix="cflsync-init-") as temporary_dir:

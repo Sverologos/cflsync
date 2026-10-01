@@ -50,7 +50,7 @@ class TestPageStateSerialization(unittest.TestCase):
         with self.assertRaises(StateError):
             AttachmentMetadata(id="att 1843529704", version=1, content_hash=attachment_hash)
 
-    def test_serializes_the_format_2_state_shape(self) -> None:
+    def test_serializes_the_format_3_state_shape(self) -> None:
         attachment_hash = hashlib.sha256(b"attachment").hexdigest()
         state = PageState(
             page=page_metadata(id="123457", title="Child", parent_id="123456", directory="Child"),
@@ -58,7 +58,7 @@ class TestPageStateSerialization(unittest.TestCase):
 
         self.assertEqual(
             state.to_json(), {
-                "format": 2,
+                "format": 3,
                 "page": {
                     "id": "123457",
                     "title": "Child",
@@ -77,11 +77,21 @@ class TestPageStateSerialization(unittest.TestCase):
             with self.subTest(page_id=state.page.id):
                 self.assertEqual(PageState.from_json(state.to_json()), state)
 
-    def test_rejects_format_1_state(self) -> None:
-        value = example_page_state().to_json()
-        value["format"] = 1
+    def test_rejects_states_written_by_cflsync_0_4_or_earlier(self) -> None:
+        for state_format in [1, 2]:
+            with self.subTest(format=state_format):
+                value = example_page_state().to_json()
+                value["format"] = state_format
 
-        with self.assertRaisesRegex(StateError, "unsupported state format 1"):
+                with self.assertRaisesRegex(
+                        StateError, f"state format {state_format} was written by cflsync 0.4 or earlier.*push its local changes"):
+                    PageState.from_json(value)
+
+    def test_rejects_a_newer_state_format(self) -> None:
+        value = example_page_state().to_json()
+        value["format"] = 4
+
+        with self.assertRaisesRegex(StateError, "unsupported state format 4"):
             PageState.from_json(value)
 
     def test_requires_the_parent_id_field(self) -> None:
@@ -89,7 +99,7 @@ class TestPageStateSerialization(unittest.TestCase):
         del page["parent_id"]
 
         with self.assertRaisesRegex(StateError, "page.parent_id is required"):
-            PageState.from_json({"format": 2, "page": page, "attachments": {}})
+            PageState.from_json({"format": 3, "page": page, "attachments": {}})
 
 
 class TestPageTree(unittest.TestCase):

@@ -97,6 +97,25 @@ is over 64 characters is renamed, together with its child pages and unmanaged
 files. Push local changes first, or commit the workarea to version control, so
 the moves can be reviewed.
 
+### Upgrading workareas created by cflsync 0.4
+
+This version of cflsync uses workarea version 3, recorded in
+`.cflsync/version`, and cache format 3. It refuses workareas created by cflsync
+0.4 or earlier, and cflsync 0.4 refuses version-3 workareas once they contain
+pulled pages. To move a workarea:
+
+1. Push any local changes with the cflsync version that created it.
+2. Create a new workarea in an empty directory with `cflsync init ROOT_PAGE_REF`.
+3. Pull the tree, or the pages needed from it.
+
+Unmanaged files in old page directories are not carried over; copy them into
+the new page directories if needed. An old workarea that has no pulled pages
+can instead be re-anchored in place with `cflsync init ROOT_PAGE_REF`.
+
+cflsync 0.4 does not recognize a new workarea before its first pull. Do not use
+cflsync 0.4 in a new workarea: if it pulls into one, this version refuses the
+workarea afterwards, and it must be created again.
+
 Pull reports when the page is already in sync. Use `page pull --force PAGE_REF`
 to prefer remote content, overwriting local edits to managed files even when
 the remote version is unchanged. Unmanaged files are preserved.
@@ -223,6 +242,7 @@ Alternatively, place the workarea in a directory with a short path.
 ## Documentation
 
 - [Writing pages](doc/MARKUP.md): supported Markdown for Confluence pages.
+- [cflsync-skills](https://github.com/sverologos/cflsync-skills): AI coding agent skills for cflsync.
 
 ## Development
 

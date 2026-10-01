@@ -24,22 +24,29 @@ Only `page copy` may read an external source page on the configured site.
 Commands locate a workarea by walking upward to a directory containing
 `.cflsync/profile`. A workarea without a valid `.cflsync/root` was created by
 an earlier cflsync version; every command except `auth` refuses it and explains
-how to create a new, anchored workarea, or to re-anchor an empty one.
+how to create a new, anchored workarea, or to re-anchor an empty one. A
+workarea without `.cflsync/version` was created by cflsync 0.4 or earlier, and
+a workarea with a version other than 3 by another cflsync version; every
+command except `auth` and `init` refuses them before contacting Confluence.
+For a 0.4 workarea, the refusal explains the transition: push local changes
+with the version that created it, initialise a new workarea in an empty
+directory, pull, and copy unmanaged files across.
 
 Confirmation prompts require a terminal. Without one, a command that would
 prompt fails before changing anything and suggests `--force`.
 
 `init [-p PROFILE] ROOT_PAGE_REF` resolves `ROOT_PAGE_REF`, a page ID or an
 exact page title, through Confluence with the profile's credentials. It then
-creates `.cflsync/` with an empty `cache/`, `profile`, and `root`, which records
-the root page ID, as one atomic installation. A failed lookup leaves no
+creates `.cflsync/` with an empty `cache/`, `profile`, `version`, and `root`,
+which records the root page ID, as one atomic installation. A failed lookup leaves no
 `.cflsync/` behind. `init` does not pull pages.
 
-`init` also re-anchors an existing workarea, of either version, when run at its
+`init` also re-anchors an existing workarea, of any version, when run at its
 root and when its cache holds no page state: after the root page was removed, a
-workarea anchored at the wrong root and never pulled, or an empty version-1
-workarea, which is converted in place. The new root is resolved first; then
-`profile` and `root` are each replaced atomically, the root last. `-p` has its
+workarea anchored at the wrong root and never pulled, or an empty workarea of
+an earlier version, which is converted in place. The new root is resolved
+first; then `profile`, `version`, and `root` are each replaced atomically, the
+root last. `-p` has its
 usual meaning, so omitting it sets the profile to `default`. The new root may
 be the old one. Local entries without cache state are unmanaged; the next pull
 reports clashes with them. `init` refuses a workarea with cached pages, and any
@@ -217,7 +224,7 @@ local label baseline or label-only change detection.
 
 Confluence determines title disambiguation and restricted-parent permissions.
 Accept the actual title, fetch the returned ID through v2, and use normal pull
-to install content, attachments, and a new format-2 baseline. Success reports
+to install content, attachments, and a new format-3 baseline. Success reports
 the actual title, ID, and local path. Final local naming/clash checks use that
 actual title and can fail after remote creation. No force mode, title uniqueness
 preflight, manual fallback, permission workaround, or mutation retry is added.
@@ -321,6 +328,7 @@ hierarchy:
 <workarea>/
   .cflsync/
     profile
+    version
     root
     cache/
       123456.json
@@ -335,8 +343,11 @@ hierarchy:
 ```
 
 `content.md` contains GitHub Flavored Markdown (GFM); `_attachments` contains
-downloaded attachment files. `.cflsync/profile` selects the credential profile.
-`.cflsync/root` holds the root page ID as one numeric line.
+downloaded attachment files. Each setting in `.cflsync` is one file, named
+after the setting and containing its value as one line.
+`.cflsync/profile` selects the credential profile. `.cflsync/version` holds the
+workarea version, `3`, as one numeric line. `.cflsync/root` holds the root page
+ID as one numeric line.
 `.cflsync/cache/<page-id>.json` is private synchronization state, not page
 content.
 
@@ -426,11 +437,11 @@ per-user configuration directory selected by `platformdirs`, relying on its
 default user ACL; cflsync does not alter Windows ACLs. Stable page IDs are
 cache keys, avoiding title-based collisions. Failed or interrupted
 initialization, staging, and private-file writes remove their temporary files
-or directories. Format 2 is:
+or directories. Format 3 is:
 
 ```json
 {
-  "format": 2,
+  "format": 3,
   "page": {
     "id": "123457",
     "title": "Example page",
@@ -455,8 +466,10 @@ directory name, relative to its parent's directory: a single name without
 separators. A page's path relative to the workarea root is derived by joining
 the directory names along the `parent_id` chain up to the root. Every cached
 page except the root must have a cached parent; a missing parent, a cycle, or
-a second page without a parent makes the cache invalid. Format-1 entries are
-refused.
+a second page without a parent makes the cache invalid. Format-1 and format-2
+entries, written by cflsync 0.4 or earlier, are refused with the transition
+instructions; their JSON structure equals format 3, but format 3 belongs to
+workarea version 3.
 
 `content_hash` is SHA-256 of canonical GFM for pages and raw bytes for
 attachments, unchanged since format 1. The algorithm is part of the format

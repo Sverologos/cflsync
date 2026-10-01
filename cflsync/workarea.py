@@ -27,6 +27,14 @@ from .errors import SyncError
 CONTENT_FILENAME = "content.md"
 # The maximum length of a page directory name in characters, including a disambiguation suffix.
 DIRECTORY_NAME_LIMIT = 64
+# The version of the workarea layout, stored in .cflsync/version.
+WORKAREA_VERSION = 3
+# The format of the per-page cache entries.
+STATE_FORMAT = 3
+# How to move the content of a workarea that this version of cflsync does not support.
+_TRANSITION_INSTRUCTIONS = (
+    "push its local changes with the cflsync version that created it, then create a new workarea in an empty "
+    "directory with 'cflsync init ROOT_PAGE_REF', pull, and copy any unmanaged files across")
 
 
 class MediaResolutionError(SyncError):
@@ -222,10 +230,10 @@ class AttachmentMetadata:
 
 
 class PageState:
-    """Format-2 synchronization state for one managed page."""
+    """Format-3 synchronization state for one managed page."""
 
-    def __init__(self, page: PageMetadata, attachments: Mapping[str, AttachmentMetadata], format: int = 2) -> None:
-        if format != 2:
+    def __init__(self, page: PageMetadata, attachments: Mapping[str, AttachmentMetadata], format: int = STATE_FORMAT) -> None:
+        if format != STATE_FORMAT:
             raise StateError(f"unsupported state format {format}")
 
         copied_attachments: dict[str, AttachmentMetadata] = {}
@@ -254,7 +262,7 @@ class PageState:
 
     @classmethod
     def from_json(cls, value: object) -> "PageState":
-        """Validate and decode a format-2 state JSON value."""
+        """Validate and decode a format-3 state JSON value."""
         if not isinstance(value, Mapping):
             raise StateError("state must be an object")
         try:
@@ -265,6 +273,10 @@ class PageState:
             raise StateError(f"state.{error.args[0]} is required") from error
         if type(state_format) is not int:
             raise StateError("state.format must be an integer")
+        if state_format < STATE_FORMAT:
+            raise StateError(
+                f"state format {state_format} was written by cflsync 0.4 or earlier, which this version of cflsync "
+                f"does not support; {_TRANSITION_INSTRUCTIONS}")
         if not isinstance(attachment_values, Mapping):
             raise StateError("attachments must be an object")
 
@@ -386,8 +398,9 @@ class Workarea:
     def init(cls, p: Path, root_page_id: str, profile: str = "default"):
         """Initialise a workarea at path p, anchored at a root page and using the named auth profile.
 
-        An existing workarea at p, of either version, is re-anchored if its cache holds no page state: its profile and
-        root are replaced. Any other existing workarea at or above p is refused.
+        An existing workarea at p, of any version, is re-anchored if its cache holds no page state: its profile and
+        root are replaced, and it becomes a current-version workarea. Any other existing workarea at or above p is
+        refused.
         """
         if not p.is_dir():
             raise Workarea.Error(f"'{p}' is not a directory")
@@ -418,7 +431,7 @@ class Workarea:
             if not _is_windows():
                 cache_dir.chmod(0o700)
 
-            for name, value in [("profile", profile), ("root", root_page_id)]:
+            for name, value in [("profile", profile), ("version", WORKAREA_VERSION), ("root", root_page_id)]:
                 path = staging / name
                 with path.open("w", encoding="utf-8") as file:
                     file.write(f"{value}\n")
@@ -450,9 +463,10 @@ class Workarea:
 
         try:
             self.cache_dir.mkdir(mode=0o700, exist_ok=True)
-            # Each file is replaced atomically. The root goes last, so that a version-1 workarea only becomes a
-            # version-2 workarea once its profile is set.
+            # Each file is replaced atomically. The root goes last, so that a version-1 workarea only becomes an
+            # anchored workarea once its profile and version are set.
             _write_private_file(self.cflsync_dir / "profile", f"{profile}\n")
+            _write_private_file(self.cflsync_dir / "version", f"{WORKAREA_VERSION}\n")
             _write_private_file(self.cflsync_dir / "root", f"{root_page_id}\n")
         except OSError as error:
             raise Workarea.Error(f"cannot re-anchor workarea: {filesystem_error_message(error)}") from error
@@ -489,6 +503,38 @@ class Workarea:
             raise Workarea.Error(f"'{path}' must contain one numeric page ID")
 
         return root_page_id
+
+    @property
+    def version(self) -> int:
+        """Return the workarea version, refusing a workarea that this version of cflsync does not support.
+
+        Workareas created by cflsync 0.4 or earlier have no version file.
+        """
+        path = self.cflsync_dir / "version"
+        try:
+            text = path.read_text(encoding="utf-8")
+        except FileNotFoundError as error:
+            raise Workarea.Error(
+                f"'{self.root_dir}' was created by cflsync 0.4 or earlier, which this version of cflsync does not support; "
+                f"{_TRANSITION_INSTRUCTIONS}") from error
+        except (OSError, UnicodeError) as error:
+            raise Workarea.Error(f"cannot read '{path}': {filesystem_error_message(error)}") from error
+
+        value = text.removesuffix("\n")
+        if re.fullmatch(r"[0-9]+", value) is None:
+            raise Workarea.Error(f"'{path}' must contain one workarea version number")
+
+        version = int(value)
+        if version > WORKAREA_VERSION:
+            raise Workarea.Error(
+                f"'{self.root_dir}' has workarea version {version} and was created by a newer version of cflsync; "
+                "use that version")
+        if version < WORKAREA_VERSION:
+            raise Workarea.Error(
+                f"'{self.root_dir}' has workarea version {version}, which this version of cflsync does not support; "
+                f"{_TRANSITION_INSTRUCTIONS}")
+
+        return version
 
     def cache_path(self, page_id: str) -> Path:
         if not page_id.isdigit():
@@ -978,8 +1024,9 @@ class Workarea:
             raise Workarea.Error(f"'{p}' is not part of a cflsync workarea")
 
         workarea = cls(dir)
-        # Reading the root page ID validates the workarea format.
+        # Reading the root page ID and the version validates the workarea format; a missing root is reported first.
         workarea.root_page_id
+        workarea.version
         return workarea
 
     @classmethod

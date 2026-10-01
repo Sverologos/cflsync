@@ -29,6 +29,15 @@ class TestPageStateLoad(unittest.TestCase):
             with self.assertRaises(StateError):
                 PageState.load(workarea.cache_path("123456"))
 
+    def test_rejects_a_format_2_state_with_transition_instructions(self) -> None:
+        with temporary_workarea() as workarea:
+            value = example_page_state().to_json()
+            value["format"] = 2
+            workarea.cache_path("123456").write_text(json.dumps(value), encoding="utf-8")
+
+            with self.assertRaisesRegex(StateError, "state format 2 was written by cflsync 0.4 or earlier.*'cflsync init"):
+                PageState.load(workarea.cache_path("123456"))
+
     def test_rejects_an_unsupported_format(self) -> None:
         with temporary_workarea() as workarea:
             value = example_page_state().to_json()
