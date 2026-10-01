@@ -6,6 +6,7 @@
 
 """Repository pull over the complete page tree."""
 
+import json
 import shutil
 import unittest
 from unittest.mock import patch
@@ -386,6 +387,78 @@ class TestRepositoryPullDelete(unittest.TestCase):
             self.assertEqual(status, 0)
             self.assertFalse((workarea.root_dir / "Root_100" / "Alpha_200").exists())
             self.assertIn("Page '200' (Alpha): deleted: no longer in the tree (deleted or moved outside the root)", lines)
+
+
+def _link(text, href):
+    return {"type": "text", "text": text, "marks": [{"type": "link", "attrs": {"href": href}}]}
+
+
+def _document(*paragraphs):
+    """Return an ADF body with one paragraph per list of inline nodes."""
+    return json.dumps(
+        {
+            "type": "doc",
+            "version": 1,
+            "content": [{
+                "type": "paragraph",
+                "content": list(inlines)} for inlines in paragraphs]})
+
+
+SITE = "https://example.atlassian.net"
+
+
+class TestRepositoryPullLinks(unittest.TestCase):
+    """Page links in a tree of Root (100) with A (200) and B (300) below it, and Leaf (400) below B."""
+
+    def setUp(self) -> None:
+        self.site = FakeConfluence()
+        self.site.add_page("100", "Root")
+        self.site.add_page(
+            "200",
+            "A",
+            parent_id="100",
+            body=_document(
+                [_link("B", f"{SITE}/wiki/spaces/EXAMPLE/pages/300")], [_link("Leaf", f"{SITE}/wiki/display/EXAMPLE/Leaf#Top")]))
+        self.site.add_page("300", "B", parent_id="100", body=_document([_link("Leaf", f"{SITE}/wiki/spaces/EXAMPLE/pages/400")]))
+        self.site.add_page("400", "Leaf", parent_id="300", body=_document([_link("A", f"{SITE}/wiki/spaces/EXAMPLE/pages/200")]))
+
+    def _run(self, workarea, command):
+        return run_with_site(self.site, workarea, command)
+
+    def _content(self, workarea, directory):
+        return (workarea.root_dir / directory / "content.md").read_bytes()
+
+    def test_converts_links_to_local_paths_in_every_pulled_page(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._run(workarea, lambda: RepositoryPullCommand().run())
+
+            self.assertIn(b"[B](../B_300/content.md)", self._content(workarea, "Root_100/A_200"))
+            self.assertIn(b"[Leaf](../B_300/Leaf_400/content.md#Top)", self._content(workarea, "Root_100/A_200"))
+            self.assertIn(b"[Leaf](Leaf_400/content.md)", self._content(workarea, "Root_100/B_300"))
+            self.assertIn(b"[A](../../A_200/content.md)", self._content(workarea, "Root_100/B_300/Leaf_400"))
+
+    def test_page_pull_and_repository_pull_write_the_same_markdown(self) -> None:
+        with temporary_workarea(root_page_id="100") as repository, temporary_workarea(root_page_id="100") as single:
+            self._run(repository, lambda: RepositoryPullCommand().run())
+            self._run(single, lambda: PagePullCommand().run("200"))
+
+            self.assertEqual(self._content(single, "Root_100/A_200"), self._content(repository, "Root_100/A_200"))
+
+    def test_a_remote_rename_rewrites_only_the_renamed_page(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._run(workarea, lambda: RepositoryPullCommand().run())
+            referring = self._content(workarea, "Root_100/A_200")
+            descendant = self._content(workarea, "Root_100/B_300/Leaf_400")
+            self.site.content["300"].update(title="B renamed")
+            self.site.content["300"]["version"] += 1
+
+            self._run(workarea, lambda: RepositoryPullCommand().run())
+
+            self.assertEqual(self._content(workarea, "Root_100/A_200"), referring)
+            self.assertEqual(self._content(workarea, "Root_100/B renamed_300/Leaf_400"), descendant)
+            renamed = self._content(workarea, "Root_100/B renamed_300")
+            self.assertTrue(renamed.startswith(b"# B renamed\n"))
+            self.assertIn(b"[Leaf](Leaf_400/content.md)", renamed)
 
 
 # vim: set ts=4 sw=4 et tw=132:

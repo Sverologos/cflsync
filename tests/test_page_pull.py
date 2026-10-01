@@ -12,12 +12,14 @@ from io import StringIO
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from cflsync import APIClient, PageState, Profile, SyncError
+from cflsync import APIClient, PageState, PandocRunner, Profile, SyncError
+from cflsync.sync import PageChangeDetector, PageChangeStatus
 from cflsync.cli import PageMoveCommand, PagePullCommand, PageStatusCommand
 from tests.support import FakeConfluence, MockResponse, MockTransport, example_page_state, run_with_site, temporary_workarea
 from tests.test_api_operations import attachment_fixture, page_fixture, user_fixture
@@ -618,6 +620,113 @@ class TestPagePullPathLength(unittest.TestCase):
 
             self.assertEqual(list(workarea.cache_dir.iterdir()), [])
             self.assertEqual([path.name for path in workarea.root_dir.iterdir()], [".cflsync"])
+
+
+def _link(text, href):
+    return {"type": "text", "text": text, "marks": [{"type": "link", "attrs": {"href": href}}]}
+
+
+def _document(*paragraphs):
+    """Return an ADF body with one paragraph per list of inline nodes."""
+    return json.dumps(
+        {
+            "type": "doc",
+            "version": 1,
+            "content": [{
+                "type": "paragraph",
+                "content": list(inlines)} for inlines in paragraphs]})
+
+
+SITE = "https://example.atlassian.net"
+
+
+class TestPagePullLinks(unittest.TestCase):
+    """Page links in pulled pages, in a tree of Root (100) with A (200) and B (300) below it, and Leaf (400) below B.
+
+    Page 900 is outside the tree.
+    """
+
+    def setUp(self):
+        self.site = FakeConfluence()
+        self.site.add_page("100", "Root")
+        self.site.add_page("200", "A", parent_id="100")
+        self.site.add_page("300", "B", parent_id="100", body=_document([_link("Leaf", f"{SITE}/wiki/spaces/EXAMPLE/pages/400")]))
+        self.site.add_page("400", "Leaf", parent_id="300")
+        self.site.add_page("900", "Outside")
+
+    def _pull(self, workarea, *page_ids):
+        for page_id in page_ids:
+            run_with_site(self.site, workarea, lambda: PagePullCommand().run(page_id))
+
+    def _content(self, workarea, directory):
+        return (workarea.root_dir / directory / "content.md").read_text(encoding="utf-8")
+
+    def test_converts_links_to_pages_in_the_tree_and_keeps_all_others(self) -> None:
+        links = {
+            "installed": f"{SITE}/wiki/spaces/EXAMPLE/pages/300",
+            "never installed": f"{SITE}/wiki/spaces/EXAMPLE/pages/400/Leaf",
+            "outside": f"{SITE}/wiki/spaces/EXAMPLE/pages/900",
+            "unreachable": f"{SITE}/wiki/spaces/EXAMPLE/pages/999",
+            "short": f"{SITE}/wiki/x/CCCCCC",
+            "edit": f"{SITE}/wiki/spaces/EXAMPLE/pages/edit-v2/300",
+            "version": f"{SITE}/wiki/pages/viewpage.action?pageId=300&pageVersion=1",
+            "title": f"{SITE}/wiki/display/EXAMPLE/Leaf",
+            "fragment": f"{SITE}/wiki/spaces/EXAMPLE/pages/300#A%20b+Überblick"}
+        self.site.content["200"]["body"] = _document(*[[_link(text, href)] for text, href in links.items()])
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, "300", "200")
+
+            markdown = self._content(workarea, "Root_100/A_200")
+
+        self.assertIn("[installed](../B_300/content.md)", markdown)
+        self.assertIn("[never installed](../B_300/Leaf_400/content.md)", markdown)
+        for text in ["outside", "unreachable", "short", "edit", "version"]:
+            self.assertIn(f"[{text}]({links[text]})", markdown)
+        self.assertIn("[title](../B_300/Leaf_400/content.md)", markdown)
+        self.assertIn("[fragment](../B_300/content.md#A%20b+Überblick)", markdown)
+
+    def test_keeps_smart_links_opaque(self) -> None:
+        card = {"type": "inlineCard", "attrs": {"url": f"{SITE}/wiki/spaces/EXAMPLE/pages/300"}}
+        self.site.content["200"]["body"] = _document([card])
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, "200")
+
+            markdown = self._content(workarea, "Root_100/A_200")
+
+        self.assertIn("``` atlas_doc_format", markdown)
+        self.assertNotIn("B_300", markdown)
+
+    def test_a_pulled_page_with_converted_links_is_unchanged_afterwards(self) -> None:
+        self.site.content["200"]["body"] = _document([_link("B", f"{SITE}/wiki/spaces/EXAMPLE/pages/300")])
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, "200")
+            state = PageState.load(workarea.cache_path("200"))
+            detector = PageChangeDetector(PandocRunner())
+
+            self.assertEqual(detector.local_status(workarea.page_directory(state), state), PageChangeStatus.UNCHANGED)
+
+    def test_a_target_pulled_later_lands_where_the_link_points(self) -> None:
+        self.site.content["200"]["body"] = _document([_link("Leaf", f"{SITE}/wiki/spaces/EXAMPLE/pages/400")])
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, "200")
+            source = workarea.root_dir / "Root_100" / "A_200"
+            link = re.search(r"\]\(([^)]*)\)", self._content(workarea, "Root_100/A_200")).group(1)
+            self.assertFalse((source / link).exists())
+
+            self._pull(workarea, "400")
+
+            self.assertTrue((source / link).resolve().samefile(workarea.root_dir / "Root_100/B_300/Leaf_400/content.md"))
+
+    def test_pulling_a_page_does_not_touch_other_pages(self) -> None:
+        self.site.content["200"]["body"] = _document([_link("B", f"{SITE}/wiki/spaces/EXAMPLE/pages/300")])
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, "300", "400")
+            before = {path: path.read_bytes() for path in workarea.root_dir.rglob("content.md")}
+
+            self._pull(workarea, "200")
+
+            after = {path: path.read_bytes() for path in workarea.root_dir.rglob("content.md")}
+            self.assertEqual({path: body for path, body in after.items() if path in before}, before)
 
 
 # vim: set ts=4 sw=4 et tw=132:

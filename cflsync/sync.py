@@ -81,7 +81,7 @@ from .api import APIError, RemoteContentRef
 from .convert import ADFToMarkdownConverter, MarkdownToADFConverter, PandocRunner
 from .errors import SyncError
 from .workarea import (
-    AttachmentMetadata, CONTENT_FILENAME, MediaResolver, PageMetadata, PageState, Workarea, filesystem_error_message)
+    AttachmentMetadata, CONTENT_FILENAME, LinkResolver, MediaResolver, PageMetadata, PageState, Workarea, filesystem_error_message)
 
 ATTACHMENTS_PREFIX = "_attachments/"
 
@@ -491,12 +491,20 @@ class PagePullOperation:
         self._pandoc = pandoc or PandocRunner()
         self._detector = PageChangeDetector(self._pandoc)
 
-    def install_ancestors(self, workarea: Workarea, api, page_id: str, include_page: bool = False) -> None:
-        """Plan and install the locally missing ancestors of *page_id*, optionally including that page."""
-        plan = InstallationPlan.for_ancestors(workarea, api, page_id, include_page=include_page)
-        plan.install(lambda planned: self._pull_planned(workarea, api, planned))
+    def install_ancestors(
+            self, workarea: Workarea, api, page_id: str, include_page: bool = False, page_index: PageIndex | None = None) -> None:
+        """Plan and install the locally missing ancestors of *page_id*, optionally including that page.
 
-    def _pull_planned(self, workarea, api, planned: PlannedPage) -> None:
+        Page links in the installed pages are resolved through *page_index*, or through a new on-demand index shared
+        by these installations.
+        """
+        if page_index is None:
+            page_index = PageIndex(workarea, api, prefill=False)
+
+        plan = InstallationPlan.for_ancestors(workarea, api, page_id, include_page=include_page)
+        plan.install(lambda planned: self._pull_planned(workarea, api, planned, page_index))
+
+    def _pull_planned(self, workarea, api, planned: PlannedPage, page_index) -> None:
         # A planned ancestor is installed at its planned location; a cached one is restored there.
         self.pull(
             workarea,
@@ -505,7 +513,8 @@ class PagePullOperation:
             force=planned.restore,
             parent_id=planned.parent_id,
             directory_name=planned.directory_name,
-            directory=planned.directory)
+            directory=planned.directory,
+            page_index=page_index)
 
     def pull(
             self,
@@ -515,13 +524,15 @@ class PagePullOperation:
             force: bool = False,
             parent_id: str | None = None,
             directory_name: str | None = None,
-            directory: str | None = None) -> bool:
+            directory: str | None = None,
+            page_index: PageIndex | None = None) -> bool:
         """Install or update the local copy of remote *page*, returning whether anything was pulled.
 
         The page is placed below its remote parent, which must be present locally, unless *directory* gives a
         planned location. Its directory name is the encoded title followed by ``_`` and the page ID. Without
         *force*, local changes conflict, and a page that is in sync and in place is left alone. With *force*, remote
-        content is preferred and a missing local directory is restored.
+        content is preferred and a missing local directory is restored. Links to pages in the workarea's tree become
+        local links, resolved through *page_index* or a new on-demand index; no other page's files are touched.
         """
         attachments = page.attachments()
         MediaResolver((attachment.filename, attachment.id) for attachment in attachments)
@@ -569,7 +580,11 @@ class PagePullOperation:
         if not isinstance(document, dict):
             raise SyncError(f"page '{page.id}' ADF must be an object")
 
-        markdown = ADFToMarkdownConverter(self._pandoc, media, api.get_user).convert(document, title=page.title)
+        if page_index is None:
+            page_index = PageIndex(workarea, api, prefill=False)
+
+        links = LinkResolver(workarea, api.hostname, page.id, directory, page_index)
+        markdown = ADFToMarkdownConverter(self._pandoc, media, api.get_user, links).convert(document, title=page.title)
         bodies = {}
         metadata = {}
         for attachment in attachments:
@@ -646,6 +661,8 @@ class RepositoryPullOperation:
 
         results = PageOperationResults()
         unsuccessful: set[str] = set()
+        # Page links resolve through the complete listing that the status was built from.
+        page_index = status.index if status.index is not None else PageIndex(workarea, api, prefill=True)
         pulled = {PageStatusState.ABSENT_LOCAL, PageStatusState.REMOTE_CHANGED}
         if force:
             pulled |= {PageStatusState.CONFLICT, PageStatusState.UNCHANGED}
@@ -669,7 +686,8 @@ class RepositoryPullOperation:
             # A cached page whose directory is missing has no local content to protect, so it is restored.
             restore = page_status.status is PageStatusState.ABSENT_LOCAL and page_status.local is not None
             try:
-                changed = self._page_pull.pull(workarea, api, api.get_page(page_status.id), force=force or restore)
+                changed = self._page_pull.pull(
+                    workarea, api, api.get_page(page_status.id), force=force or restore, page_index=page_index)
             except (OSError, UnicodeError) as error:
                 unsuccessful.add(page_status.id)
                 results.add(page_status.id, page_status.title, "failed", filesystem_error_message(error))
@@ -1045,29 +1063,41 @@ class PageIndex:
     the root page, or to ``None`` for a page that is not in it: deleted, moved outside the root, or not visible with
     the profile's credentials. It is *complete* once it holds the full subtree listing, and *partial* before.
 
-    With *prefill*, the constructor lists the full subtree, as repository commands do. Without it, pages are looked
-    up one by one when first needed, as page commands do; :attr:`pages` then lists the full subtree on first use, so
-    page commands must not use it.
+    With *prefill*, the constructor fetches the root page and lists the full subtree, as repository commands do.
+    Without it, nothing is fetched until needed, and pages are looked up one by one, as page commands do;
+    :attr:`pages` then lists the full subtree on first use, so page commands must not use it.
     """
 
     def __init__(self, workarea: Workarea, api, prefill: bool) -> None:
+        self._workarea = workarea
         self._api = api
-        try:
-            root = api.get_page(workarea.root_page_id)
-        except APIError as error:
-            if error.status == 404:
-                raise workarea.missing_root_error() from error
-
-            raise
-
-        self.root = root
-        # The root page's parent is outside the workarea's tree.
-        self._root = RemoteContentRef(root.id, "page", root.title, None)
-        self._pages: dict[str, RemoteContentRef | None] = {root.id: self._root}
+        self._root_id = workarea.root_page_id
+        self._root_page = None
+        self._root: RemoteContentRef | None = None
+        self._pages: dict[str, RemoteContentRef | None] = {}
         self._listing: list[RemoteContentRef] | None = None
         self._space_key: str | None = None
         if prefill:
             self._discover()
+
+    @property
+    def root(self):
+        """Return the root page, fetching it on first use; a missing root page is reported as such."""
+        if self._root_page is None:
+            try:
+                root = self._api.get_page(self._root_id)
+            except APIError as error:
+                if error.status == 404:
+                    raise self._workarea.missing_root_error() from error
+
+                raise
+
+            self._root_page = root
+            # The root page's parent is outside the workarea's tree.
+            self._root = RemoteContentRef(root.id, "page", root.title, None)
+            self._pages[root.id] = self._root
+
+        return self._root_page
 
     @property
     def complete(self) -> bool:
@@ -1081,7 +1111,7 @@ class PageIndex:
         A partial index lists the full subtree first.
         """
         self._discover()
-        assert self._listing is not None
+        assert self._listing is not None and self._root is not None
         return [self._root, *self._listing]
 
     @property
@@ -1101,6 +1131,10 @@ class PageIndex:
         A complete index answers without requests. A partial index fetches an unknown page and its ancestors once;
         it records the ancestors too, and fetches an ancestor's title only when that ancestor is looked up.
         """
+        if page_id == self._root_id:
+            self.root
+            return self._root
+
         if page_id not in self._pages:
             if self.complete:
                 return None
@@ -1138,8 +1172,9 @@ class PageIndex:
         if self._listing is not None:
             return
 
-        listing = self._api.page_descendants(self.root.id)
-        pages: dict[str, RemoteContentRef | None] = {self.root.id: self._root}
+        root = self.root
+        listing = self._api.page_descendants(root.id)
+        pages: dict[str, RemoteContentRef | None] = {root.id: self._root}
         for page in listing:
             pages[page.id] = page
 
@@ -1163,17 +1198,17 @@ class PageIndex:
             raise
 
         ancestor_ids = [ancestor.id for ancestor in ancestors]
-        if self.root.id not in ancestor_ids:
+        if self._root_id not in ancestor_ids:
             self._pages[page_id] = None
             return
 
-        below_root = ancestors[ancestor_ids.index(self.root.id) + 1:]
+        below_root = ancestors[ancestor_ids.index(self._root_id) + 1:]
         if any(ancestor.type != "page" for ancestor in below_root):
             self._pages[page_id] = None
             return
 
         # The chain runs from the root down; ancestor listings carry no titles.
-        parent_id = self.root.id
+        parent_id = self._root_id
         for ancestor in below_root:
             self._pages.setdefault(ancestor.id, RemoteContentRef(ancestor.id, "page", None, parent_id))
             parent_id = ancestor.id

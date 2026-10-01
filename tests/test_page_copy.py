@@ -327,6 +327,28 @@ class TestPageCopySuccess(CopyTestCase):
             self.assertTrue(all(request.method == "GET" or request.path.endswith("/copy") for request in self.site.requests))
             self.assertEqual(sum(request.method == "POST" for request in self.site.requests), 1)
 
+    def test_a_copy_keeps_its_page_links_to_the_original_targets_as_local_links(self) -> None:
+        link = {"type": "link", "attrs": {"href": "https://example.atlassian.net/wiki/spaces/EXAMPLE/pages/300#Top"}}
+        self.site.content["200"]["body"] = json.dumps(
+            {
+                "type": "doc",
+                "version": 1,
+                "content": [{
+                    "type": "paragraph",
+                    "content": [{
+                        "type": "text",
+                        "text": "Destination",
+                        "marks": [link]}]}]})
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea)
+            remote = set(self.site.content)
+
+            self._copy(workarea)
+
+            created = next(key for key in self.site.content if key not in remote)
+            markdown = (workarea.root_dir / "Root_100" / f"Copy_{created}" / "content.md").read_text(encoding="utf-8")
+            self.assertIn("[Destination](../Missing%20destination_300/content.md#Top)", markdown)
+
     def test_all_source_and_explicit_parent_reference_forms(self) -> None:
         for source_form in ["id", "title", "directory", "content"]:
             for parent_form in ["id", "title", "directory", "content"]:

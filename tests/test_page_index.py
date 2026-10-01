@@ -159,9 +159,22 @@ class TestOnDemandPageIndex(PageIndexTestCase):
         self.assertEqual(self._summary(index.lookup("200")), ("200", "Child", "100"))
         self.assertEqual(self._requests(), [f"{PAGES}/300", f"{PAGES}/200"])
 
+        # The root page is fetched once, when it is first needed.
         self.site.requests.clear()
         for page_id in ["400", "300", "200", "100"]:
             index.lookup(page_id)
+        self.assertEqual(self._requests(), [f"{PAGES}/100"])
+
+        self.site.requests.clear()
+        for page_id in ["400", "300", "200", "100"]:
+            index.lookup(page_id)
+        self.assertEqual(self.site.requests, [])
+
+    def test_makes_no_request_until_a_page_is_needed(self) -> None:
+        self.site.requests.clear()
+
+        PageIndex(self.workarea, self.api, prefill=False)
+
         self.assertEqual(self.site.requests, [])
 
     def test_finds_titles_only_in_the_tree_and_its_space(self) -> None:

@@ -147,6 +147,12 @@ class LinkResolver:
             self._tree = self._workarea.page_tree()
 
         location = self._workarea.page_location(target, self._index, self._tree)
+        # Pages below a page that is being moved, such as its descendants, move with it.
+        if self._page_id in self._tree.states:
+            previous = self._tree.directory(self._page_id)
+            if previous != self._directory and (location == previous or location.startswith(f"{previous}/")):
+                location = self._directory + location[len(previous):]
+
         relative = posixpath.relpath(f"{location}/{CONTENT_FILENAME}", self._directory)
         link = "/".join(quote(segment, safe="") for segment in relative.split("/"))
         return link if fragment is None else f"{link}#{fragment}"

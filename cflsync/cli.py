@@ -20,8 +20,8 @@ from .config import Config, Profile
 from .convert import MarkdownToADFConverter, PandocRunner
 from .errors import SyncError
 from .sync import (
-    PageChangeDetector, PageChangeStatus, PageDeletion, PagePullOperation, PagePushOperation, PageRemoveOperation, PageStatus,
-    PageStatusState, RepositoryPullOperation, RepositoryPushOperation, TreeStatus)
+    PageChangeDetector, PageChangeStatus, PageDeletion, PageIndex, PagePullOperation, PagePushOperation, PageRemoveOperation,
+    PageStatus, PageStatusState, RepositoryPullOperation, RepositoryPushOperation, TreeStatus)
 from .workarea import (CONTENT_FILENAME, PageMetadata, PageRef, PageState, Workarea, filesystem_error_message)
 
 
@@ -237,7 +237,9 @@ class PageCopyCommand:
             workarea, api = _open_workarea()
             source, in_tree = _copy_source(workarea, api, source_page_ref)
             operation = PagePullOperation()
-            parent = _prepare_copy_parent(workarea, api, source, in_tree, parent_page_ref, operation)
+            # The pages this command installs share one on-demand index for their links.
+            page_index = PageIndex(workarea, api, prefill=False)
+            parent = _prepare_copy_parent(workarea, api, source, in_tree, parent_page_ref, operation, page_index)
             page_id = api.copy_page(source.id, parent.id, title)
         except (OSError, UnicodeError) as error:
             raise SyncError(f"cannot copy page: {filesystem_error_message(error)}") from error
@@ -247,8 +249,8 @@ class PageCopyCommand:
             if not workarea.contains(page.id, api):
                 raise SyncError(f"copied page '{page.id}' is no longer in this workarea's tree")
 
-            operation.install_ancestors(workarea, api, page.id)
-            operation.pull(workarea, api, page)
+            operation.install_ancestors(workarea, api, page.id, page_index=page_index)
+            operation.pull(workarea, api, page, page_index=page_index)
             directory = workarea.page_tree().directory(page.id)
         except (SyncError, OSError, UnicodeError) as error:
             raise SyncError(
@@ -277,8 +279,10 @@ class PagePullCommand:
             reference = PageRef.resolve(page_ref, workarea, api)
             page = api.get_page(reference.page_id)
             operation = PagePullOperation()
-            operation.install_ancestors(workarea, api, page.id)
-            pulled = operation.pull(workarea, api, page, force)
+            # The page and its missing ancestors share one on-demand index for their links.
+            page_index = PageIndex(workarea, api, prefill=False)
+            operation.install_ancestors(workarea, api, page.id, page_index=page_index)
+            pulled = operation.pull(workarea, api, page, force, page_index=page_index)
         except (OSError, UnicodeError) as error:
             raise SyncError(f"cannot pull page: {filesystem_error_message(error)}") from error
 
@@ -710,7 +714,14 @@ def _copy_source(workarea: Workarea, api, source_page_ref: str):
     return page, in_tree
 
 
-def _prepare_copy_parent(workarea: Workarea, api, source, in_tree: bool, parent_page_ref: str | None, operation: PagePullOperation):
+def _prepare_copy_parent(
+        workarea: Workarea,
+        api,
+        source,
+        in_tree: bool,
+        parent_page_ref: str | None,
+        operation: PagePullOperation,
+        page_index: PageIndex | None = None):
     """Select a current in-tree page parent, then preflight and install its missing chain."""
     if parent_page_ref is None:
         if not in_tree or source.id == workarea.root_page_id:
@@ -725,7 +736,7 @@ def _prepare_copy_parent(workarea: Workarea, api, source, in_tree: bool, parent_
     if not workarea.contains(parent.id, api):
         raise SyncError(f"destination parent '{parent.id}' is not in this workarea's tree")
 
-    operation.install_ancestors(workarea, api, parent.id, include_page=True)
+    operation.install_ancestors(workarea, api, parent.id, include_page=True, page_index=page_index)
     return parent
 
 

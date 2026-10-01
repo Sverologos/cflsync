@@ -93,6 +93,16 @@ class TestLinkResolverToMarkdown(unittest.TestCase):
         self.assertEqual(
             self.resolver.to_markdown(f"https://{HOST}/wiki/spaces/EXAMPLE/pages/500"), "../B_300/Leaf_400/Deep_500/content.md")
 
+    def test_places_the_descendants_of_a_moved_page_below_its_new_directory(self) -> None:
+        _cache(self.workarea, "300", "B", "100")
+        _cache(self.workarea, "400", "Leaf", "300")
+        # Page 300 is being written to a new directory after a remote rename; its cached descendants move with it.
+        resolver = _resolver(self.workarea, self.index, "300", "Root_100/Renamed_300")
+
+        self.assertEqual(resolver.to_markdown(f"https://{HOST}/wiki/spaces/EXAMPLE/pages/400"), "Leaf_400/content.md")
+        self.assertEqual(resolver.to_markdown(f"https://{HOST}/wiki/spaces/EXAMPLE/pages/500"), "Leaf_400/Deep_500/content.md")
+        self.assertEqual(resolver.to_markdown(f"https://{HOST}/wiki/spaces/EXAMPLE/pages/200"), "../A_200/content.md")
+
     def test_converts_a_link_to_an_uncached_root(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             resolver = _resolver(workarea, self.index, "200", "Root_100/A_200")
