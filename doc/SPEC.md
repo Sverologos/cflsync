@@ -417,6 +417,94 @@ unmanaged. On push, managed files are uploaded or updated and previously
 managed files removed locally are deleted remotely. Attachments outside the
 managed set must not be deleted.
 
+## Page links
+
+Page links are ADF `link` marks whose target is a page of the managed tree,
+and the local Markdown links that represent them. They are converted inside
+the existing converter link handlers, through a `workarea.LinkResolver` that
+the synchronization supplies (see [MAPPING.md](MAPPING.md#page-links)).
+
+**Membership.** A page is in the tree if it is the root page, or if the root
+page is in its ancestor chain and every ancestor below the root is a page. A
+page that is deleted, trashed, moved outside the root, or not visible with the
+profile's credentials (HTTP 403 or 404) is not in the tree, whether or not a
+local copy or cache entry remains. A trashed page is reported by
+`GET /pages/{id}` with status `trashed`, no parent, and no ancestors.
+
+**Pull.** For every page that pull installs or updates, each link to a page in
+the tree becomes a relative link from that page's `content.md` to the target's
+`content.md`. A link qualifies when it is an absolute `https` URL on the
+configured host and default port, or a site-root-relative URL starting with
+`/wiki/`, with one of these routes:
+
+- `/wiki/spaces/<any>/pages/<id>`, optionally followed by a title slug, without
+  a query. The page ID identifies the page; the space segment and the slug are
+  ignored. Confluence adds the slug to stored links that carry a fragment.
+- `/wiki/pages/viewpage.action?pageId=<id>`, with no other query parameter.
+- `/wiki/display/<space key>/<title>`, without a query, for a title in the
+  tree's space. Space key and title match ignoring case. The title is
+  percent-decoded and looked up first with `+` kept, then with every `+` read
+  as a space, which reproduces the observed Confluence resolution.
+
+Every other link is kept: other hosts, `http`, other ports, other query
+parameters (comment, version, and diff links), edit and history routes, short
+links (`/wiki/x/<code>`), REST URLs, and links to pages outside the tree. The
+target path is the target's cached directory, or for a page that is not
+installed, the cached directory of its nearest installed ancestor followed by
+the directory name of each uninstalled page below it. A target inside the
+directory of a page that the pull is moving resolves inside its new directory.
+Path segments are percent-encoded. A link to the page itself becomes
+`#<fragment>`, or `content.md` without a fragment.
+
+**Push.** A local link is a page link when it is a relative reference without
+scheme, authority, or query, not starting with `/` or `#`, that resolves
+against the referring `content.md` to `content.md` in a directory whose name
+ends in `_<digits>` inside the workarea. The digits are the page ID; the rest
+of the path need not match the target's current location, so links left
+behind by renames and moves still name the right page. A page link to a page
+in the tree becomes `https://<host>/wiki/spaces/<space key>/pages/<id>`, with
+the fragment appended. All other local links, including `../notes.md`,
+directory links, and fragment-only links, are pushed unchanged. Before any
+remote change, including attachment uploads, push converts the page once
+without side effects; if it has page links to pages that are not in the tree,
+it refuses the page:
+
+```text
+page '<id>' has broken page links; nothing was pushed:
+  <workarea-relative path of content.md>: [<link text>](<href>)
+```
+
+with one line per such link, in document order. The link text is empty when
+it carries formatting. Repository push reports a refused page as failed and
+continues with the other pages.
+
+**Fragments.** The text after `#` is copied byte for byte in both directions.
+Confluence's heading anchors and the GitHub-style anchors of Markdown previews
+differ, so a fragment navigates only where its exact text matches that
+environment's anchor; no translation is attempted.
+
+**Smart Links.** `inlineCard`, `blockCard`, and `embedCard` nodes are not page
+links. They remain retained ADF, as does an ordinary link in the same block,
+and push never creates them.
+
+**Written pages only.** Links are generated only in the pages that a command
+writes from their remote version. `page rename`, `page move`, and pull do not
+rewrite links in any other file, so a link can become stale for local
+navigation after a rename or move; push still resolves it by page ID, and the
+next pull that writes the referring page makes it current. Converting links
+never changes the content hash or the synchronization state of other pages.
+Caveat: within one repository pull, a page converted before another page is
+relocated by a remote rename or move in the same pull links to that page's
+previous directory.
+
+**Lookups.** Repository commands list the full subtree once, as for their
+status comparison, and resolve every link from that listing. Page commands
+look up only what their links need: each target with `GET /pages/{id}` and
+`GET /pages/{id}/ancestors`, each uninstalled ancestor's title with
+`GET /pages/{id}`, title links with `GET /pages?title=...&space-id=...`, and
+the space key once with `GET /spaces/{id}`. Every page is looked up at most
+once per command.
+
 ## Per-page cache entry
 
 On Unix, each synchronized page has an atomically written `0600` cache entry
@@ -614,8 +702,8 @@ direct children, from which it lists all page descendants for the repository
 commands and `page remove`. Their behaviour was verified against
 Confluence Cloud:
 
-- `GET /pages/{id}/ancestors` returns `id` and `type` for every ancestor,
-  highest first. Non-page ancestors such as folders are included. A response
+- `GET /pages/{id}/ancestors` returns `id` and `type`, without titles, for
+  every ancestor, highest first. Non-page ancestors such as folders are included. A response
   holds at most `limit` ancestors, nearest to the requested content, and has no
   `next` link. `APIClient.page_ancestors` requests the maximum `limit` of 250.
   It continues a full response from its highest ancestor, through
@@ -632,3 +720,9 @@ Confluence Cloud:
   page. It rejects non-page children, so a successful return is complete for
   the page hierarchy.
 - A `limit` above 250 is rejected with HTTP 400 by both endpoints.
+- `GET /pages?title=...&space-id=...` matches titles ignoring case.
+  `APIClient.find_pages_by_title` keeps only exact matches unless asked to keep
+  all of them, as page-link title lookups do.
+- `GET /spaces/{id}` returns the space's `key`, which browser page URLs use;
+  page responses report only the numeric `spaceId`. This endpoint is taken
+  from the API reference and was not exercised against a live site.

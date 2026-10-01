@@ -26,7 +26,7 @@ from .errors import SyncError
 
 # The Markdown file in each page directory. The name is not page-specific, to allow other content types later.
 CONTENT_FILENAME = "content.md"
-# The maximum length of a page directory name in characters, including a disambiguation suffix.
+# The maximum length of a page directory name in characters, including the page-ID suffix.
 DIRECTORY_NAME_LIMIT = 64
 # The version of the workarea layout, stored in .cflsync/version.
 WORKAREA_VERSION = 3

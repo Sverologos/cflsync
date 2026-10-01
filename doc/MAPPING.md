@@ -113,7 +113,7 @@ task item. Reverse conversion emits no task-list or task-item `localId`.
 | `code` mark | `Code` | `code` mark |
 | `underline` mark | Raw HTML `<u>` inline pair | `underline` mark |
 | `subsup` mark | Raw HTML `<sub>` or `<sup>` inline pair | `subsup` mark |
-| `link` mark | `Link` | `link` mark |
+| `link` mark | `Link`; page links become local links (see below) | `link` mark |
 | `emoji` with `attrs.text` | `Str` holding that text | `text` |
 | `mention` with `attrs.id` and a resolvable email address | `Link` with a `mailto:` target | `mention` |
 | `mention` with `attrs.id` but no email address | raw HTML `span` | `mention` |
@@ -129,6 +129,26 @@ are ignored while retaining their text and supported marks. Extra fields on
 supported marks are ignored, but required values such as a link's non-empty
 string destination remain validated. Malformed or duplicate supported marks
 cause retention of the enclosing block.
+
+### Page links
+
+Both converters accept an optional link resolver, which pull and push supply
+as a `workarea.LinkResolver`; the converters use it only through two methods
+and import nothing from the workarea module.
+
+- ADF to Pandoc: a `link` mark's `href` is passed to `to_markdown(href)`; a
+  returned string replaces the `Link` target, and `None` keeps it.
+- Pandoc to ADF: a `Link` target is passed to `to_adf(href, text)` after the
+  attachment and mailto-mention cases; a returned string replaces the `link`
+  mark's `href`, and `None` keeps it. `text` is the link's plain text, or empty
+  when the link content carries formatting.
+
+Only link targets change: link text, title, and the fragment after `#` are
+kept exactly, so fragments are not translated between Confluence and Markdown
+anchors. Images, `_attachments/` links, and links inside retained ADF never
+reach the resolver. Links in pipe tables and HTML tables pass through the same
+handler. Which targets are page links is specified in
+[SPEC.md](SPEC.md#page-links).
 
 ## Tables and media
 

@@ -223,6 +223,43 @@ Malformed or contextually invalid retained JSON stops reverse conversion.
 The full mapping, opaque-marker format, and required conversion tests are in
 [MAPPING.md](MAPPING.md).
 
+## Page links
+
+Links between pages of the managed tree are ordinary relative `content.md`
+links, so they work in editors, previews, and Git hosts without a viewer or
+index, while page IDs remain their identity. The design rests on these
+decisions:
+
+- **Membership, not file presence.** A link is localized when its target is in
+  the managed tree, whether or not the target is installed. Pulling a single
+  page can therefore leave dangling links, which become usable when the target
+  is pulled; no file arrival triggers a rewrite.
+- **Mirrored tree retained.** Physical hierarchy browsing is required, so the
+  layout keeps following titles and parents rather than switching to flat,
+  immutable page directories with a generated index.
+- **No cross-file maintenance.** Links are generated only in pages that a
+  command writes. Rename, move, and pull never rewrite other files, which keeps
+  each command's effect limited and predictable; stale local links are
+  accepted and can be corrected by editing, for example by an AI agent.
+- **Page IDs in directory names.** Every directory ends in `_<page-id>`. A
+  page's path is then computable from its title, ID, and ancestors, so links
+  can point to pages that are not installed yet, and push recovers the ID from
+  a stale path. Sibling clashes disappear.
+- **Discovery by command type.** Repository commands list the full subtree,
+  which they need anyway; page commands look up only the pages their links
+  name. Both give the same paths because paths no longer depend on siblings.
+- **Fragments copied verbatim.** Confluence and Markdown previews derive heading
+  anchors differently; translating them would need every target's headings and
+  content-dependent rewrites, so fragments are kept and work where their text
+  matches.
+
+Rejected approaches include automatic repair of referring files after a rename
+or move (it needs a multi-file journal, interruption recovery, and either
+blocking on unrelated edits or a new baseline format), flat or ID-only
+directory layouts, history-dependent or remote-clash suffixes, persisted path
+assignments, alias or redirect files, heading-based fragment mapping, and
+pushing broken links with a warning.
+
 ## Alternatives considered
 
 - **Recursive loose pages:** the smallest change from the loose-page model, but
@@ -252,7 +289,6 @@ The full mapping, opaque-marker format, and required conversion tests are in
 
 ## Deferred functionality
 
-- Page-link resolution.
 - Automatic three-way merge or conflict markers.
 - Arbitrary Confluence macros and unsupported ADF constructs.
 - Attachment rename tracking beyond delete-and-upload semantics.

@@ -36,28 +36,19 @@ tokens carrying the documented scopes, while read-only scoped tokens support
 
 ## Page-link resolution
 
-### Summary
+Implemented. Links to pages in the managed tree become relative links to their
+local `content.md` files on pull, whether or not those pages are pulled, and
+local links back to page links on push; see [SPEC.md](SPEC.md#page-links).
+Links are only rewritten in pages that a command writes, so links in other
+pages can go stale after a rename or move; push still resolves them by page ID.
 
-On pull, rewrite links to managed Confluence pages as relative links to their
-local `content.md` files when those pages have local copies. On push, resolve
-those local links back to Confluence page links using the target page IDs.
-Leave links to pages without local copies and unrelated URLs unchanged.
-Renaming or moving a page must not leave links to its local copy broken.
+Possible follow-up work:
 
-### Implementation steps
-
-1. Identify Confluence page links by page ID and resolve them against the
-   workarea's cached page tree and existing local files. Preserve link text,
-   fragments, and other URL components where applicable.
-2. Generate relative Markdown links on pull, including when the target page is
-   installed later in the same repository pull. Update affected links when a
-   page's local path changes.
-3. Resolve local page links through the cached page tree on push and emit
-   Confluence links to the corresponding page IDs. Keep unresolved or unrelated
-   links as ordinary links.
-4. Test pull and push round trips, missing local targets, links within and
-   outside the managed tree, and page renames or moves. Ensure link rewriting
-   does not create spurious local-change or conflict reports.
+- Within one repository pull, resolve links against the locations pages will
+  have after the pull, so a page converted before another page's relocation
+  does not link to its previous directory.
+- An explicit command, or an option on `page move`, that rewrites stale local
+  links through the converters.
 
 ## Folder support
 
