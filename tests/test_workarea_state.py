@@ -13,9 +13,9 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
-from cflsync import PageState, StateError, Workarea
+from cflsync import PageState, StateError, SyncError, Workarea
 from cflsync.workarea import filesystem_error_message
-from tests.support import example_page_state, temporary_workarea
+from tests.support import FakePageIndex, example_page_state, temporary_workarea
 
 
 class TestWorkareaPageStates(unittest.TestCase):
@@ -244,6 +244,68 @@ class TestWorkareaPageTree(unittest.TestCase):
                                                 f"cached page '345678' has directory '{directory}', which does not end in its "
                                                 "page ID '_345678'"):
                         workarea.page_tree()
+
+
+class TestWorkareaPageLocation(unittest.TestCase):
+
+    def setUp(self) -> None:
+        self.index = FakePageIndex(
+            {
+                "100": ("Root", None),
+                "200": ("Child", "100"),
+                "300": ("Grandchild", "200"),
+                "400": ("Leaf", "300")})
+
+    def _cache(self, workarea, page_id, title, parent_id, directory=None):
+        example_page_state(page_id, title, directory, parent_id).save(workarea.cache_path(page_id))
+
+    def test_returns_the_cached_directory_of_a_cached_page(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._cache(workarea, "100", "Root", None)
+            self._cache(workarea, "200", "Child", "100")
+
+            self.assertEqual(workarea.page_location("200", self.index), "Root_100/Child_200")
+            self.assertEqual(self.index.lookups, [])
+
+    def test_places_an_uncached_page_below_its_cached_parent(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._cache(workarea, "100", "Root", None)
+            self._cache(workarea, "200", "Child", "100")
+
+            self.assertEqual(workarea.page_location("300", self.index), "Root_100/Child_200/Grandchild_300")
+
+    def test_places_an_uncached_chain_below_its_nearest_cached_ancestor(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._cache(workarea, "100", "Root", None)
+
+            self.assertEqual(workarea.page_location("400", self.index), "Root_100/Child_200/Grandchild_300/Leaf_400")
+
+    def test_names_an_uncached_root_after_its_title_and_id(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self.assertEqual(workarea.page_location("100", self.index), "Root_100")
+            self.assertEqual(workarea.page_location("300", self.index), "Root_100/Child_200/Grandchild_300")
+
+    def test_keeps_the_cached_directory_after_a_remote_rename_or_move(self) -> None:
+        index = FakePageIndex({"100": ("Root", None), "200": ("Renamed", "300"), "300": ("Other", "100"), "400": ("Leaf", "200")})
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._cache(workarea, "100", "Root", None)
+            self._cache(workarea, "200", "Child", "100")
+
+            self.assertEqual(workarea.page_location("200", index), "Root_100/Child_200")
+            self.assertEqual(workarea.page_location("400", index), "Root_100/Child_200/Leaf_400")
+
+    def test_refuses_a_page_outside_the_tree(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._cache(workarea, "100", "Root", None)
+
+            with self.assertRaisesRegex(SyncError, "page '900' is not in this workarea's tree"):
+                workarea.page_location("900", self.index)
+
+    def test_refuses_a_cycle_of_remote_parents(self) -> None:
+        index = FakePageIndex({"100": ("Root", None), "200": ("A", "300"), "300": ("B", "200")})
+        with temporary_workarea(root_page_id="100") as workarea:
+            with self.assertRaisesRegex(SyncError, "form a cycle"):
+                workarea.page_location("200", index)
 
 
 class TestWorkareaSafePaths(unittest.TestCase):

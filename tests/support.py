@@ -24,6 +24,7 @@ from typing import Any
 from unittest.mock import patch
 from urllib.parse import parse_qsl, quote, unquote, urlsplit
 
+from cflsync.api import RemoteContentRef
 from cflsync import APIClient, AttachmentMetadata, PageMetadata, PageState, Profile, TransportError, TransportResponse, Workarea
 
 
@@ -54,6 +55,33 @@ def example_page_state(
             content_hash=hashlib.sha256(b"page").hexdigest()),
         attachments={
             "diagram.png": AttachmentMetadata(id="att987654", version=3, content_hash=hashlib.sha256(b"attachment").hexdigest())})
+
+
+class FakePageIndex:
+    """An in-memory index of the pages in a workarea's tree.
+
+    Title lookups ignore case, as Confluence does. Every lookup is recorded.
+    """
+
+    def __init__(self, pages: dict[str, tuple[str, str | None]], space_key: str = "EXAMPLE") -> None:
+        self.pages = pages
+        self.space_key = space_key
+        self.lookups: list[str] = []
+
+    def lookup(self, page_id: str) -> RemoteContentRef | None:
+        self.lookups.append(page_id)
+        if page_id not in self.pages:
+            return None
+
+        title, parent_id = self.pages[page_id]
+        return RemoteContentRef(page_id, "page", title, parent_id)
+
+    def find_by_title(self, space_key: str, title: str) -> str | None:
+        if space_key.lower() != self.space_key.lower():
+            return None
+
+        matches = [page_id for page_id, (page_title, _) in self.pages.items() if page_title.lower() == title.lower()]
+        return matches[0] if len(matches) == 1 else None
 
 
 @dataclass(frozen=True)

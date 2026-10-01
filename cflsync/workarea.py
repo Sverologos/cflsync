@@ -10,6 +10,7 @@ from __future__ import annotations
 import errno
 import json
 import os
+import posixpath
 import re
 import shutil
 from collections.abc import Iterable, Iterator, Mapping
@@ -18,9 +19,9 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile, mkdtemp
 from typing import Self
 import unicodedata
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlsplit
 
-from .api import APIError
+from .api import APIError, RemoteContentRef
 from .errors import SyncError
 
 # The Markdown file in each page directory. The name is not page-specific, to allow other content types later.
@@ -101,6 +102,161 @@ class MediaResolver:
         self._validate_filename(filename)
 
         return filename
+
+
+class LinkResolver:
+    """Map page links in one page between Confluence page URLs and local ``content.md`` links.
+
+    *page_id* and *directory* identify the page being converted; *directory* is relative to the workarea root, with
+    "/" separators. *index* supplies remote page information through ``lookup(page_id)``, which returns a
+    :class:`RemoteContentRef` for a page in the workarea's tree and ``None`` otherwise, ``find_by_title(space_key,
+    title)``, and ``space_key``. Only links to pages in the tree are converted; fragments are copied unchanged. Local
+    links that look like page links but name no page in the tree are recorded in :attr:`broken`.
+    """
+
+    # Page view routes: /wiki/spaces/<space>/pages/<id>, optionally followed by a title slug, which does not identify
+    # the page; and /wiki/pages/viewpage.action?pageId=<id>.
+    _PAGE_ROUTE = re.compile(r"/wiki/spaces/[^/]+/pages/([0-9]+)(?:/[^/]*)?")
+    _VIEW_PAGE_ROUTE = "/wiki/pages/viewpage.action"
+    # Title routes: /wiki/display/<space key>/<title>.
+    _TITLE_ROUTE = re.compile(r"/wiki/display/([^/]+)/([^/]+)")
+
+    def __init__(self, workarea: "Workarea", hostname: str, page_id: str, directory: str, index) -> None:
+        self._workarea = workarea
+        self._hostname = hostname
+        self._page_id = page_id
+        self._directory = directory
+        self._index = index
+        self._tree: PageTree | None = None
+        self.broken: list[tuple[str, str]] = []
+
+    def to_markdown(self, href: str) -> str | None:
+        """Return the local link for a Confluence link to a page in the tree, or ``None`` to keep *href*."""
+        path, query, fragment = self._split(href)
+        if path is None or not self._is_site_path(href, path):
+            return None
+
+        target = self._remote_page_id(path, query)
+        if target is None or self._index.lookup(target) is None:
+            return None
+
+        if target == self._page_id:
+            return "content.md" if fragment is None else f"#{fragment}"
+
+        if self._tree is None:
+            self._tree = self._workarea.page_tree()
+
+        location = self._workarea.page_location(target, self._index, self._tree)
+        relative = posixpath.relpath(f"{location}/{CONTENT_FILENAME}", self._directory)
+        link = "/".join(quote(segment, safe="") for segment in relative.split("/"))
+        return link if fragment is None else f"{link}#{fragment}"
+
+    def to_adf(self, href: str, text: str) -> str | None:
+        """Return the Confluence URL for a local link to a page in the tree, or ``None`` to keep *href*.
+
+        A local ``content.md`` link in a directory named after a page that is not in the tree is recorded in
+        :attr:`broken` as ``(text, href)``.
+        """
+        if not isinstance(href, str) or not href or href.startswith(("/", "#")):
+            return None
+
+        reference = urlsplit(href.split("#", 1)[0])
+        path, query, fragment = self._split(href)
+        if reference.scheme or reference.netloc or not path or query is not None:
+            return None
+
+        segments = []
+        for segment in path.split("/"):
+            decoded = unquote(segment)
+            if "/" in decoded or "\\" in decoded:
+                return None
+
+            segments.append(decoded)
+
+        resolved = posixpath.normpath(posixpath.join(self._directory, *segments))
+        if resolved == ".." or resolved.startswith("../") or resolved.startswith("/"):
+            return None
+
+        parts = resolved.split("/")
+        if len(parts) < 2 or parts[-1] != CONTENT_FILENAME:
+            return None
+
+        target = self._workarea.page_id_from_directory_name(parts[-2])
+        if target is None:
+            return None
+
+        if self._index.lookup(target) is None:
+            self.broken.append((text, href))
+            return None
+
+        url = f"https://{self._hostname}/wiki/spaces/{quote(self._index.space_key, safe='')}/pages/{target}"
+        return url if fragment is None else f"{url}#{fragment}"
+
+    @staticmethod
+    def _split(href):
+        # Return the path, the query (None without "?"), and the fragment (None without "#") of href, unchanged; the
+        # path is None for a URL with a scheme or authority other than an absolute https URL, which _is_site_path
+        # checks.
+        if not isinstance(href, str):
+            return None, None, None
+
+        fragment = None
+        if "#" in href:
+            href, fragment = href.split("#", 1)
+
+        query = None
+        if "?" in href:
+            href, query = href.split("?", 1)
+
+        parts = urlsplit(href)
+        if parts.scheme or parts.netloc:
+            if parts.scheme != "https" or not parts.netloc:
+                return None, None, None
+
+            return parts.path, query, fragment
+
+        return href, query, fragment
+
+    def _is_site_path(self, href, path):
+        # An absolute URL must name this site on the default port; otherwise the path must be site-root-relative.
+        parts = urlsplit(href.split("#", 1)[0])
+        if parts.scheme:
+            try:
+                port = parts.port
+            except ValueError:
+                return False
+
+            if parts.username is not None or parts.password is not None or port not in {None, 443}:
+                return False
+
+            if (parts.hostname or "").lower() != self._hostname.lower():
+                return False
+
+        return path.startswith("/wiki/")
+
+    def _remote_page_id(self, path, query):
+        # Return the ID of the page that a page view or title route denotes, or None for any other route.
+        match = self._PAGE_ROUTE.fullmatch(path)
+        if match is not None:
+            return match.group(1) if query is None else None
+
+        if path == self._VIEW_PAGE_ROUTE:
+            match = re.fullmatch(r"pageId=([0-9]+)", query or "")
+            return None if match is None else match.group(1)
+
+        match = self._TITLE_ROUTE.fullmatch(path)
+        if match is None or query is not None:
+            return None
+
+        # Confluence resolves a title with "+" kept literal first, then with every "+" read as a space.
+        space_key = unquote(match.group(1).replace("+", " "))
+        title = unquote(match.group(2))
+        for candidate in dict.fromkeys([title, title.replace("+", " ")]):
+            page_id = self._index.find_by_title(space_key, candidate)
+            if page_id is not None:
+                return page_id
+
+        return None
 
 
 class StateError(SyncError):
@@ -602,6 +758,39 @@ class Workarea:
             return name
 
         return f"{self.page_tree().directory(parent_id)}/{name}"
+
+    def page_location(self, page_id: str, index, tree: PageTree | None = None) -> str:
+        """Return the directory of page *page_id* relative to the workarea root, whether or not it is installed.
+
+        A cached page keeps its cached directory. A page that is not cached is placed below its parent's location,
+        under the name its installation would use; *index* supplies its title and parent through ``lookup(page_id)``,
+        which returns a :class:`RemoteContentRef` for a page in the workarea's tree. *tree* is the loaded page tree,
+        if the caller already has one. A page that *index* does not know is refused.
+        """
+        if tree is None:
+            tree = self.page_tree()
+
+        names = []
+        seen = set()
+        current: str | None = page_id
+        while current is not None and current not in tree.states:
+            if current in seen:
+                raise SyncError(f"the remote parents of page '{page_id}' form a cycle")
+
+            seen.add(current)
+            page: RemoteContentRef | None = index.lookup(current)
+            if page is None:
+                raise SyncError(f"page '{current}' is not in this workarea's tree")
+            if not page.title:
+                raise SyncError(f"page '{current}' reports no title")
+
+            names.insert(0, self.page_directory_name(page.title, current))
+            current = page.parent_id
+
+        if current is not None:
+            names.insert(0, tree.directory(current))
+
+        return "/".join(names)
 
     def page_directory(self, state: PageState, must_exist: bool = True) -> Path:
         """Return the safe managed path below the page's cached parent, normally requiring a directory and content.md."""
