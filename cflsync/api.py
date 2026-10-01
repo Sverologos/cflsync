@@ -242,6 +242,7 @@ class APIClient:
         if type(read_attempts) is not int or read_attempts < 1:
             raise ValueError("read_attempts must be a positive integer")
 
+        self.hostname = host
         self._transport = transport or UrllibTransport(host, username, password, base_path)
         self._read_attempts = read_attempts
 
@@ -390,15 +391,28 @@ class APIClient:
 
         return descendants
 
-    def find_pages_by_title(self, title: str) -> list[RemotePage]:
-        """Return pages whose remote title matches *title*."""
-        values = self.make_paginated_request(
-            "GET", "/pages", parameters={
-                "title": title,
-                "body-format": "atlas_doc_format",
-                "include-version": "true"})
+    def find_pages_by_title(self, title: str, space_id: str | None = None, match_case: bool = True) -> list[RemotePage]:
+        """Return pages whose remote title matches *title*, optionally only in space *space_id*.
+
+        Confluence matches titles ignoring case; with *match_case*, only pages whose title equals *title* exactly are
+        returned.
+        """
+        parameters = {"title": title, "body-format": "atlas_doc_format", "include-version": "true"}
+        if space_id is not None:
+            parameters["space-id"] = space_id
+
+        values = self.make_paginated_request("GET", "/pages", parameters=parameters)
         pages = [RemotePage.from_json(self, _json_mapping(value, "page result")) for value in values]
+        if not match_case:
+            return pages
+
         return [page for page in pages if page.title == title]
+
+    def get_space_key(self, space_id: str) -> str:
+        """Return the key of space *space_id*; browser page URLs use the space key, while page responses report only
+        the numeric space ID."""
+        response = self.make_request("GET", f"/spaces/{space_id}")
+        return _required_string(self._json_object(response), "space", "key")
 
     def get_user(self, account_id: str) -> RemoteUser:
         """Return the user identified by *account_id*."""

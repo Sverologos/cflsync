@@ -272,6 +272,8 @@ class TreeStatus:
 
     def __init__(self, pages: list[PageStatus]) -> None:
         self.pages = self._parents_first(pages)
+        # The complete page index that listed the remote pages, when built by for_workarea.
+        self.index: PageIndex | None = None
 
     @staticmethod
     def _parents_first(pages: list[PageStatus]) -> list[PageStatus]:
@@ -297,19 +299,12 @@ class TreeStatus:
         """Compare the workarea's complete remote page tree with its local cache.
 
         Discovery either returns the complete page hierarchy below the root page or raises, so a cached page is only
-        classified as ``absent-remote`` after a complete listing.
+        classified as ``absent-remote`` after a complete listing. The complete index is kept as :attr:`index`.
         """
-        try:
-            root = api.get_page(workarea.root_page_id)
-        except APIError as error:
-            if error.status == 404:
-                raise workarea.missing_root_error() from error
-
-            raise
-
-        # The root page's parent is outside the workarea's tree.
-        remote_pages = [RemoteContentRef(root.id, "page", root.title, None), *api.page_descendants(root.id)]
-        return cls.from_pages(workarea, api, remote_pages, list(workarea.page_tree().states.values()), detector)
+        index = PageIndex(workarea, api, prefill=True)
+        status = cls.from_pages(workarea, api, index.pages, list(workarea.page_tree().states.values()), detector)
+        status.index = index
+        return status
 
     @classmethod
     def from_pages(
@@ -1041,6 +1036,163 @@ def _ancestor_chain(workarea, api, page_id):
                 f"page '{page_id}' is below {ancestor.type} '{ancestor.id}' in this workarea's tree; only pages are supported")
 
     return [ancestor.id for ancestor in below_root] + [page_id]
+
+
+class PageIndex:
+    """The pages of a workarea's tree, as page links need them: membership, titles, parents, and the space key.
+
+    The index maps a page ID to a :class:`RemoteContentRef` for a page in the tree, with ``parent_id`` ``None`` for
+    the root page, or to ``None`` for a page that is not in it: deleted, moved outside the root, or not visible with
+    the profile's credentials. It is *complete* once it holds the full subtree listing, and *partial* before.
+
+    With *prefill*, the constructor lists the full subtree, as repository commands do. Without it, pages are looked
+    up one by one when first needed, as page commands do; :attr:`pages` then lists the full subtree on first use, so
+    page commands must not use it.
+    """
+
+    def __init__(self, workarea: Workarea, api, prefill: bool) -> None:
+        self._api = api
+        try:
+            root = api.get_page(workarea.root_page_id)
+        except APIError as error:
+            if error.status == 404:
+                raise workarea.missing_root_error() from error
+
+            raise
+
+        self.root = root
+        # The root page's parent is outside the workarea's tree.
+        self._root = RemoteContentRef(root.id, "page", root.title, None)
+        self._pages: dict[str, RemoteContentRef | None] = {root.id: self._root}
+        self._listing: list[RemoteContentRef] | None = None
+        self._space_key: str | None = None
+        if prefill:
+            self._discover()
+
+    @property
+    def complete(self) -> bool:
+        """Report whether the index holds the full subtree listing."""
+        return self._listing is not None
+
+    @property
+    def pages(self) -> list[RemoteContentRef]:
+        """Return the root page followed by every page below it, in listing order.
+
+        A partial index lists the full subtree first.
+        """
+        self._discover()
+        assert self._listing is not None
+        return [self._root, *self._listing]
+
+    @property
+    def space_key(self) -> str:
+        """Return the key of the tree's space, which every page in the tree shares."""
+        if self._space_key is None:
+            if self.root.space_id is None:
+                raise SyncError(f"root page '{self.root.id}' reports no space")
+
+            self._space_key = self._api.get_space_key(self.root.space_id)
+
+        return self._space_key
+
+    def lookup(self, page_id: str) -> RemoteContentRef | None:
+        """Return the reference of page *page_id* if it is in the tree, else ``None``.
+
+        A complete index answers without requests. A partial index fetches an unknown page and its ancestors once;
+        it records the ancestors too, and fetches an ancestor's title only when that ancestor is looked up.
+        """
+        if page_id not in self._pages:
+            if self.complete:
+                return None
+
+            self._fetch(page_id)
+
+        page = self._pages[page_id]
+        if page is not None and page.title is None:
+            page = self._fetch_title(page)
+
+        return page
+
+    def find_by_title(self, space_key: str, title: str) -> str | None:
+        """Return the ID of the page in the tree with *title* in space *space_key*, else ``None``.
+
+        Space keys and titles match ignoring case, as in Confluence.
+        """
+        if space_key.casefold() != self.space_key.casefold():
+            return None
+
+        if self.complete:
+            matches = [
+                page_id for page_id, page in self._pages.items()
+                if page is not None and page.title is not None and page.title.casefold() == title.casefold()]
+        else:
+            pages = self._api.find_pages_by_title(title, self.root.space_id, match_case=False)
+            matches = [page.id for page in pages if page.title.casefold() == title.casefold()]
+
+        if len(matches) != 1:
+            return None
+
+        return matches[0] if self.lookup(matches[0]) is not None else None
+
+    def _discover(self):
+        if self._listing is not None:
+            return
+
+        listing = self._api.page_descendants(self.root.id)
+        pages: dict[str, RemoteContentRef | None] = {self.root.id: self._root}
+        for page in listing:
+            pages[page.id] = page
+
+        # A page looked up earlier but not listed is no longer in the tree.
+        for page_id in self._pages:
+            pages.setdefault(page_id, None)
+
+        self._pages = pages
+        self._listing = listing
+
+    def _fetch(self, page_id):
+        try:
+            page = self._api.get_page(page_id)
+            ancestors = self._api.page_ancestors(page_id)
+        except APIError as error:
+            # An unreachable page is treated as deleted.
+            if error.status in {403, 404}:
+                self._pages[page_id] = None
+                return
+
+            raise
+
+        ancestor_ids = [ancestor.id for ancestor in ancestors]
+        if self.root.id not in ancestor_ids:
+            self._pages[page_id] = None
+            return
+
+        below_root = ancestors[ancestor_ids.index(self.root.id) + 1:]
+        if any(ancestor.type != "page" for ancestor in below_root):
+            self._pages[page_id] = None
+            return
+
+        # The chain runs from the root down; ancestor listings carry no titles.
+        parent_id = self.root.id
+        for ancestor in below_root:
+            self._pages.setdefault(ancestor.id, RemoteContentRef(ancestor.id, "page", None, parent_id))
+            parent_id = ancestor.id
+
+        self._pages[page_id] = RemoteContentRef(page.id, "page", page.title, parent_id)
+
+    def _fetch_title(self, page):
+        try:
+            remote = self._api.get_page(page.id)
+        except APIError as error:
+            if error.status in {403, 404}:
+                self._pages[page.id] = None
+                return None
+
+            raise
+
+        page = RemoteContentRef(page.id, "page", remote.title, page.parent_id)
+        self._pages[page.id] = page
+        return page
 
 
 # vim: set ts=4 sw=4 et tw=132:

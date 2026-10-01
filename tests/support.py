@@ -183,6 +183,8 @@ class FakeConfluence:
         self.requests: list[RecordedRequest] = []
         self._failures = {}
         self._next_id = 900000
+        # Space keys by space ID; add_page places pages in space 98765 by default.
+        self.spaces: dict[str, str] = {"98765": "EXAMPLE"}
         # Tests select observed native outcomes; this is not a title-numbering policy.
         self.copy_titles: list[str] = []
 
@@ -282,6 +284,9 @@ class FakeConfluence:
             if method == "DELETE":
                 return self._delete_page(parts[1])
 
+        if len(parts) == 2 and parts[0] == "spaces" and method == "GET":
+            return self._get_space(parts[1])
+
         if len(parts) == 3 and parts[0] in ("pages", "folders") and parts[2] == "ancestors" and method == "GET":
             return self._ancestors(parts[0][:-1], parts[1], query)
 
@@ -356,9 +361,18 @@ class FakeConfluence:
         return MockResponse.from_json({"id": page_id, "type": "page", "title": title, "version": {"number": 1}})
 
     def _find_pages(self, query):
+        # Confluence matches titles ignoring case.
         pages = [
-            self._page_json(item) for item in self.content.values() if item["type"] == "page" and item["title"] == query["title"]]
+            self._page_json(item) for item in self.content.values()
+            if item["type"] == "page" and item["title"].casefold() == query["title"].casefold() and (
+                "space-id" not in query or item["space_id"] == query["space-id"])]
         return MockResponse.from_json({"results": pages})
+
+    def _get_space(self, space_id):
+        if space_id not in self.spaces:
+            return self._not_found()
+
+        return MockResponse.from_json({"id": space_id, "key": self.spaces[space_id], "name": f"Space {space_id}"})
 
     def _get_page(self, page_id):
         page = self._page(page_id)
