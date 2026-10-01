@@ -739,4 +739,145 @@ class TestADFToMarkdownConverter(unittest.TestCase):
                       json.dumps(paragraph, sort_keys=True, separators=(",", ":"))], })
 
 
+class RecordingLinks:
+    """A link resolver that maps chosen targets and records every call."""
+
+    def __init__(self, replacements=None):
+        self.replacements = replacements or {}
+        self.calls = []
+
+    def to_markdown(self, href):
+        self.calls.append(href)
+        return self.replacements.get(href)
+
+
+def _doc(*content):
+    return {"type": "doc", "version": 1, "content": list(content)}
+
+
+def _linked_paragraph(text, href, **attrs):
+    return {
+        "type": "paragraph",
+        "content": [{
+            "type": "text",
+            "text": text,
+            "marks": [{
+                "type": "link",
+                "attrs": {
+                    "href": href,
+                    **attrs}}]}]}
+
+
+class TestADFToMarkdownLinkResolution(unittest.TestCase):
+
+    def test_replaces_a_link_target_and_keeps_its_text_and_title(self) -> None:
+        links = RecordingLinks({"https://example.test/wiki/spaces/K/pages/300": "../B_300/content.md#Notes"})
+        document = _doc(_linked_paragraph("Read B", "https://example.test/wiki/spaces/K/pages/300", title="About B"))
+
+        markdown = ADFToMarkdownConverter(PandocRunner(), links=links).convert(document)
+
+        self.assertEqual(markdown, '[Read B](../B_300/content.md#Notes "About B")\n')
+        self.assertEqual(links.calls, ["https://example.test/wiki/spaces/K/pages/300"])
+
+    def test_keeps_a_link_target_when_the_resolver_returns_none(self) -> None:
+        links = RecordingLinks()
+        document = _doc(_linked_paragraph("Elsewhere", "https://other.test/page"))
+
+        markdown = ADFToMarkdownConverter(PandocRunner(), links=links).convert(document)
+
+        self.assertEqual(markdown, "[Elsewhere](https://other.test/page)\n")
+        self.assertEqual(links.calls, ["https://other.test/page"])
+
+    def test_converts_unchanged_without_a_resolver(self) -> None:
+        document = _doc(_linked_paragraph("Page", "https://example.test/wiki/spaces/K/pages/300"))
+
+        self.assertEqual(
+            ADFToMarkdownConverter(PandocRunner()).convert(document), "[Page](https://example.test/wiki/spaces/K/pages/300)\n")
+
+    def test_replaces_link_targets_in_table_cells(self) -> None:
+        links = RecordingLinks({"https://example.test/a": "../A_200/content.md"})
+        cell = {
+            "type": "tableCell",
+            "attrs": {
+                "colspan": 1,
+                "rowspan": 1},
+            "content": [_linked_paragraph("A", "https://example.test/a")]}
+        header = {
+            "type": "tableHeader",
+            "attrs": {
+                "colspan": 1,
+                "rowspan": 1},
+            "content": [{
+                "type": "paragraph",
+                "content": [{
+                    "type": "text",
+                    "text": "H"}]}]}
+        document = _doc(
+            {
+                "type": "table",
+                "content": [{
+                    "type": "tableRow",
+                    "content": [header]}, {
+                        "type": "tableRow",
+                        "content": [cell]}]})
+
+        markdown = ADFToMarkdownConverter(PandocRunner(), links=links).convert(document)
+
+        self.assertIn("[A](../A_200/content.md)", markdown)
+        self.assertEqual(links.calls, ["https://example.test/a"])
+
+    def test_does_not_pass_smart_links_or_links_in_opaque_blocks(self) -> None:
+        links = RecordingLinks({"https://example.test/a": "../A_200/content.md"})
+        card = {"type": "inlineCard", "attrs": {"url": "https://example.test/a"}}
+        mixed = {
+            "type":
+            "paragraph",
+            "content":
+            [card, {
+                "type": "text",
+                "text": " and ",
+                "marks": [{
+                    "type": "link",
+                    "attrs": {
+                        "href": "https://example.test/a"}}]}]}
+
+        markdown = ADFToMarkdownConverter(PandocRunner(), links=links).convert(_doc(mixed))
+
+        self.assertIn("atlas_doc_format", markdown)
+        self.assertNotIn("../A_200/content.md", markdown)
+        self.assertEqual(links.calls, [])
+
+    def test_does_not_pass_media_to_the_resolver(self) -> None:
+        links = RecordingLinks()
+        media = MediaResolver([("diagram.png", "file-1"), ("report.pdf", "file-2")])
+        document = _doc(
+            {
+                "type":
+                "mediaSingle",
+                "attrs": {
+                    "layout": "center"},
+                "content": [
+                    {
+                        "type": "media",
+                        "attrs": {
+                            "type": "file",
+                            "id": "file-1",
+                            "collection": "contentId-1",
+                            "alt": "A diagram"}}]},
+            {
+                "type": "mediaGroup",
+                "content": [{
+                    "type": "media",
+                    "attrs": {
+                        "type": "file",
+                        "id": "file-2",
+                        "collection": "contentId-1"}}]})
+
+        markdown = ADFToMarkdownConverter(PandocRunner(), media, links=links).convert(document)
+
+        self.assertIn("_attachments/diagram.png", markdown)
+        self.assertIn("_attachments/report.pdf", markdown)
+        self.assertEqual(links.calls, [])
+
+
 # vim: set ts=4 sw=4 et tw=132:

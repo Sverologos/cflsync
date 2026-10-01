@@ -89,12 +89,17 @@ class ConversionError(SyncError):
 
 
 class ADFToMarkdownConverter:
-    """Convert supported ADF content to GFM, retaining unsupported structures."""
+    """Convert supported ADF content to GFM, retaining unsupported structures.
 
-    def __init__(self, pandoc, media=None, mention_lookup=None) -> None:
+    *links*, if given, maps link targets: its ``to_markdown(href)`` returns the Markdown target for an ADF link
+    target, or ``None`` to keep it.
+    """
+
+    def __init__(self, pandoc, media=None, mention_lookup=None, links=None) -> None:
         self._pandoc_runner = pandoc
         self._media = media
         self._mention_lookup = mention_lookup
+        self._links = links
 
     def convert(self, document: Mapping[str, object], title: str | None = None) -> str:
         """Convert an ADF body to GFM, optionally prefixed by its page title."""
@@ -741,6 +746,11 @@ class ADFToMarkdownConverter:
         if not isinstance(href, str) or not href or not isinstance(title, str):
             return None
 
+        if self._links is not None:
+            replacement = self._links.to_markdown(href)
+            if isinstance(replacement, str):
+                href = replacement
+
         return [{"t": "Link", "c": [["", [], []], inlines, [href, title]]}]
 
     def _convert_block_content(self, node):
@@ -760,13 +770,18 @@ class ADFToMarkdownConverter:
 
 
 class MarkdownToADFConverter:
-    """Convert the supported GFM subset to ADF."""
+    """Convert the supported GFM subset to ADF.
 
-    def __init__(self, pandoc, media=None, collection: str | None = None, mention_lookup=None) -> None:
+    *links*, if given, maps link targets: its ``to_adf(href, text)`` returns the ADF target for a Markdown link
+    target, or ``None`` to keep it; *text* is the link's plain text, or empty if it has formatting.
+    """
+
+    def __init__(self, pandoc, media=None, collection: str | None = None, mention_lookup=None, links=None) -> None:
         self._pandoc_runner = pandoc
         self._media = media
         self._collection = collection
         self._mention_lookup = mention_lookup
+        self._links = links
 
     def convert(self, markdown: str, title: str | None = None) -> Mapping[str, object]:
         """Convert one GFM document to ADF, removing the page-title heading when given."""
@@ -1623,6 +1638,16 @@ class MarkdownToADFConverter:
 
         if self._convert_mailto_mention(href, title, content, inlines, marks):
             return
+
+        if self._links is not None:
+            try:
+                text = self._plain_text(content)
+            except ConversionError:
+                text = ""
+
+            replacement = self._links.to_adf(href, text)
+            if isinstance(replacement, str):
+                href = replacement
 
         mark = {"type": "link", "attrs": {"href": href, "title": title}}
         self._convert_marked_content(content, inlines, marks, mark)

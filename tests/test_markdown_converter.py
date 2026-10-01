@@ -929,4 +929,119 @@ class TestMarkdownToADFConverter(unittest.TestCase):
             MarkdownToADFConverter(altered).convert("source")
 
 
+class RecordingLinks:
+    """A link resolver that maps chosen targets and records every call with its text."""
+
+    def __init__(self, replacements=None):
+        self.replacements = replacements or {}
+        self.calls = []
+
+    def to_adf(self, href, text):
+        self.calls.append((href, text))
+        return self.replacements.get(href)
+
+
+def _link_marks(node):
+    """Yield (text, link attributes) for every linked text node below *node*."""
+    if isinstance(node, dict):
+        for mark in node.get("marks", []):
+            if mark.get("type") == "link":
+                yield node.get("text"), mark["attrs"]
+
+        for value in node.values():
+            yield from _link_marks(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _link_marks(value)
+
+
+class TestMarkdownToADFLinkResolution(unittest.TestCase):
+
+    URL = "https://example.test/wiki/spaces/K/pages/300"
+
+    def test_replaces_a_link_target_and_keeps_its_text_and_title(self) -> None:
+        links = RecordingLinks({"../B_300/content.md#Notes": self.URL + "#Notes"})
+
+        document = MarkdownToADFConverter(PandocRunner(), links=links).convert('[Read B](../B_300/content.md#Notes "About B")\n')
+
+        self.assertEqual(list(_link_marks(document)), [("Read B", {"href": self.URL + "#Notes", "title": "About B"})])
+        self.assertEqual(links.calls, [("../B_300/content.md#Notes", "Read B")])
+
+    def test_keeps_a_link_target_when_the_resolver_returns_none(self) -> None:
+        links = RecordingLinks()
+
+        document = MarkdownToADFConverter(PandocRunner(), links=links).convert("[Notes](notes.md)\n")
+
+        self.assertEqual(list(_link_marks(document)), [("Notes", {"href": "notes.md", "title": ""})])
+
+    def test_converts_unchanged_without_a_resolver(self) -> None:
+        document = MarkdownToADFConverter(PandocRunner()).convert("[B](../B_300/content.md)\n")
+
+        self.assertEqual(list(_link_marks(document)), [("B", {"href": "../B_300/content.md", "title": ""})])
+
+    def test_passes_plain_link_text_and_an_empty_text_for_formatted_links(self) -> None:
+        links = RecordingLinks()
+
+        MarkdownToADFConverter(PandocRunner(), links=links).convert("[Plain text](a.md) [**Bold**](b.md)\n")
+
+        self.assertEqual(links.calls, [("a.md", "Plain text"), ("b.md", "")])
+
+    def test_passes_an_empty_text_for_code_link_content(self) -> None:
+        # ADF cannot combine code and link marks, so the link itself is refused, as without a resolver.
+        links = RecordingLinks()
+
+        with self.assertRaisesRegex(ConversionError, "Pandoc code has unsupported marks"):
+            MarkdownToADFConverter(PandocRunner(), links=links).convert("[`code`](c.md)\n")
+
+        self.assertEqual(links.calls, [("c.md", "")])
+
+    def test_replaces_link_targets_in_formatted_links(self) -> None:
+        links = RecordingLinks({"../B_300/content.md": self.URL})
+
+        document = MarkdownToADFConverter(PandocRunner(), links=links).convert("[**Bold** link](../B_300/content.md)\n")
+
+        self.assertEqual({attrs["href"] for _, attrs in _link_marks(document)}, {self.URL})
+
+    def test_replaces_link_targets_in_pipe_and_html_tables(self) -> None:
+        links = RecordingLinks({"../B_300/content.md": self.URL})
+        pipe = "| Head |\n| --- |\n| [Cell](../B_300/content.md) |\n"
+        html = '<table><tbody><tr><td><p><a href="../B_300/content.md">Cell</a></p></td></tr></tbody></table>\n'
+        for name, markdown in (("pipe", pipe), ("html", html)):
+            with self.subTest(table=name):
+                links.calls.clear()
+
+                document = MarkdownToADFConverter(PandocRunner(), links=links).convert(markdown)
+
+                self.assertEqual(list(_link_marks(document)), [("Cell", {"href": self.URL, "title": ""})])
+                self.assertEqual(links.calls, [("../B_300/content.md", "Cell")])
+
+    def test_does_not_pass_links_in_opaque_adf_fences(self) -> None:
+        links = RecordingLinks({"../B_300/content.md": self.URL})
+        paragraph = {
+            "type": "paragraph",
+            "content": [{
+                "type": "text",
+                "text": "B",
+                "marks": [{
+                    "type": "link",
+                    "attrs": {
+                        "href": "../B_300/content.md"}}]}]}
+        markdown = "```atlas_doc_format\n" + json.dumps(paragraph) + "\n```\n"
+
+        document = MarkdownToADFConverter(PandocRunner(), links=links).convert(markdown)
+
+        self.assertEqual(list(_link_marks(document)), [("B", {"href": "../B_300/content.md"})])
+        self.assertEqual(links.calls, [])
+
+    def test_does_not_pass_images_or_attachment_links(self) -> None:
+        links = RecordingLinks()
+        media = MediaResolver([("diagram.png", "file-1"), ("report.pdf", "file-2")])
+
+        MarkdownToADFConverter(
+            PandocRunner(), media, "contentId-1",
+            links=links).convert("![A diagram](_attachments/diagram.png)\n\n[report.pdf](_attachments/report.pdf)\n")
+
+        self.assertEqual(links.calls, [])
+
+
 # vim: set ts=4 sw=4 et tw=132:
