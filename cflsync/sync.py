@@ -376,8 +376,13 @@ class PagePushOperation:
         self._pandoc = pandoc or PandocRunner()
         self._detector = PageChangeDetector(self._pandoc)
 
-    def push(self, workarea: Workarea, api, status: PageStatus, force: bool = False) -> bool:
-        """Push the locally cached page represented by *status*, returning whether it changed the remote page."""
+    def push(self, workarea: Workarea, api, status: PageStatus, force: bool = False, page_index: PageIndex | None = None) -> bool:
+        """Push the locally cached page represented by *status*, returning whether it changed the remote page.
+
+        Local links to pages in the workarea's tree become Confluence page URLs, resolved through *page_index* or a
+        new on-demand index. A page with a local page link to a page outside the tree is refused before any remote
+        change.
+        """
         state = status.local
         if state is None:
             raise SyncError(f"page '{status.id}' is not present locally and cannot be pushed")
@@ -394,10 +399,16 @@ class PagePushOperation:
 
         markdown = (directory / CONTENT_FILENAME).read_text(encoding="utf-8")
         bodies = self._managed_attachments(directory, state, markdown)
+        if page_index is None:
+            page_index = PageIndex(workarea, api, prefill=False)
+
+        relative_directory = workarea.page_tree().directory(state.page.id)
+        self._check_page_links(workarea, api, page, markdown, bodies, relative_directory, page_index)
         self._upload_attachments(page, state, bodies, attachments)
         # Re-read the manifest so new uploads contribute their server-assigned file IDs.
         remote = {attachment.filename: attachment for attachment in page.attachments()}
-        document = self._convert(markdown, page, bodies, remote, api)
+        links = LinkResolver(workarea, api.hostname, page.id, relative_directory, page_index)
+        document = self._convert(markdown, page, bodies, remote, api, links)
         updated = page.update(json.dumps(document))
         self._delete_removed_attachments(state, bodies, remote)
 
@@ -443,11 +454,22 @@ class PagePushOperation:
             if name not in bodies and name in remote:
                 remote[name].delete()
 
-    def _convert(self, markdown, page, bodies, remote, api):
+    def _check_page_links(self, workarea, api, page, markdown, bodies, directory, page_index):
+        # A conversion without remote side effects finds broken page links before anything is uploaded; attachments
+        # get placeholder IDs, since the real file IDs are only known after the upload.
+        links = LinkResolver(workarea, api.hostname, page.id, directory, page_index)
+        media = MediaResolver((name, f"preflight-{number}") for number, name in enumerate(bodies))
+        MarkdownToADFConverter(self._pandoc, media, f"contentId-{page.id}", links=links).convert(markdown, title=page.title)
+        if links.broken:
+            lines = [f"page '{page.id}' has broken page links; nothing was pushed:"]
+            lines.extend(f"  {directory}/{CONTENT_FILENAME}: [{text}]({href})" for text, href in links.broken)
+            raise SyncError("\n".join(lines))
+
+    def _convert(self, markdown, page, bodies, remote, api, links):
         # Attachments without a server-assigned file ID cannot be referenced from ADF.
         media = MediaResolver(
             (name, remote[name].file_id) for name in bodies if name in remote and remote[name].file_id is not None)
-        return MarkdownToADFConverter(self._pandoc, media, f"contentId-{page.id}", api.find_user_by_name_and_email).convert(
+        return MarkdownToADFConverter(self._pandoc, media, f"contentId-{page.id}", api.find_user_by_name_and_email, links).convert(
             markdown, title=page.title)
 
 
@@ -463,11 +485,13 @@ class RepositoryPushOperation:
             raise SyncError("repository push conflicts; resolve conflicts or use --force")
 
         results = PageOperationResults()
+        # Page links resolve through the complete listing that the status was built from.
+        page_index = status.index if status.index is not None else PageIndex(workarea, api, prefill=True)
         for page_status in status.pages:
             if page_status.status is PageStatusState.LOCAL_CHANGED or (force and page_status.status in {PageStatusState.CONFLICT,
                                                                                                         PageStatusState.UNCHANGED}):
                 try:
-                    pushed = self._page_push.push(workarea, api, page_status, force=force)
+                    pushed = self._page_push.push(workarea, api, page_status, force=force, page_index=page_index)
                 except (OSError, UnicodeError) as error:
                     results.add(page_status.id, page_status.title, "failed", filesystem_error_message(error))
                 except SyncError as error:

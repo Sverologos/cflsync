@@ -112,3 +112,17 @@ class TestRepositoryPush(unittest.TestCase):
             self.assertIn("Page '200' (Alpha): pushed", output)
             self.assertIn("Edited locally", self.site.content["200"]["body"])
             self.assertEqual(PageState.load(workarea.cache_path("200")).page.version, 3)
+
+    def test_continues_after_a_page_refused_for_broken_page_links(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea)
+            self._edit(workarea, "200", "# Alpha\n\n[Gone](../Gone_999/content.md)\n")
+            self._edit(workarea, "300", "# Beta\n\n[Alpha](../Alpha_200/content.md)\n")
+
+            output, status = self._push(workarea)
+
+            self.assertEqual(status, 1)
+            self.assertIn("Page '200' (Alpha): failed: page '200' has broken page links; nothing was pushed:", output)
+            self.assertIn("Page '300' (Beta): pushed", output)
+            self.assertNotIn("Gone", self.site.content["200"]["body"])
+            self.assertIn("https://example.atlassian.net/wiki/spaces/EXAMPLE/pages/200", self.site.content["300"]["body"])

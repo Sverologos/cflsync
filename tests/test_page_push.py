@@ -324,4 +324,141 @@ class TestPagePushInTree(unittest.TestCase):
             self.assertIn("location: moves from 'Root_100/Child_200' to 'Root_100/Renamed child_200' on pull", output)
 
 
+SITE = "https://example.atlassian.net"
+
+
+def _hrefs(body: str) -> list[str]:
+    """Return the link targets of an ADF body, in document order."""
+    hrefs = []
+
+    def walk(node):
+        if isinstance(node, dict):
+            hrefs.extend(mark["attrs"]["href"] for mark in node.get("marks", []) if mark.get("type") == "link")
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(json.loads(body))
+    return hrefs
+
+
+class TestPagePushLinks(unittest.TestCase):
+    """Page links in pushed pages, in a tree of Root (100) with A (200) and B (300) below it, and Leaf (400) below B.
+
+    Page 900 is outside the tree.
+    """
+
+    def setUp(self):
+        self.site = FakeConfluence()
+        self.site.add_page("100", "Root")
+        self.site.add_page("200", "A", parent_id="100")
+        self.site.add_page("300", "B", parent_id="100")
+        self.site.add_page("400", "Leaf", parent_id="300")
+        self.site.add_page("900", "Outside")
+
+    def _run(self, workarea, command):
+        return run_with_site(self.site, workarea, command)
+
+    def _pull(self, workarea, *page_ids):
+        for page_id in page_ids:
+            self._run(workarea, lambda page_id=page_id: PagePullCommand().run(page_id))
+
+    def _push(self, workarea, markdown, force=False):
+        (workarea.root_dir / "Root_100" / "A_200" / "content.md").write_text(f"# A\n\n{markdown}", encoding="utf-8")
+        self._run(workarea, lambda: PagePushCommand().run("200", force=force))
+        return _hrefs(self.site.content["200"]["body"])
+
+    def test_pushes_local_page_links_as_canonical_page_urls(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, "100", "200", "300")
+
+            hrefs = self._push(workarea, "[Installed](../B_300/content.md#Notes) [Never installed](../B_300/Leaf_400/content.md)\n")
+
+        self.assertEqual(hrefs, [f"{SITE}/wiki/spaces/EXAMPLE/pages/300#Notes", f"{SITE}/wiki/spaces/EXAMPLE/pages/400"])
+
+    def test_resolves_a_stale_path_by_its_page_id(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, "100", "200")
+
+            hrefs = self._push(workarea, "[Moved](../../Old%20place_9/Old%20title_400/content.md#A%20b+Ü)\n")
+
+        self.assertEqual(hrefs, [f"{SITE}/wiki/spaces/EXAMPLE/pages/400#A%20b+Ü"])
+
+    def test_pushes_ordinary_local_links_unchanged(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, "100", "200")
+
+            hrefs = self._push(workarea, "[Notes](../notes.md) [Directory](../B_300/) [Fragment](#Top)\n")
+
+        self.assertEqual(hrefs, ["../notes.md", "../B_300/", "#Top"])
+
+    def test_refuses_a_page_with_links_to_pages_outside_the_tree_before_any_change(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, "100", "200")
+            body = self.site.content["200"]["body"]
+            self.site.requests.clear()
+
+            with self.assertRaises(SyncError) as raised:
+                self._push(
+                    workarea,
+                    "[Outside](../Outside_900/content.md) [B](../B_300/content.md) [**Gone**](../Gone_999/content.md#x)\n")
+
+        self.assertEqual(
+            str(raised.exception), "page '200' has broken page links; nothing was pushed:\n"
+            "  Root_100/A_200/content.md: [Outside](../Outside_900/content.md)\n"
+            "  Root_100/A_200/content.md: [](../Gone_999/content.md#x)")
+        self.assertEqual(self.site.content["200"]["body"], body)
+        self.assertEqual([request for request in self.site.requests if request.method in {"POST", "PUT", "DELETE"}], [])
+
+    def test_refuses_before_uploading_attachments(self) -> None:
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, "100", "200")
+            attachments = workarea.root_dir / "Root_100" / "A_200" / "_attachments"
+            (attachments / "new.txt").write_bytes(b"new")
+            self.site.requests.clear()
+
+            with self.assertRaisesRegex(SyncError, "broken page links"):
+                self._push(workarea, "[new.txt](_attachments/new.txt) [Outside](../Outside_900/content.md)\n")
+
+        self.assertEqual(self.site.attachments, {})
+        self.assertEqual([request for request in self.site.requests if request.method != "GET"], [])
+
+    def test_pull_then_push_writes_canonical_page_urls(self) -> None:
+        self.site.content["200"]["body"] = json.dumps(
+            {
+                "type":
+                "doc",
+                "version":
+                1,
+                "content": [
+                    {
+                        "type":
+                        "paragraph",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "B",
+                                "marks": [{
+                                    "type": "link",
+                                    "attrs": {
+                                        "href": f"{SITE}/wiki/spaces/EXAMPLE/pages/300/B#Notes"}}]}, {
+                                            "type": "text",
+                                            "text": " Leaf",
+                                            "marks":
+                                            [{
+                                                "type": "link",
+                                                "attrs": {
+                                                    "href": f"{SITE}/wiki/pages/viewpage.action?pageId=400"}}]}]}]})
+        with temporary_workarea(root_page_id="100") as workarea:
+            self._pull(workarea, "100", "200")
+
+            self._run(workarea, lambda: PagePushCommand().run("200", force=True))
+
+        self.assertEqual(
+            _hrefs(self.site.content["200"]["body"]),
+            [f"{SITE}/wiki/spaces/EXAMPLE/pages/300#Notes", f"{SITE}/wiki/spaces/EXAMPLE/pages/400"])
+
+
 # vim: set ts=4 sw=4 et tw=132:
