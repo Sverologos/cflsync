@@ -86,7 +86,7 @@ class TestPagePush(unittest.TestCase):
             MockResponse.from_json(updated), ]
 
     def _edit(self, workarea, markdown="# Example page\n\nEdited\n"):
-        (workarea.root_dir / "Example page/content.md").write_text(markdown, encoding="utf-8")
+        (workarea.root_dir / "Example page_123456/content.md").write_text(markdown, encoding="utf-8")
 
     def _snapshot(self, workarea):
         return {
@@ -133,7 +133,7 @@ class TestPagePush(unittest.TestCase):
         with temporary_workarea() as workarea:
             self._pull(workarea)
             markdown = "# Example page\n\nEdited\n"
-            page_path = workarea.root_dir / "Example page/content.md"
+            page_path = workarea.root_dir / "Example page_123456/content.md"
             # Exercise an ordinary Windows editor save on every platform.
             page_path.write_text(markdown, encoding="utf-8", newline="\r\n")
 
@@ -177,7 +177,7 @@ class TestPagePush(unittest.TestCase):
     def test_uploads_changed_and_added_attachments(self) -> None:
         with temporary_workarea() as workarea:
             self._pull(workarea)
-            directory = workarea.root_dir / "Example page"
+            directory = workarea.root_dir / "Example page_123456"
             (directory / "_attachments/diagram.png").write_bytes(b"EDITED")
             (directory / "_attachments/added.png").write_bytes(b"ADDED")
             (directory / "_attachments/ignored.png").write_bytes(b"IGNORED")
@@ -200,7 +200,7 @@ class TestPagePush(unittest.TestCase):
     def test_deletes_only_previously_managed_removed_attachments(self) -> None:
         with temporary_workarea() as workarea:
             self._pull(workarea)
-            directory = workarea.root_dir / "Example page"
+            directory = workarea.root_dir / "Example page_123456"
             (directory / "_attachments/diagram.png").unlink()
             (directory / "_attachments/unmanaged.png").write_bytes(b"KEEP")
             self._edit(workarea)
@@ -243,7 +243,7 @@ class TestPagePush(unittest.TestCase):
             with self.subTest(failure=name):
                 with temporary_workarea() as workarea:
                     self._pull(workarea)
-                    directory = workarea.root_dir / "Example page"
+                    directory = workarea.root_dir / "Example page_123456"
                     if name == "upload":
                         (directory / "_attachments/diagram.png").write_bytes(b"EDITED")
                     else:
@@ -296,19 +296,19 @@ class TestPagePushInTree(unittest.TestCase):
     def test_pushes_a_nested_page_and_keeps_its_parent_and_directory(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea)
-            (workarea.root_dir / "Root" / "Child" / "content.md").write_text("# Child\n\nEdited\n", encoding="utf-8")
+            (workarea.root_dir / "Root_100" / "Child_200" / "content.md").write_text("# Child\n\nEdited\n", encoding="utf-8")
 
-            self._run(workarea, lambda: PagePushCommand().run(str(workarea.root_dir / "Root" / "Child")))
+            self._run(workarea, lambda: PagePushCommand().run(str(workarea.root_dir / "Root_100" / "Child_200")))
 
             state = PageState.load(workarea.cache_path("200"))
             self.assertIn("Edited", self.site.content["200"]["body"])
             self.assertEqual((self.site.content["200"]["parent_id"], self.site.content["200"]["title"]), ("100", "Child"))
-            self.assertEqual((state.page.parent_id, state.page.directory, state.page.version), ("100", "Child", 2))
+            self.assertEqual((state.page.parent_id, state.page.directory, state.page.version), ("100", "Child_200", 2))
 
     def test_refuses_to_push_over_a_remote_rename_even_with_force(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea)
-            (workarea.root_dir / "Root" / "Child" / "content.md").write_text("# Child\n\nEdited\n", encoding="utf-8")
+            (workarea.root_dir / "Root_100" / "Child_200" / "content.md").write_text("# Child\n\nEdited\n", encoding="utf-8")
             self.site.content["200"]["title"] = "Renamed child"
             self.site.content["200"]["version"] += 1
             body = self.site.content["200"]["body"]
@@ -321,7 +321,7 @@ class TestPagePushInTree(unittest.TestCase):
 
             self.assertEqual((self.site.content["200"]["title"], self.site.content["200"]["body"]), ("Renamed child", body))
             output = self._run(workarea, lambda: PageStatusCommand().run("200"))
-            self.assertIn("location: moves from 'Root/Child' to 'Root/Renamed child' on pull", output)
+            self.assertIn("location: moves from 'Root_100/Child_200' to 'Root_100/Renamed child_200' on pull", output)
 
 
 # vim: set ts=4 sw=4 et tw=132:

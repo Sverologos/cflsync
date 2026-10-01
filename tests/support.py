@@ -38,15 +38,18 @@ def temporary_workarea(profile: str = "default", root_page_id: str = "123456") -
 def example_page_state(
         page_id: str = "123456",
         title: str = "Example page",
-        directory: str = "Example page",
+        directory: str | None = None,
         parent_id: str | None = None) -> PageState:
-    """Return a valid state for tests that need persisted state; by default, the fixture workarea's root page."""
+    """Return a valid state for tests that need persisted state; by default, the fixture workarea's root page.
+
+    The directory defaults to ``<title>_<page_id>``, which is the page's directory name for titles without escapes.
+    """
     return PageState(
         page=PageMetadata(
             id=page_id,
             title=title,
             parent_id=parent_id,
-            directory=directory,
+            directory=directory if directory is not None else f"{title}_{page_id}",
             version=17,
             content_hash=hashlib.sha256(b"page").hexdigest()),
         attachments={
@@ -522,6 +525,13 @@ class FakeConfluence:
 
     def _not_found(self):
         return MockResponse.from_json({"message": "not found"}, 404)
+
+    def peek_next_id(self) -> str:
+        """Return the ID that the next created page, attachment, or copy receives, without allocating it.
+
+        Tests use it to occupy the ID-suffixed directory of a page before the page exists.
+        """
+        return str(self._next_id + 1)
 
     def _new_id(self):
         self._next_id += 1

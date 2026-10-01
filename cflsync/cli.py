@@ -206,11 +206,7 @@ class PageCreateCommand:
 
             # The new page is pulled below its parent, so both must be possible before it is created remotely.
             PagePullOperation().install_ancestors(workarea, api, parent.id, include_page=True)
-            # A name used by a cached sibling gets the page-ID suffix when the created page is pulled; its ID is not
-            # known yet. Any other entry with the plain name is refused now.
-            name = workarea.page_directory_name(title)
-            if not workarea.sibling_uses(None, parent.id, name):
-                workarea.page_directory_target(None, parent.id, name)
+            # The directory name carries the page ID, which is not known yet; the pull after creation checks it.
 
             page = api.create_page(parent.space_id, parent.id, title)
         except (OSError, UnicodeError) as error:
@@ -366,8 +362,7 @@ class PageRenameCommand:
         if page.body is None:
             raise SyncError(f"page '{page.id}' has no ADF body")
 
-        # A rename keeps an existing suffix, and adds one when a cached sibling uses the new plain name.
-        directory_name = workarea.sibling_directory_name(page.id, state.page.parent_id, title, workarea.has_suffix(state))
+        directory_name = workarea.page_directory_name(title, page.id)
         target = workarea.relative_directory(state.page.parent_id, directory_name)
         markdown = (directory / CONTENT_FILENAME).read_text(encoding="utf-8")
         renamed_markdown = MarkdownToADFConverter(pandoc).retitle(markdown, state.page.title, title)
@@ -451,10 +446,8 @@ class PageMoveCommand:
 
         # The page directory moves into its new parent's directory, so both must be possible before the remote update.
         PagePullOperation(pandoc).install_ancestors(workarea, api, parent.id, include_page=True)
-        # A move keeps the directory name, and adds the suffix if a cached sibling in the new parent uses it.
+        # A move keeps the directory name, which carries the page ID and so cannot clash with a sibling page.
         name = state.page.directory
-        if workarea.sibling_uses(page.id, parent.id, name) and not workarea.has_suffix(state):
-            name = workarea.page_directory_name(state.page.title, page.id)
 
         workarea.page_directory_target(page.id, parent.id, name)
         try:
@@ -588,7 +581,7 @@ class PageStatusCommand:
     def _location(self, workarea, state, page):
         # Describe the relocation that the next pull applies after a remote rename or move.
         parent_id = None if page.id == workarea.root_page_id else page.parent_id
-        name = workarea.sibling_directory_name(page.id, parent_id, page.title, workarea.has_suffix(state))
+        name = workarea.page_directory_name(page.title, page.id)
         if parent_id == state.page.parent_id and name == state.page.directory:
             return None
 

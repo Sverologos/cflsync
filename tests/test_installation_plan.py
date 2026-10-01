@@ -64,30 +64,30 @@ class TestInstallationPlan(unittest.TestCase):
 
             self.assertEqual(
                 [(item.page.id, item.directory, item.restore) for item in plan.pages], [
-                    ("100", "Root", False), ("200", "Root/Child", False)])
+                    ("100", "Root_100", False), ("200", "Root_100/Child_200", False)])
             self.assertEqual(api.ancestor_calls, ["300"])
             self.assertEqual(api.page_calls, ["100", "200"])
             self.assertEqual(list(workarea.cache_dir.iterdir()), [])
-            self.assertFalse((workarea.root_dir / "Root").exists())
+            self.assertFalse((workarea.root_dir / "Root_100").exists())
 
     def test_restores_a_cached_missing_directory_at_its_cached_location(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
-            root = state("100", "Root", None, "Root")
-            child = state("200", "Old child", "100", "Old child")
+            root = state("100", "Root", None, "Root_100")
+            child = state("200", "Old child", "100", "Old child_200")
             root.save(workarea.cache_path(root.page.id))
             child.save(workarea.cache_path(child.page.id))
-            (workarea.root_dir / "Root").mkdir()
+            (workarea.root_dir / "Root_100").mkdir()
             api = self._api()
             api.pages["200"] = remote_page("200", "Renamed child", "100")
 
             plan = InstallationPlan.for_ancestors(workarea, api, "300")
 
             self.assertEqual(
-                [(item.page.id, item.directory, item.restore) for item in plan.pages], [("200", "Root/Old child", True)])
+                [(item.page.id, item.directory, item.restore) for item in plan.pages], [("200", "Root_100/Old child_200", True)])
 
     def test_unmanaged_clash_aborts_before_any_installation(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
-            (workarea.root_dir / "Root").mkdir()
+            (workarea.root_dir / "Root_100").mkdir()
             api = self._api()
 
             with self.assertRaisesRegex(SyncError, "already exists"):
@@ -109,8 +109,8 @@ class TestInstallationPlan(unittest.TestCase):
 
     def test_executor_reports_completed_pages_after_a_partial_failure(self) -> None:
         pages = [
-            PlannedPage(remote_page("100", "Root", None), None, "Root", "Root", False),
-            PlannedPage(remote_page("200", "Child", "100"), "100", "Child", "Root/Child", False), ]
+            PlannedPage(remote_page("100", "Root", None), None, "Root_100", "Root_100", False),
+            PlannedPage(remote_page("200", "Child", "100"), "100", "Child_200", "Root_100/Child_200", False), ]
         plan = InstallationPlan(pages)
         installed = []
 
@@ -125,4 +125,4 @@ class TestInstallationPlan(unittest.TestCase):
                 plan.install(install)
 
         self.assertEqual(installed, ["100", "200"])
-        self.assertEqual(output.getvalue(), "Pulled parent 'Root' (100) to Root\n")
+        self.assertEqual(output.getvalue(), "Pulled parent 'Root' (100) to Root_100\n")

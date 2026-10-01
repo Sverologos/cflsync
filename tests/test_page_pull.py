@@ -111,7 +111,7 @@ class TestPagePull(unittest.TestCase):
             transport = self._pull(workarea, page, attachments=[], user_responses=[MockResponse.from_json(user_fixture())])
 
             self.assertEqual(
-                (workarea.root_dir / "Example page/content.md").read_text(),
+                (workarea.root_dir / "Example page_123456/content.md").read_text(),
                 "# Example page\n\n[Example User](mailto:example.user@example.test)\n")
             user_request = transport.requests[-1]
             self.assertEqual(user_request.path, "/user")
@@ -122,7 +122,7 @@ class TestPagePull(unittest.TestCase):
             self._pull(workarea)
             for markdown in ["# Example page\n\nExample\n", "# Example page\n\nExample\n\n\n"]:
                 with self.subTest(markdown=markdown):
-                    (workarea.root_dir / "Example page/content.md").write_text(markdown)
+                    (workarea.root_dir / "Example page_123456/content.md").write_text(markdown)
                     before = self._snapshot(workarea)
                     output = StringIO()
                     with redirect_stdout(output):
@@ -152,7 +152,7 @@ class TestPagePull(unittest.TestCase):
             with self.subTest(version=version):
                 with temporary_workarea() as workarea:
                     self._pull(workarea)
-                    directory = workarea.root_dir / "Example page"
+                    directory = workarea.root_dir / "Example page_123456"
                     (directory / "content.md").write_bytes(b"\xffinvalid markdown")
                     (directory / "_attachments/diagram.png").write_bytes(b"edited")
                     (directory / "_attachments/local.txt").write_text("unmanaged")
@@ -167,7 +167,7 @@ class TestPagePull(unittest.TestCase):
     def test_force_restores_deleted_managed_files(self) -> None:
         with temporary_workarea() as workarea:
             self._pull(workarea)
-            directory = workarea.root_dir / "Example page"
+            directory = workarea.root_dir / "Example page_123456"
             (directory / "content.md").unlink()
             (directory / "_attachments/diagram.png").unlink()
             self._pull(workarea, force=True)
@@ -178,7 +178,7 @@ class TestPagePull(unittest.TestCase):
     def test_failed_force_pull_preserves_local_edits_and_cache(self) -> None:
         with temporary_workarea() as workarea:
             self._pull(workarea)
-            (workarea.root_dir / "Example page/content.md").write_text("local edits")
+            (workarea.root_dir / "Example page_123456/content.md").write_text("local edits")
             before = self._snapshot(workarea)
             with patch.object(PageState, "save", side_effect=SyncError("injected state failure")):
                 with self.assertRaises(SyncError):
@@ -192,7 +192,7 @@ class TestPagePull(unittest.TestCase):
                 with self.subTest(version=version, changed_file=changed_file):
                     with temporary_workarea() as workarea:
                         self._pull(workarea)
-                        (workarea.root_dir / "Example page" / changed_file).write_text("edited\n")
+                        (workarea.root_dir / "Example page_123456" / changed_file).write_text("edited\n")
                         before = self._snapshot(workarea)
                         with self.assertRaisesRegex(SyncError, "conflict"):
                             self._pull(workarea, page=self._page(version), downloads=[])
@@ -202,7 +202,7 @@ class TestPagePull(unittest.TestCase):
     def test_remote_update_renames_and_preserves_unmanaged_files(self) -> None:
         with temporary_workarea() as workarea:
             self._pull(workarea)
-            source = workarea.root_dir / "Example page"
+            source = workarea.root_dir / "Example page_123456"
             (source / "notes.txt").write_text("private notes")
             (source / "_attachments/local.txt").write_text("unmanaged")
             self._pull(workarea, page=self._page(18, "Renamed"), attachments=[])
@@ -210,7 +210,7 @@ class TestPagePull(unittest.TestCase):
             state = PageState.load(workarea.cache_path("123456"))
             target = workarea.page_directory(state)
             self.assertFalse(source.exists())
-            self.assertEqual(state.page.directory, "Renamed")
+            self.assertEqual(state.page.directory, "Renamed_123456")
             self.assertEqual(state.page.version, 18)
             self.assertEqual(state.attachments, {})
             self.assertFalse((target / "_attachments/diagram.png").exists())
@@ -232,13 +232,13 @@ class TestPagePull(unittest.TestCase):
     def test_title_and_unmanaged_attachment_collisions_leave_files_unchanged(self) -> None:
         with temporary_workarea() as workarea:
             self._pull(workarea)
-            (workarea.root_dir / "Occupied").mkdir()
+            (workarea.root_dir / "Occupied_123456").mkdir()
             before = self._snapshot(workarea)
             with self.assertRaises(SyncError):
                 self._pull(workarea, page=self._page(18, "Occupied"))
 
             self.assertEqual(self._snapshot(workarea), before)
-            (workarea.root_dir / "Example page/_attachments/local.txt").write_text("unmanaged")
+            (workarea.root_dir / "Example page_123456/_attachments/local.txt").write_text("unmanaged")
             attachment = attachment_fixture()
             attachment["title"] = "local.txt"
             before = self._snapshot(workarea)
@@ -283,7 +283,7 @@ class TestPagePull(unittest.TestCase):
     def test_missing_managed_attachment_conflicts(self) -> None:
         with temporary_workarea() as workarea:
             self._pull(workarea)
-            (workarea.root_dir / "Example page/_attachments/diagram.png").unlink()
+            (workarea.root_dir / "Example page_123456/_attachments/diagram.png").unlink()
             before = self._snapshot(workarea)
             with self.assertRaisesRegex(SyncError, "conflict"):
                 self._pull(workarea, page=self._page(18), downloads=[])
@@ -372,42 +372,42 @@ class TestPagePullNesting(unittest.TestCase):
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea, "100", "200", "300")
 
-            self.assertTrue((workarea.root_dir / "Root" / "Child" / "Grandchild" / "content.md").is_file())
+            self.assertTrue((workarea.root_dir / "Root_100" / "Child_200" / "Grandchild_300" / "content.md").is_file())
             self.assertEqual(
                 [PageState.load(workarea.cache_path(page_id)).page.parent_id for page_id in ["100", "200", "300"]],
                 [None, "100", "200"])
-            self.assertEqual(workarea.page_tree().directory("300"), "Root/Child/Grandchild")
+            self.assertEqual(workarea.page_tree().directory("300"), "Root_100/Child_200/Grandchild_300")
 
     def test_pulls_missing_ancestors_before_the_requested_page(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             output = run_with_site(self.site, workarea, lambda: PagePullCommand().run("300"))
 
-            self.assertEqual(output, "Pulled parent 'Root' (100) to Root\nPulled parent 'Child' (200) to Root/Child\n")
-            self.assertTrue((workarea.root_dir / "Root" / "Child" / "Grandchild" / "content.md").is_file())
+            self.assertEqual(output, "Pulled parent 'Root' (100) to Root_100\nPulled parent 'Child' (200) to Root_100/Child_200\n")
+            self.assertTrue((workarea.root_dir / "Root_100" / "Child_200" / "Grandchild_300" / "content.md").is_file())
 
     def test_restores_a_cached_ancestor_with_a_missing_directory(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea, "100", "200")
-            shutil.rmtree(workarea.root_dir / "Root" / "Child")
+            shutil.rmtree(workarea.root_dir / "Root_100" / "Child_200")
 
             output = run_with_site(self.site, workarea, lambda: PagePullCommand().run("300"))
 
-            self.assertEqual(output, "Pulled parent 'Child' (200) to Root/Child\n")
-            self.assertTrue((workarea.root_dir / "Root" / "Child" / "Grandchild" / "content.md").is_file())
+            self.assertEqual(output, "Pulled parent 'Child' (200) to Root_100/Child_200\n")
+            self.assertTrue((workarea.root_dir / "Root_100" / "Child_200" / "Grandchild_300" / "content.md").is_file())
 
     def test_relocates_a_page_renamed_remotely_with_its_subtree(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea, "100", "200", "300")
-            (workarea.root_dir / "Root" / "Child" / "notes.txt").write_text("unmanaged\n", encoding="utf-8")
+            (workarea.root_dir / "Root_100" / "Child_200" / "notes.txt").write_text("unmanaged\n", encoding="utf-8")
             self._remote_change("200", title="Renamed child")
 
             self._pull(workarea, "200")
 
-            renamed = workarea.root_dir / "Root" / "Renamed child"
-            self.assertFalse((workarea.root_dir / "Root" / "Child").exists())
+            renamed = workarea.root_dir / "Root_100" / "Renamed child_200"
+            self.assertFalse((workarea.root_dir / "Root_100" / "Child_200").exists())
             self.assertIn("# Renamed child", (renamed / "content.md").read_text(encoding="utf-8"))
             self.assertEqual((renamed / "notes.txt").read_text(encoding="utf-8"), "unmanaged\n")
-            self.assertEqual(workarea.page_directory(PageState.load(workarea.cache_path("300"))), renamed / "Grandchild")
+            self.assertEqual(workarea.page_directory(PageState.load(workarea.cache_path("300"))), renamed / "Grandchild_300")
 
     def test_relocates_a_page_moved_remotely_below_another_local_parent(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
@@ -416,8 +416,9 @@ class TestPagePullNesting(unittest.TestCase):
 
             self._pull(workarea, "200")
 
-            self.assertTrue((workarea.root_dir / "Root" / "Other" / "Child" / "Grandchild" / "content.md").is_file())
-            self.assertFalse((workarea.root_dir / "Root" / "Child").exists())
+            self.assertTrue(
+                (workarea.root_dir / "Root_100" / "Other_400" / "Child_200" / "Grandchild_300" / "content.md").is_file())
+            self.assertFalse((workarea.root_dir / "Root_100" / "Child_200").exists())
             self.assertEqual(PageState.load(workarea.cache_path("200")).page.parent_id, "400")
 
     def test_finds_a_page_moved_by_the_move_command_in_sync(self) -> None:
@@ -428,7 +429,7 @@ class TestPagePullNesting(unittest.TestCase):
             output = run_with_site(self.site, workarea, lambda: PagePullCommand().run("200"))
 
             self.assertIn("already in sync", output)
-            self.assertTrue((workarea.root_dir / "Root" / "Other" / "Child" / "content.md").is_file())
+            self.assertTrue((workarea.root_dir / "Root_100" / "Other_400" / "Child_200" / "content.md").is_file())
 
     def test_pulls_a_new_remote_parent_before_relocating(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
@@ -437,44 +438,32 @@ class TestPagePullNesting(unittest.TestCase):
 
             output = run_with_site(self.site, workarea, lambda: PagePullCommand().run("200"))
 
-            self.assertEqual(output, "Pulled parent 'Other' (400) to Root/Other\n")
-            self.assertTrue((workarea.root_dir / "Root" / "Other" / "Child" / "content.md").is_file())
+            self.assertEqual(output, "Pulled parent 'Other' (400) to Root_100/Other_400\n")
+            self.assertTrue((workarea.root_dir / "Root_100" / "Other_400" / "Child_200" / "content.md").is_file())
 
     def test_force_does_not_apply_to_cached_ancestors(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea, "100")
-            root = workarea.root_dir / "Root" / "content.md"
+            root = workarea.root_dir / "Root_100" / "content.md"
             root.write_text("# Root\n\nLocal edit\n", encoding="utf-8")
 
             self._pull(workarea, "300", force=True)
 
             self.assertEqual(root.read_text(encoding="utf-8"), "# Root\n\nLocal edit\n")
 
-    def test_suffixes_a_remote_rename_into_a_name_a_cached_sibling_uses(self) -> None:
+    def test_keeps_a_remote_rename_into_a_cached_sibling_title_in_its_own_directory(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea, "100", "200", "400")
             self._remote_change("400", title="child")
 
             self._pull(workarea, "400")
 
-            root = workarea.root_dir / "Root"
-            self.assertEqual(sorted(path.name for path in root.iterdir() if path.is_dir()), ["Child", "_attachments", "child_400"])
-            self.assertEqual(PageState.load(workarea.cache_path("200")).page.directory, "Child")
+            root = workarea.root_dir / "Root_100"
+            self.assertEqual(
+                sorted(path.name for path in root.iterdir() if path.is_dir()), ["Child_200", "_attachments", "child_400"])
+            self.assertEqual(PageState.load(workarea.cache_path("200")).page.directory, "Child_200")
 
-    def test_keeps_a_suffix_after_the_clash_disappears_and_across_renames(self) -> None:
-        with temporary_workarea(root_page_id="100") as workarea:
-            self._pull(workarea, "100", "200", "400")
-            self._remote_change("400", title="child")
-            self._pull(workarea, "400")
-            del self.site.content["200"]
-            self._remote_change("400", title="Renamed")
-
-            self._pull(workarea, "400")
-
-            self.assertEqual(PageState.load(workarea.cache_path("400")).page.directory, "Renamed_400")
-            self.assertTrue((workarea.root_dir / "Root" / "Renamed_400" / "content.md").is_file())
-
-    def test_suffixes_a_missing_ancestor_whose_name_a_cached_sibling_uses(self) -> None:
+    def test_pulls_a_missing_ancestor_titled_like_a_cached_sibling_into_its_own_directory(self) -> None:
         self.site.add_page("500", "CHILD", parent_id="100")
         self.site.add_page("600", "Leaf", parent_id="500")
         with temporary_workarea(root_page_id="100") as workarea:
@@ -482,28 +471,28 @@ class TestPagePullNesting(unittest.TestCase):
 
             self._pull(workarea, "600")
 
-            self.assertTrue((workarea.root_dir / "Root" / "CHILD_500" / "Leaf" / "content.md").is_file())
+            self.assertTrue((workarea.root_dir / "Root_100" / "CHILD_500" / "Leaf_600" / "content.md").is_file())
             self.assertEqual(PageState.load(workarea.cache_path("500")).page.directory, "CHILD_500")
 
-    def test_suffixes_a_new_page_whose_name_a_cached_sibling_uses(self) -> None:
+    def test_pulls_a_new_page_titled_like_a_cached_sibling_into_its_own_directory(self) -> None:
         self.site.add_page("500", "CHILD", parent_id="100")
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea, "100", "200")
-            before = (workarea.root_dir / "Root" / "Child" / "content.md").read_bytes()
+            before = (workarea.root_dir / "Root_100" / "Child_200" / "content.md").read_bytes()
 
             self._pull(workarea, "500")
 
-            self.assertTrue((workarea.root_dir / "Root" / "CHILD_500" / "content.md").is_file())
-            self.assertEqual((workarea.root_dir / "Root" / "Child" / "content.md").read_bytes(), before)
+            self.assertTrue((workarea.root_dir / "Root_100" / "CHILD_500" / "content.md").is_file())
+            self.assertEqual((workarea.root_dir / "Root_100" / "Child_200" / "content.md").read_bytes(), before)
 
     def test_refuses_an_unmanaged_entry_with_the_same_name(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea, "100")
-            unmanaged = workarea.root_dir / "Root" / "child"
+            unmanaged = workarea.root_dir / "Root_100" / "child_200"
             unmanaged.mkdir()
             (unmanaged / "notes.txt").write_text("unmanaged\n", encoding="utf-8")
 
-            with self.assertRaisesRegex(SyncError, "page directory 'Root/Child' already exists"):
+            with self.assertRaisesRegex(SyncError, "page directory 'Root_100/Child_200' already exists"):
                 self._pull(workarea, "200")
 
             self.assertEqual([path.name for path in unmanaged.iterdir()], ["notes.txt"])
@@ -512,7 +501,7 @@ class TestPagePullNesting(unittest.TestCase):
     def test_force_relocates_and_overwrites_local_changes(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea, "100", "200")
-            (workarea.root_dir / "Root" / "Child" / "content.md").write_text("# Child\n\nLocal edit\n", encoding="utf-8")
+            (workarea.root_dir / "Root_100" / "Child_200" / "content.md").write_text("# Child\n\nLocal edit\n", encoding="utf-8")
             self._remote_change("200", title="Renamed child")
 
             with self.assertRaisesRegex(SyncError, "pull conflicts"):
@@ -520,7 +509,7 @@ class TestPagePullNesting(unittest.TestCase):
 
             self._pull(workarea, "200", force=True)
 
-            content = (workarea.root_dir / "Root" / "Renamed child" / "content.md").read_text(encoding="utf-8")
+            content = (workarea.root_dir / "Root_100" / "Renamed child_200" / "content.md").read_text(encoding="utf-8")
             self.assertEqual(content, "# Renamed child\n")
 
 
@@ -550,17 +539,49 @@ class TestPagePullDirectoryNames(unittest.TestCase):
             for page_id in ["100", "200", "300"]:
                 run_with_site(site, workarea, lambda: PagePullCommand().run(page_id))
 
-            root = workarea.root_dir / "Root"
+            root = workarea.root_dir / "Root_100"
             self.assertEqual(
-                sorted(path.name for path in root.iterdir()), ["%5Fattachments", "_attachments", "content%2Emd", "content.md"])
+                sorted(path.name for path in root.iterdir()),
+                ["%5Fattachments_200", "_attachments", "content%2Emd_300", "content.md"])
             self.assertEqual((root / "_attachments" / "diagram.png").read_bytes(), b"PNG")
-            self.assertTrue((root / "%5Fattachments" / "content.md").is_file())
-            self.assertTrue((root / "content%2Emd" / "content.md").is_file())
+            self.assertTrue((root / "%5Fattachments_200" / "content.md").is_file())
+            self.assertTrue((root / "content%2Emd_300" / "content.md").is_file())
+
+    def test_pulls_siblings_with_the_same_title_into_distinct_directories(self) -> None:
+        site = FakeConfluence()
+        site.add_page("100", "Root")
+        site.add_page("200", "Same title", parent_id="100")
+        site.add_page("300", "Same title", parent_id="100")
+        with temporary_workarea(root_page_id="100") as workarea:
+            for page_id in ["100", "200", "300"]:
+                run_with_site(site, workarea, lambda: PagePullCommand().run(page_id))
+
+            root = workarea.root_dir / "Root_100"
+            self.assertEqual(
+                sorted(path.name for path in root.iterdir()), ["Same title_200", "Same title_300", "_attachments", "content.md"])
+            self.assertTrue((root / "Same title_200" / "content.md").is_file())
+            self.assertTrue((root / "Same title_300" / "content.md").is_file())
+            self.assertEqual(PageState.load(workarea.cache_path("200")).page.directory, "Same title_200")
+            self.assertEqual(PageState.load(workarea.cache_path("300")).page.directory, "Same title_300")
+
+    def test_appends_the_page_id_to_a_title_that_ends_like_a_page_id(self) -> None:
+        site = FakeConfluence()
+        site.add_page("100", "Root")
+        site.add_page("400", "Beta_300", parent_id="100")
+        with temporary_workarea(root_page_id="100") as workarea:
+            for page_id in ["100", "400"]:
+                run_with_site(site, workarea, lambda: PagePullCommand().run(page_id))
+
+            directory = workarea.root_dir / "Root_100" / "Beta_300_400"
+            self.assertTrue((directory / "content.md").is_file())
+            self.assertEqual(PageState.load(workarea.cache_path("400")).page.directory, "Beta_300_400")
+            output = run_with_site(site, workarea, lambda: PageStatusCommand().run(str(directory)))
+            self.assertIn("Page '400' (Beta_300)", output)
 
 
 class TestPagePullUnicodeNames(unittest.TestCase):
 
-    def test_pulls_a_unicode_title_into_a_directory_of_the_same_name(self) -> None:
+    def test_pulls_a_unicode_title_into_a_directory_named_after_it(self) -> None:
         site = FakeConfluence()
         site.add_page("100", "Café — Überblick")
         site.add_page("200", "日本語のページ", parent_id="100")
@@ -568,7 +589,7 @@ class TestPagePullUnicodeNames(unittest.TestCase):
             for page_id in ["100", "200"]:
                 run_with_site(site, workarea, lambda: PagePullCommand().run(page_id))
 
-            directory = workarea.root_dir / "Café — Überblick" / "日本語のページ"
+            directory = workarea.root_dir / "Café — Überblick_100" / "日本語のページ_200"
             self.assertTrue((directory / "content.md").is_file())
             output = run_with_site(site, workarea, lambda: PageStatusCommand().run(str(directory)))
             self.assertIn("Page '200' (日本語のページ)", output)
@@ -582,8 +603,8 @@ class TestPagePullPathLength(unittest.TestCase):
         with temporary_workarea() as workarea:
             run_with_site(site, workarea, lambda: PagePullCommand().run("123456"))
 
-            self.assertEqual([path.name for path in workarea.root_dir.iterdir() if path.name != ".cflsync"], ["x" * 64])
-            self.assertEqual(PageState.load(workarea.cache_path("123456")).page.directory, "x" * 64)
+            self.assertEqual([path.name for path in workarea.root_dir.iterdir() if path.name != ".cflsync"], ["x" * 57 + "_123456"])
+            self.assertEqual(PageState.load(workarea.cache_path("123456")).page.directory, "x" * 57 + "_123456")
 
     @unittest.skipIf(os.name == "nt", "the error Windows reports for an over-long name component depends on its configuration")
     def test_reports_an_attachment_name_that_the_filesystem_rejects_as_too_long(self) -> None:

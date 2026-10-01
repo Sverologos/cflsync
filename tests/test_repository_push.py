@@ -89,7 +89,7 @@ class TestRepositoryPush(unittest.TestCase):
     def test_skips_missing_directories_and_ignores_uncached_directories(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea)
-            shutil.rmtree(workarea.root_dir / "Root" / "Alpha")
+            shutil.rmtree(workarea.root_dir / "Root_100" / "Alpha_200")
             (workarea.root_dir / "Notes").mkdir()
 
             output, status = self._push(workarea)

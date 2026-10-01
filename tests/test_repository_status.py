@@ -79,7 +79,7 @@ class TestRepositoryStatus(unittest.TestCase):
     def test_reports_a_cached_page_with_a_missing_directory_as_not_in_local(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea, "100", "200")
-            shutil.rmtree(workarea.root_dir / "Root" / "Alpha")
+            shutil.rmtree(workarea.root_dir / "Root_100" / "Alpha_200")
 
             lines, _ = self._status(workarea)
 

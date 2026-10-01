@@ -55,9 +55,10 @@ class TestRepositoryPull(unittest.TestCase):
             self.assertEqual(status, 0)
             self.assertEqual(lines[0], "Page '100' (Root): pulled")
             self.assertEqual(lines[-1], "Summary: 4 pulled.")
-            self.assertEqual((workarea.root_dir / "Root" / "Alpha" / "Child" / "_attachments" / "diagram.png").read_bytes(), b"PNG")
-            self.assertTrue((workarea.root_dir / "Root" / "Beta" / "content.md").is_file())
-            self.assertEqual(workarea.page_tree().directory("400"), "Root/Alpha/Child")
+            self.assertEqual(
+                (workarea.root_dir / "Root_100" / "Alpha_200" / "Child_400" / "_attachments" / "diagram.png").read_bytes(), b"PNG")
+            self.assertTrue((workarea.root_dir / "Root_100" / "Beta_300" / "content.md").is_file())
+            self.assertEqual(workarea.page_tree().directory("400"), "Root_100/Alpha_200/Child_400")
 
     def test_a_second_pull_changes_nothing(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
@@ -73,19 +74,19 @@ class TestRepositoryPull(unittest.TestCase):
         self.site.add_page("500", "Gone", parent_id="100")
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea)
-            (workarea.root_dir / "Root" / "Alpha" / "notes.txt").write_text("unmanaged\n", encoding="utf-8")
+            (workarea.root_dir / "Root_100" / "Alpha_200" / "notes.txt").write_text("unmanaged\n", encoding="utf-8")
             self._remote_change("200", title="Renamed alpha")
             self._remote_change("400", parent_id="300")
             del self.site.content["500"]
 
             lines, status = self._pull(workarea)
 
-            root = workarea.root_dir / "Root"
+            root = workarea.root_dir / "Root_100"
             self.assertEqual(status, 0)
-            self.assertEqual((root / "Renamed alpha" / "notes.txt").read_text(encoding="utf-8"), "unmanaged\n")
-            self.assertTrue((root / "Beta" / "Child" / "_attachments" / "diagram.png").is_file())
-            self.assertFalse((root / "Renamed alpha" / "Child").exists())
-            self.assertTrue((root / "Gone" / "content.md").is_file())
+            self.assertEqual((root / "Renamed alpha_200" / "notes.txt").read_text(encoding="utf-8"), "unmanaged\n")
+            self.assertTrue((root / "Beta_300" / "Child_400" / "_attachments" / "diagram.png").is_file())
+            self.assertFalse((root / "Renamed alpha_200" / "Child_400").exists())
+            self.assertTrue((root / "Gone_500" / "content.md").is_file())
             self.assertEqual(
                 lines[-2], "Page '500' (Gone): kept: no longer in the tree (deleted or moved outside the root); "
                 "the local copy is unchanged")
@@ -99,9 +100,9 @@ class TestRepositoryPull(unittest.TestCase):
             lines, status = self._pull(workarea)
 
             self.assertEqual(status, 0)
-            self.assertTrue((workarea.root_dir / "Root" / "Beta" / "Child" / "content.md").is_file())
-            self.assertFalse((workarea.root_dir / "Root" / "Alpha" / "Child").exists())
-            self.assertTrue((workarea.root_dir / "Root" / "Alpha" / "content.md").is_file())
+            self.assertTrue((workarea.root_dir / "Root_100" / "Beta_300" / "Child_400" / "content.md").is_file())
+            self.assertFalse((workarea.root_dir / "Root_100" / "Alpha_200" / "Child_400").exists())
+            self.assertTrue((workarea.root_dir / "Root_100" / "Alpha_200" / "content.md").is_file())
             self.assertEqual(PageState.load(workarea.cache_path("400")).page.parent_id, "300")
             self.assertIn("Page '200' (Alpha): kept", lines[-2])
 
@@ -109,7 +110,7 @@ class TestRepositoryPull(unittest.TestCase):
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea)
             edited = self._edit(workarea, "200")
-            shutil.rmtree(workarea.root_dir / "Root" / "Beta")
+            shutil.rmtree(workarea.root_dir / "Root_100" / "Beta_300")
 
             lines, status = self._pull(workarea)
 
@@ -117,7 +118,7 @@ class TestRepositoryPull(unittest.TestCase):
             self.assertIn("Page '200' (Alpha): skipped: local-changed", lines)
             self.assertIn("Page '300' (Beta): pulled", lines)
             self.assertIn("Local edit", edited.read_text(encoding="utf-8"))
-            self.assertTrue((workarea.root_dir / "Root" / "Beta" / "content.md").is_file())
+            self.assertTrue((workarea.root_dir / "Root_100" / "Beta_300" / "content.md").is_file())
 
     def test_refuses_conflicts_unless_forced(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
@@ -141,40 +142,36 @@ class TestRepositoryPull(unittest.TestCase):
     def test_blocks_the_descendants_of_a_page_that_failed(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             run_with_site(self.site, workarea, lambda: PagePullCommand().run("100"))
-            (workarea.root_dir / "Root" / "alpha").mkdir()
+            (workarea.root_dir / "Root_100" / "alpha_200").mkdir()
 
             lines, status = self._pull(workarea)
 
             self.assertEqual(status, 1)
-            self.assertIn("Page '200' (Alpha): failed: page directory 'Root/Alpha' already exists", lines)
+            self.assertIn("Page '200' (Alpha): failed: page directory 'Root_100/Alpha_200' already exists", lines)
             self.assertIn("Page '400' (Child): blocked: parent page '200' was not pulled", lines)
             self.assertIn("Page '300' (Beta): pulled", lines)
             self.assertEqual(lines[-1], "Summary: 1 pulled, 1 unchanged, 1 blocked, 1 failed.")
             self.assertFalse(workarea.cache_path("400").exists())
 
-    def test_suffixes_every_new_page_of_a_clashing_group(self) -> None:
-        self.site.add_page("500", "beta", parent_id="100")
+    def test_names_every_page_directory_after_its_page_id(self) -> None:
+        self.site.add_page("500", "Beta", parent_id="100")
         with temporary_workarea(root_page_id="100") as workarea:
             _, status = self._pull(workarea)
 
-            root = workarea.root_dir / "Root"
+            tree = workarea.page_tree()
             self.assertEqual(status, 0)
-            self.assertTrue((root / "Beta_300" / "content.md").is_file())
-            self.assertTrue((root / "beta_500" / "content.md").is_file())
-            self.assertTrue((root / "Alpha" / "content.md").is_file())
+            self.assertEqual(sorted(tree.states), ["100", "200", "300", "400", "500"])
+            for page_id in tree.states:
+                with self.subTest(page_id=page_id):
+                    directory = tree.directory(page_id)
+                    name = directory.rsplit("/", 1)[-1]
+                    self.assertEqual(workarea.page_id_from_directory_name(name), page_id)
+                    self.assertTrue((workarea.root_dir / directory / "content.md").is_file())
 
-    def test_suffixes_only_the_newcomer_next_to_an_existing_directory(self) -> None:
-        with temporary_workarea(root_page_id="100") as workarea:
-            self._pull(workarea)
-            self.site.add_page("500", "Beta", parent_id="100")
+            self.assertEqual(tree.directory("300"), "Root_100/Beta_300")
+            self.assertEqual(tree.directory("500"), "Root_100/Beta_500")
 
-            _, status = self._pull(workarea)
-
-            self.assertEqual(status, 0)
-            self.assertEqual(PageState.load(workarea.cache_path("300")).page.directory, "Beta")
-            self.assertEqual(PageState.load(workarea.cache_path("500")).page.directory, "Beta_500")
-
-    def test_suffixes_a_literal_title_that_equals_a_suffixed_name(self) -> None:
+    def test_a_title_ending_in_another_page_id_gets_its_own_suffix(self) -> None:
         self.site.add_page("500", "Beta", parent_id="100")
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea)
@@ -184,6 +181,7 @@ class TestRepositoryPull(unittest.TestCase):
 
             self.assertEqual(status, 0)
             self.assertEqual(PageState.load(workarea.cache_path("600")).page.directory, "Beta_300_600")
+            self.assertEqual(PageState.load(workarea.cache_path("300")).page.directory, "Beta_300")
 
     def test_completes_an_interrupted_pull_on_the_next_run(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
@@ -253,16 +251,16 @@ class TestRepositoryPullDelete(unittest.TestCase):
     def test_deletes_local_copies_of_removed_pages_after_confirmation(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea)
-            (workarea.root_dir / "Root" / "Alpha" / "notes.txt").write_text("unmanaged\n", encoding="utf-8")
+            (workarea.root_dir / "Root_100" / "Alpha_200" / "notes.txt").write_text("unmanaged\n", encoding="utf-8")
             self._remove_alpha_remotely()
 
             lines, status = self._pull(workarea, delete=True)
 
             self.assertEqual(status, 0)
-            self.assertIn("  Page '200' (Alpha): Root/Alpha; unmanaged files, which cannot be restored: notes.txt", lines)
-            self.assertIn("  Page '400' (Child): Root/Alpha/Child", lines)
+            self.assertIn("  Page '200' (Alpha): Root_100/Alpha_200; unmanaged files, which cannot be restored: notes.txt", lines)
+            self.assertIn("  Page '400' (Child): Root_100/Alpha_200/Child_400", lines)
             self.assertEqual(self.prompts, ["Delete 2 local page copies? [y/N] "])
-            self.assertFalse((workarea.root_dir / "Root" / "Alpha").exists())
+            self.assertFalse((workarea.root_dir / "Root_100" / "Alpha_200").exists())
             self.assertEqual(sorted(workarea.page_tree().states), ["100", "300"])
             self.assertEqual(lines[-1], "Summary: 2 deleted, 2 unchanged.")
 
@@ -276,7 +274,7 @@ class TestRepositoryPullDelete(unittest.TestCase):
 
             self.assertEqual(status, 0)
             self.assertEqual(self.prompts, [])
-            self.assertTrue((workarea.root_dir / "Root" / "Alpha" / "Child" / "content.md").is_file())
+            self.assertTrue((workarea.root_dir / "Root_100" / "Alpha_200" / "Child_400" / "content.md").is_file())
             self.assertEqual(lines[-1], "Summary: 2 unchanged, 2 kept.")
 
     def test_declining_or_a_missing_terminal_changes_nothing(self) -> None:
@@ -319,12 +317,12 @@ class TestRepositoryPullDelete(unittest.TestCase):
 
             self.assertEqual(status, 0)
             self.assertEqual(self.prompts, [])
-            self.assertFalse((workarea.root_dir / "Root" / "Alpha").exists())
+            self.assertFalse((workarea.root_dir / "Root_100" / "Alpha_200").exists())
 
     def test_keeps_a_parent_whose_child_could_not_be_relocated_out_of_it(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea)
-            (workarea.root_dir / "Root" / "Beta" / "child").mkdir()
+            (workarea.root_dir / "Root_100" / "Beta_300" / "child_400").mkdir()
             self.site.content["400"].update(parent_id="300")
             self.site.content["400"]["version"] += 1
             del self.site.content["200"]
@@ -332,9 +330,9 @@ class TestRepositoryPullDelete(unittest.TestCase):
             lines, status = self._pull(workarea, delete=True)
 
             self.assertEqual(status, 1)
-            self.assertIn("Page '400' (Child): failed: page directory 'Root/Beta/Child' already exists", lines)
+            self.assertIn("Page '400' (Child): failed: page directory 'Root_100/Beta_300/Child_400' already exists", lines)
             self.assertIn("Page '200' (Alpha): blocked: its directory contains page '400', which is kept", lines)
-            self.assertTrue((workarea.root_dir / "Root" / "Alpha" / "Child" / "content.md").is_file())
+            self.assertTrue((workarea.root_dir / "Root_100" / "Alpha_200" / "Child_400" / "content.md").is_file())
             self.assertEqual(sorted(workarea.page_tree().states), ["100", "200", "300", "400"])
 
     def test_deletes_the_directory_it_relocated_a_child_out_of(self) -> None:
@@ -348,14 +346,14 @@ class TestRepositoryPullDelete(unittest.TestCase):
 
             self.assertEqual(status, 0)
             self.assertEqual(self.prompts, ["Delete 1 local page copy? [y/N] "])
-            self.assertFalse((workarea.root_dir / "Root" / "Alpha").exists())
-            self.assertTrue((workarea.root_dir / "Root" / "Beta" / "Child" / "content.md").is_file())
+            self.assertFalse((workarea.root_dir / "Root_100" / "Alpha_200").exists())
+            self.assertTrue((workarea.root_dir / "Root_100" / "Beta_300" / "Child_400" / "content.md").is_file())
 
     def test_removes_only_the_cache_entry_of_a_page_whose_directory_is_missing(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea)
             del self.site.content["300"]
-            shutil.rmtree(workarea.root_dir / "Root" / "Beta")
+            shutil.rmtree(workarea.root_dir / "Root_100" / "Beta_300")
 
             lines, status = self._pull(workarea, delete=True)
 
@@ -386,7 +384,7 @@ class TestRepositoryPullDelete(unittest.TestCase):
             lines, status = self._pull(workarea, delete=True)
 
             self.assertEqual(status, 0)
-            self.assertFalse((workarea.root_dir / "Root" / "Alpha").exists())
+            self.assertFalse((workarea.root_dir / "Root_100" / "Alpha_200").exists())
             self.assertIn("Page '200' (Alpha): deleted: no longer in the tree (deleted or moved outside the root)", lines)
 
 

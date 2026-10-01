@@ -580,6 +580,12 @@ class Workarea:
     def page_tree(self) -> PageTree:
         """Load every cached page state as a tree anchored at this workarea's root page."""
         states = {page_id: PageState.load(path) for page_id, path in self.page_state_paths().items()}
+        for page_id, state in states.items():
+            if self.page_id_from_directory_name(state.page.directory) != page_id:
+                raise StateError(
+                    f"cached page '{page_id}' has directory '{state.page.directory}', which does not end in its page ID "
+                    f"'_{page_id}'")
+
         return PageTree(states, self.root_page_id)
 
     def _page_directories(self):
@@ -662,31 +668,6 @@ class Workarea:
 
         return entries
 
-    def sibling_uses(self, page_id: str | None, parent_id: str | None, name: str) -> bool:
-        """Report whether a cached page other than *page_id* below *parent_id* uses directory *name*."""
-        for other_id, other in self.page_tree().states.items():
-            if other_id != page_id and other.page.parent_id == parent_id and same_directory_name(other.page.directory, name):
-                return True
-
-        return False
-
-    def has_suffix(self, state: PageState) -> bool:
-        """Report whether a cached page's directory name carries the disambiguation suffix."""
-        return state.page.directory == self.page_directory_name(state.page.title, state.page.id)
-
-    def sibling_directory_name(self, page_id: str, parent_id: str | None, title: str, suffixed: bool = False) -> str:
-        """Return the directory name of page *page_id* titled *title* below cached parent *parent_id*.
-
-        The name is the title's plain name, unless *suffixed* is true or a cached sibling already uses it; the name
-        then ends in the disambiguation suffix ``_<page_id>``. Unmanaged entries are checked by
-        :meth:`page_directory_target`.
-        """
-        name = self.page_directory_name(title)
-        if suffixed or self.sibling_uses(page_id, parent_id, name):
-            return self.page_directory_name(title, page_id)
-
-        return name
-
     def page_directory_target(self, page_id: str | None, parent_id: str | None, name: str) -> Path:
         """Return the safe, unoccupied path for page *page_id* named *name* below cached parent *parent_id*.
 
@@ -756,11 +737,12 @@ class Workarea:
 
             raise
 
-    def page_directory_name(self, title: str, page_id: str | None = None) -> str:
-        """Return the deterministic safe directory name for a page title, at most 64 characters long.
+    def page_directory_name(self, title: str, page_id: str) -> str:
+        """Return the deterministic safe directory name of page *page_id* titled *title*, at most 64 characters long.
 
-        With *page_id*, the name ends in the disambiguation suffix ``_<page_id>``, within the same limit. A longer
-        name is cut between characters, never inside an escape.
+        The name is the encoded title followed by ``_<page_id>``, so that no two pages share a name and the page ID
+        can be recovered from it. A long title is cut between characters, never inside an escape, to keep the suffix
+        within the limit.
         """
         if not isinstance(title, str) or not title:
             raise Workarea.Error("page title must be a non-empty string")
@@ -780,9 +762,7 @@ class Workarea:
             pieces[0] = f"%{ord(pieces[0]):02X}"
 
         pieces.extend(["%20"] * trailing_spaces)
-        suffix = ""
-        if page_id is not None:
-            suffix = f"_{page_id}"
+        suffix = f"_{page_id}"
 
         kept = []
         length = len(suffix)
@@ -801,6 +781,11 @@ class Workarea:
             kept.pop()
 
         return "".join(kept) + suffix
+
+    def page_id_from_directory_name(self, name: str) -> str | None:
+        """Return the page ID that a page directory name ends in, or ``None`` if it does not end in ``_<digits>``."""
+        match = re.fullmatch(r".*_([0-9]+)", name, re.DOTALL)
+        return None if match is None else match.group(1)
 
     def stage_page(
         self,

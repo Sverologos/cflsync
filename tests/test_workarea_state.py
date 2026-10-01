@@ -22,8 +22,8 @@ class TestWorkareaPageStates(unittest.TestCase):
 
     def test_enumerates_all_page_state_paths_by_numeric_page_id(self) -> None:
         with temporary_workarea() as workarea:
-            first = example_page_state("9", directory="First page")
-            second = example_page_state("10", directory="Second page")
+            first = example_page_state("9", "First page")
+            second = example_page_state("10", "Second page")
             second.save(workarea.cache_path(second.page.id))
             first.save(workarea.cache_path(first.page.id))
 
@@ -230,6 +230,22 @@ class TestWorkareaPageDirectory(unittest.TestCase):
                 workarea.page_directory(state)
 
 
+class TestWorkareaPageTree(unittest.TestCase):
+
+    def test_refuses_a_cached_directory_that_does_not_end_in_its_page_id(self) -> None:
+        for directory in ["Child", "Child_234567", "Child_1234567"]:
+            with self.subTest(directory=directory):
+                with temporary_workarea() as workarea:
+                    for state in [example_page_state(), example_page_state("234567", "Other", parent_id="123456"),
+                                  example_page_state("345678", "Child", directory, "123456")]:
+                        state.save(workarea.cache_path(state.page.id))
+
+                    with self.assertRaisesRegex(StateError,
+                                                f"cached page '345678' has directory '{directory}', which does not end in its "
+                                                "page ID '_345678'"):
+                        workarea.page_tree()
+
+
 class TestWorkareaSafePaths(unittest.TestCase):
 
     def test_rejects_a_traversal_page_directory(self) -> None:
@@ -244,8 +260,9 @@ class TestWorkareaSafePaths(unittest.TestCase):
 
     def test_enumerates_duplicate_page_directory_assignments(self) -> None:
         with temporary_workarea() as workarea:
-            first = example_page_state("123456", directory="Shared page")
-            second = example_page_state("234567", directory="Shared page")
+            # Enumeration does not validate directories, so the second page's directory need not end in its ID.
+            first = example_page_state("123456", directory="Shared page_123456")
+            second = example_page_state("234567", directory="Shared page_123456")
             first.save(workarea.cache_path(first.page.id))
             second.save(workarea.cache_path(second.page.id))
 
@@ -265,15 +282,15 @@ class TestWorkareaSafePaths(unittest.TestCase):
 
     def test_rejects_an_existing_directory_that_differs_only_in_unicode_normalization(self) -> None:
         with temporary_workarea() as workarea:
-            (workarea.root_dir / "Cafe\u0301").mkdir()
+            (workarea.root_dir / "Cafe\u0301_123456").mkdir()
 
             with self.assertRaisesRegex(Workarea.Error, "already exists"):
-                workarea.page_directory_target("123456", None, workarea.page_directory_name("Café"))
+                workarea.page_directory_target("123456", None, workarea.page_directory_name("Café", "123456"))
 
     def test_rejects_an_existing_title_directory_with_different_case(self) -> None:
         with temporary_workarea() as workarea:
-            state = example_page_state(directory="Example page")
-            target = workarea.root_dir / "example page"
+            state = example_page_state()
+            target = workarea.root_dir / "example page_123456"
             target.mkdir()
 
             with self.assertRaisesRegex(Workarea.Error, "already exists"):
@@ -284,13 +301,42 @@ class TestWorkareaMaterialization(unittest.TestCase):
 
     def test_derives_safe_deterministic_page_directory_names(self) -> None:
         with temporary_workarea() as workarea:
-            self.assertEqual(workarea.page_directory_name("Example page"), "Example page")
-            self.assertEqual(workarea.page_directory_name("Example/page"), "Example%2Fpage")
-            self.assertEqual(workarea.page_directory_name("."), "%2E")
-            self.assertEqual(workarea.page_directory_name("CON"), "%43ON")
-            self.assertEqual(workarea.page_directory_name("lpt9"), "%6Cpt9")
-            self.assertEqual(workarea.page_directory_name("Example "), "Example%20")
-            self.assertEqual(workarea.page_directory_name("Example/page"), workarea.page_directory_name("Example/page"))
+            self.assertEqual(workarea.page_directory_name("Example page", "123"), "Example page_123")
+            self.assertEqual(workarea.page_directory_name("Example/page", "123"), "Example%2Fpage_123")
+            self.assertEqual(workarea.page_directory_name(".", "123"), "%2E_123")
+            self.assertEqual(workarea.page_directory_name("CON", "123"), "%43ON_123")
+            self.assertEqual(workarea.page_directory_name("lpt9", "123"), "%6Cpt9_123")
+            self.assertEqual(workarea.page_directory_name("Example ", "123"), "Example%20_123")
+            self.assertEqual(
+                workarea.page_directory_name("Example/page", "123"), workarea.page_directory_name("Example/page", "123"))
+
+    def test_appends_the_suffix_to_a_title_that_already_ends_in_digits(self) -> None:
+        with temporary_workarea() as workarea:
+            self.assertEqual(workarea.page_directory_name("Beta_300", "400"), "Beta_300_400")
+
+    def test_keeps_a_13_digit_suffix_intact_after_a_long_title(self) -> None:
+        with temporary_workarea() as workarea:
+            name = workarea.page_directory_name("Long title " * 10, "1234567890123")
+
+            self.assertLessEqual(len(name), 64)
+            self.assertTrue(name.endswith("_1234567890123"))
+            self.assertEqual(name, ("Long title " * 10)[:50] + "_1234567890123")
+
+    def test_names_of_titles_differing_only_in_case_differ_by_page_id(self) -> None:
+        with temporary_workarea() as workarea:
+            first = workarea.page_directory_name("Release notes", "100")
+            second = workarea.page_directory_name("release notes", "200")
+
+            self.assertNotEqual(first.casefold(), second.casefold())
+
+    def test_recovers_the_page_id_from_a_directory_name(self) -> None:
+        with temporary_workarea() as workarea:
+            cases = [
+                ("Beta_300_400", "400"), ("Release notes_123457", "123457"), ("Release notes", None), ("x_", None), ("_123", "123"),
+            ]
+            for name, expected in cases:
+                with self.subTest(name=name):
+                    self.assertEqual(workarea.page_id_from_directory_name(name), expected)
 
     def test_keeps_printable_unicode_characters_and_escapes_others(self) -> None:
         with temporary_workarea() as workarea:
@@ -300,16 +346,17 @@ class TestWorkareaMaterialization(unittest.TestCase):
                 ("Sven's Test Space", "Sven%27s Test Space"), ]
             for title, expected in cases:
                 with self.subTest(title=title):
-                    self.assertEqual(workarea.page_directory_name(title), expected)
+                    self.assertEqual(workarea.page_directory_name(title, "123"), expected + "_123")
 
     def test_caps_names_at_64_characters_between_characters(self) -> None:
         with temporary_workarea() as workarea:
+            # The suffix "_1" leaves 62 characters for the title.
             cases = [
-                ("x" * 64, "x" * 64), ("x" * 65, "x" * 64), ("é" * 70, "é" * 64), ("x" * 62 + "/tail", "x" * 62),
-                ("x" * 63 + " tail", "x" * 63), ("x" * 60 + "—tail", "x" * 60 + "—tai"), ("_" + "x" * 70, "%5F" + "x" * 61), ]
+                ("x" * 62, "x" * 62), ("x" * 63, "x" * 62), ("é" * 70, "é" * 62), ("x" * 60 + "/tail", "x" * 60),
+                ("x" * 61 + " tail", "x" * 61), ("x" * 58 + "—tail", "x" * 58 + "—tai"), ("_" + "x" * 70, "%5F" + "x" * 59), ]
             for title, expected in cases:
                 with self.subTest(title=title):
-                    self.assertEqual(workarea.page_directory_name(title), expected)
+                    self.assertEqual(workarea.page_directory_name(title, "1"), expected + "_1")
 
     def test_keeps_the_suffix_within_the_limit(self) -> None:
         with temporary_workarea() as workarea:
@@ -319,9 +366,9 @@ class TestWorkareaMaterialization(unittest.TestCase):
 
     def test_keeps_names_within_255_utf8_bytes(self) -> None:
         with temporary_workarea() as workarea:
-            name = workarea.page_directory_name("😀" * 70)
+            name = workarea.page_directory_name("😀" * 70, "1")
 
-            self.assertEqual(name, "😀" * 63)
+            self.assertEqual(name, "😀" * 62 + "_1")
             self.assertLessEqual(len(name.encode("utf-8")), 255)
 
     def test_escapes_a_leading_underscore_and_never_names_the_content_file(self) -> None:
@@ -331,7 +378,7 @@ class TestWorkareaMaterialization(unittest.TestCase):
                 ("snake_case_title", "snake_case_title"), ("%5Fliteral", "%255Fliteral"), ("content.md", "content%2Emd"), ]
             for title, expected in cases:
                 with self.subTest(title=title):
-                    self.assertEqual(workarea.page_directory_name(title), expected)
+                    self.assertEqual(workarea.page_directory_name(title, "123"), expected + "_123")
 
     @unittest.skipIf(os.name == "nt", "the error Windows reports for an over-long name component depends on its configuration")
     def test_reports_a_name_that_the_filesystem_rejects_as_too_long(self) -> None:
@@ -584,14 +631,13 @@ class TestWorkareaRelocation(unittest.TestCase):
 
     def test_refuses_a_directory_assigned_to_another_cached_page(self) -> None:
         with temporary_workarea() as workarea:
-            self._page_directory(workarea, "Root")
-            source = self._page_directory(workarea, "Root/Page")
-            for state in [example_page_state(directory="Root"), example_page_state("234567", directory="Target",
-                                                                                   parent_id="123456")]:
+            self._page_directory(workarea, "Root_123456")
+            source = self._page_directory(workarea, "Root_123456/Page_345678")
+            for state in [example_page_state(title="Root"), example_page_state("234567", "Target", parent_id="123456")]:
                 state.save(workarea.cache_path(state.page.id))
 
-            with self.assertRaisesRegex(Workarea.Error, "'Root/target' is assigned to page '234567'"):
-                workarea.relocate(source, "Root/target")
+            with self.assertRaisesRegex(Workarea.Error, "'Root_123456/target_234567' is assigned to page '234567'"):
+                workarea.relocate(source, "Root_123456/target_234567")
 
             self.assertTrue(source.is_dir())
 

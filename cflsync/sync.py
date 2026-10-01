@@ -38,10 +38,9 @@
 #   its parent's. Execute ``remote-changed`` and ``absent-local`` entries (an ``absent-local`` entry with cached state
 #   restores the missing directory); with ``--force``, also execute ``conflict`` and ``unchanged`` entries as pulls.
 #   Each pull places the page below its current remote parent and relocates its directory, with its subtree, after a
-#   remote rename or move. Its directory name is the title's plain name, or carries the stable page-ID suffix when a
-#   cached sibling uses the plain name or it already has one; new siblings with the same name are all suffixed. A page
-#   below a page that failed is blocked. Skip ``local-changed`` entries. Handle absent pages last, after every
-#   relocation out of their directories:
+#   remote rename or move. Its directory name is the encoded title followed by ``_`` and the page ID, so sibling names
+#   never clash. A page below a page that failed is blocked. Skip ``local-changed`` entries. Handle absent pages last,
+#   after every relocation out of their directories:
 #   - Without ``--delete``, keep ``absent-remote`` and ``conflict-absent-remote`` entries unchanged and report them.
 #   - With ``--delete``, the CLI first confirms the deletions (PageDeletion) unless ``--force`` is given; declining
 #     aborts. Then delete each absent page's local directory, with unmanaged files, and its cache entry, children
@@ -82,8 +81,7 @@ from .api import APIError, RemoteContentRef
 from .convert import ADFToMarkdownConverter, MarkdownToADFConverter, PandocRunner
 from .errors import SyncError
 from .workarea import (
-    AttachmentMetadata, CONTENT_FILENAME, MediaResolver, PageMetadata, PageState, Workarea, directory_name_key,
-    filesystem_error_message)
+    AttachmentMetadata, CONTENT_FILENAME, MediaResolver, PageMetadata, PageState, Workarea, filesystem_error_message)
 
 ATTACHMENTS_PREFIX = "_attachments/"
 
@@ -522,13 +520,11 @@ class PagePullOperation:
             force: bool = False,
             parent_id: str | None = None,
             directory_name: str | None = None,
-            directory: str | None = None,
-            suffixed: bool = False) -> bool:
+            directory: str | None = None) -> bool:
         """Install or update the local copy of remote *page*, returning whether anything was pulled.
 
         The page is placed below its remote parent, which must be present locally, unless *directory* gives a
-        planned location. Its directory name is the title's plain name, or carries the page-ID suffix when a cached
-        sibling uses the plain name, when the cached name already carries it, or when *suffixed* is true. Without
+        planned location. Its directory name is the encoded title followed by ``_`` and the page ID. Without
         *force*, local changes conflict, and a page that is in sync and in place is left alone. With *force*, remote
         content is preferred and a missing local directory is restored.
         """
@@ -542,11 +538,7 @@ class PagePullOperation:
         # restore a cached ancestor at its cached location, despite remote hierarchy or title changes.
         if directory is None:
             parent_id = None if page.id == workarea.root_page_id else page.parent_id
-            # Suffixes are stable: a page that has one keeps it, also after a rename or move.
-            if cache_path.exists():
-                suffixed = suffixed or workarea.has_suffix(PageState.load(cache_path))
-
-            directory_name = workarea.sibling_directory_name(page.id, parent_id, page.title, suffixed)
+            directory_name = workarea.page_directory_name(page.title, page.id)
             directory = workarea.relative_directory(parent_id, directory_name)
 
         assert directory_name is not None
@@ -659,7 +651,6 @@ class RepositoryPullOperation:
 
         results = PageOperationResults()
         unsuccessful: set[str] = set()
-        suffixed = self._clashing_new_pages(workarea, status)
         pulled = {PageStatusState.ABSENT_LOCAL, PageStatusState.REMOTE_CHANGED}
         if force:
             pulled |= {PageStatusState.CONFLICT, PageStatusState.UNCHANGED}
@@ -683,8 +674,7 @@ class RepositoryPullOperation:
             # A cached page whose directory is missing has no local content to protect, so it is restored.
             restore = page_status.status is PageStatusState.ABSENT_LOCAL and page_status.local is not None
             try:
-                changed = self._page_pull.pull(
-                    workarea, api, api.get_page(page_status.id), force=force or restore, suffixed=page_status.id in suffixed)
+                changed = self._page_pull.pull(workarea, api, api.get_page(page_status.id), force=force or restore)
             except (OSError, UnicodeError) as error:
                 unsuccessful.add(page_status.id)
                 results.add(page_status.id, page_status.title, "failed", filesystem_error_message(error))
@@ -747,17 +737,6 @@ class RepositoryPullOperation:
                 deleted.add(page_status.id)
                 results.add(
                     page_status.id, page_status.title, "deleted", "no longer in the tree (deleted or moved outside the root)")
-
-    @staticmethod
-    def _clashing_new_pages(workarea, status):
-        # New sibling pages whose plain names clash all get the suffix, so the result does not depend on their order.
-        groups: dict[tuple[str | None, str], list[str]] = {}
-        for page_status in status.pages:
-            if page_status.status is PageStatusState.ABSENT_LOCAL and page_status.local is None:
-                key = (page_status.parent_id, directory_name_key(workarea.page_directory_name(page_status.title)))
-                groups.setdefault(key, []).append(page_status.id)
-
-        return {page_id for page_ids in groups.values() if len(page_ids) > 1 for page_id in page_ids}
 
 
 class PageRemoveOperation:
@@ -975,8 +954,7 @@ class InstallationPlan:
 
         With *include_page*, the page itself is planned as well if it is missing locally. Planning reads from
         Confluence but changes nothing. It fails if the page is not in the workarea's tree, if its ancestors change
-        while planning, or if a planned directory clashes with an unmanaged entry. A name that a cached sibling uses
-        gets the page-ID suffix.
+        while planning, or if a planned directory clashes with an unmanaged entry.
         """
         chain = _ancestor_chain(workarea, api, page_id)
         if not include_page:
@@ -1005,12 +983,10 @@ class InstallationPlan:
                 directory = tree.directory(chain_id)
             else:
                 parent_id = expected_parent_id
-                # Below a planned parent there are no cached siblings; below a cached one, a clash adds the suffix.
+                name = workarea.page_directory_name(page.title, chain_id)
                 if parent_id in planned:
-                    name = workarea.page_directory_name(page.title)
                     directory = f"{planned[parent_id].directory}/{name}"
                 else:
-                    name = workarea.sibling_directory_name(chain_id, parent_id, page.title)
                     directory = workarea.relative_directory(parent_id, name)
 
             # Below a planned parent there cannot be an existing entry: validation of that parent's own target would

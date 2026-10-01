@@ -40,7 +40,7 @@ class TestPageCreate(unittest.TestCase):
         return transport, status
 
     def _local_parent(self, workarea):
-        state = example_page_state("456789", title="Parent page", directory="Parent page")
+        state = example_page_state("456789", title="Parent page")
         state.save(workarea.cache_path(state.page.id))
         directory = workarea.root_dir / state.page.directory
         directory.mkdir()
@@ -88,7 +88,7 @@ class TestPageCreate(unittest.TestCase):
             state = PageState.load(workarea.cache_path("123456"))
             directory = workarea.page_directory(state)
             self.assertEqual(status, 0)
-            self.assertEqual(directory, parent_directory / "New page")
+            self.assertEqual(directory, parent_directory / "New page_123456")
             self.assertEqual(state.page.title, "New page")
             self.assertEqual((directory / "content.md").read_text(), "# New page\n")
             self.assertEqual((directory / "_attachments/diagram.png").read_bytes(), b"PNG")
@@ -131,7 +131,7 @@ class TestPageCreate(unittest.TestCase):
     def test_resolves_a_managed_parent_directory_before_creation(self) -> None:
         with temporary_workarea(root_page_id="456789") as workarea:
             parent = page_fixture("456789", "Parent page")
-            parent_state = example_page_state("456789", title="Parent page", directory="Parent page")
+            parent_state = example_page_state("456789", title="Parent page")
             parent_state.save(workarea.cache_path(parent_state.page.id))
             parent_directory = workarea.root_dir / parent_state.page.directory
             parent_directory.mkdir()
@@ -204,7 +204,8 @@ class TestPageCreateInTree(unittest.TestCase):
 
             created = [item for item in self.site.content.values() if item["title"] == "New page"]
             self.assertEqual([item["parent_id"] for item in created], ["200"])
-            self.assertTrue((workarea.root_dir / "Root" / "Child" / "New page" / "content.md").is_file())
+            self.assertTrue(
+                (workarea.root_dir / "Root_100" / "Child_200" / f"New page_{created[0]['id']}" / "content.md").is_file())
             self.assertEqual(PageState.load(workarea.cache_path(created[0]["id"])).page.parent_id, "200")
 
     def test_pulls_a_missing_parent_chain_before_creating(self) -> None:
@@ -212,19 +213,22 @@ class TestPageCreateInTree(unittest.TestCase):
             output = self._run(workarea, lambda: PageCreateCommand().run("200", "New page"))
 
             created = [item for item in self.site.content.values() if item["title"] == "New page"]
-            self.assertEqual(output, "Pulled parent 'Root' (100) to Root\nPulled parent 'Child' (200) to Root/Child\n")
+            self.assertEqual(output, "Pulled parent 'Root' (100) to Root_100\nPulled parent 'Child' (200) to Root_100/Child_200\n")
             self.assertEqual([item["parent_id"] for item in created], ["200"])
-            self.assertTrue((workarea.root_dir / "Root" / "Child" / "New page" / "content.md").is_file())
+            self.assertTrue(
+                (workarea.root_dir / "Root_100" / "Child_200" / f"New page_{created[0]['id']}" / "content.md").is_file())
 
     def test_restores_a_missing_cached_parent_before_creating(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea, "100", "200")
-            shutil.rmtree(workarea.root_dir / "Root" / "Child")
+            shutil.rmtree(workarea.root_dir / "Root_100" / "Child_200")
 
             output = self._run(workarea, lambda: PageCreateCommand().run("200", "New page"))
 
-            self.assertEqual(output, "Pulled parent 'Child' (200) to Root/Child\n")
-            self.assertTrue((workarea.root_dir / "Root" / "Child" / "New page" / "content.md").is_file())
+            created = [item for item in self.site.content.values() if item["title"] == "New page"]
+            self.assertEqual(output, "Pulled parent 'Child' (200) to Root_100/Child_200\n")
+            self.assertTrue(
+                (workarea.root_dir / "Root_100" / "Child_200" / f"New page_{created[0]['id']}" / "content.md").is_file())
 
     def test_keeps_pulled_parents_when_remote_creation_fails(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
@@ -233,27 +237,9 @@ class TestPageCreateInTree(unittest.TestCase):
             with self.assertRaisesRegex(SyncError, "injected failure"):
                 self._run(workarea, lambda: PageCreateCommand().run("200", "New page"))
 
-            self.assertTrue((workarea.root_dir / "Root" / "Child" / "content.md").is_file())
+            self.assertTrue((workarea.root_dir / "Root_100" / "Child_200" / "content.md").is_file())
             self.assertTrue(workarea.cache_path("100").is_file())
             self.assertTrue(workarea.cache_path("200").is_file())
-
-    def test_refuses_an_existing_unmanaged_entry_before_creating(self) -> None:
-        with temporary_workarea(root_page_id="100") as workarea:
-            self._pull(workarea, "100")
-            (workarea.root_dir / "Root" / "new page").mkdir()
-
-            self._refused(workarea, "100", "New page", "page directory 'Root/New page' already exists")
-
-    def test_suffixes_a_new_page_whose_name_a_cached_sibling_uses(self) -> None:
-        with temporary_workarea(root_page_id="100") as workarea:
-            self._pull(workarea, "100", "200")
-
-            self._run(workarea, lambda: PageCreateCommand().run("100", "child"))
-
-            [created] = [item["id"] for item in self.site.content.values() if item["title"] == "child"]
-            self.assertTrue((workarea.root_dir / "Root" / f"child_{created}" / "content.md").is_file())
-            self.assertTrue((workarea.root_dir / "Root" / "Child" / "content.md").is_file())
-            self.assertEqual(PageState.load(workarea.cache_path(created)).page.directory, f"child_{created}")
 
     def test_refuses_a_parent_outside_the_tree_before_creating(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:

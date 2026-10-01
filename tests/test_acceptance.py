@@ -351,7 +351,7 @@ class TestRecordedAcceptanceWorkflow(unittest.TestCase):
             self.assertIn("local:  unchanged", output)
             self.assertIn("remote: unchanged", output)
 
-            directory = root / "Acceptance parent" / "Acceptance page"
+            directory = root / "Acceptance parent_456789" / "Acceptance page_123456"
             attachments = directory / "_attachments"
             attachments.mkdir(exist_ok=True)
             (attachments / "diagram.png").write_bytes(b"fixture image")
@@ -372,7 +372,7 @@ class TestRecordedAcceptanceWorkflow(unittest.TestCase):
             self.assertEqual(status, 0)
             self.assertEqual(errors, "")
 
-            directory = root / "Acceptance parent" / "Renamed acceptance page"
+            directory = root / "Acceptance parent_456789" / "Renamed acceptance page_123456"
             markdown = (directory / "content.md").read_text(encoding="utf-8")
             self.assertEqual(sum(line.startswith("# ") for line in markdown.splitlines()), 1)
             self.assertIn("# Renamed acceptance page", markdown)
@@ -401,7 +401,7 @@ class TestRecordedAcceptanceWorkflow(unittest.TestCase):
             self.assertEqual(self._run(root, config, client, ["page", "pull", "456789"])[0], 0)
             self.assertEqual(self._run(root, config, client, ["page", "create", "456789", "Acceptance page"])[0], 0)
 
-            page = root / "Acceptance parent" / "Acceptance page" / "content.md"
+            page = root / "Acceptance parent_456789" / "Acceptance page_123456" / "content.md"
             page.write_text("# Acceptance page\n\nLocal pull conflict\n", encoding="utf-8")
             transport.set_remote_page({"type": "doc", "version": 1, "content": [_paragraph("Remote pull winner")]})
             status, _, errors = self._run(root, config, client, ["page", "pull", transport.page_id])
@@ -470,35 +470,36 @@ class TestTreeAcceptanceWorkflow(unittest.TestCase):
             self._succeeds(root, "init", "Root")
 
             output = self._succeeds(root, "page", "pull", "300")
-            self.assertEqual(output, "Pulled parent 'Root' (100) to Root\nPulled parent 'Child' (200) to Root/Child\n")
+            self.assertEqual(output, "Pulled parent 'Root' (100) to Root_100\nPulled parent 'Child' (200) to Root_100/Child_200\n")
 
             for page_id in ["100", "200", "400"]:
                 self._succeeds(root, "page", "pull", page_id)
 
-            tree = root / "Root"
+            tree = root / "Root_100"
             self.assertEqual((tree / "_attachments" / "diagram.png").read_bytes(), b"PNG")
-            grandchild = tree / "Child" / "Grandchild"
+            grandchild = tree / "Child_200" / "Grandchild_300"
             self.assertIn("remote: unchanged", self._succeeds(root, "page", "status", str(grandchild / "content.md")))
 
-            self._succeeds(root, "page", "create", str(tree / "Child"), "New page")
-            new_page = tree / "Child" / "New page"
+            self._succeeds(root, "page", "create", str(tree / "Child_200"), "New page")
+            [new_page_id] = [item["id"] for item in self.site.content.values() if item["title"] == "New page"]
+            new_page = tree / "Child_200" / f"New page_{new_page_id}"
             (new_page / "content.md").write_text("# New page\n\nWritten locally.\n", encoding="utf-8")
             self._succeeds(root, "page", "push", str(new_page))
-            [new_page_id] = [item["id"] for item in self.site.content.values() if item["title"] == "New page"]
             self.assertIn("Written locally.", self.site.content[new_page_id]["body"])
 
             self._succeeds(root, "page", "rename", "200", "Renamed child")
-            renamed = tree / "Renamed child"
+            renamed = tree / "Renamed child_200"
             self.assertEqual(
-                sorted(path.name for path in renamed.iterdir()), ["Grandchild", "New page", "_attachments", "content.md"])
+                sorted(path.name for path in renamed.iterdir()),
+                ["Grandchild_300", f"New page_{new_page_id}", "_attachments", "content.md"])
 
             self._succeeds(root, "page", "move", "300", "400")
-            self.assertTrue((tree / "Other" / "Grandchild" / "content.md").is_file())
+            self.assertTrue((tree / "Other_400" / "Grandchild_300" / "content.md").is_file())
             self.assertEqual(self.site.content["300"]["parent_id"], "400")
 
-            self._succeeds(root, "page", "remove", "--force", str(renamed / "New page"))
+            self._succeeds(root, "page", "remove", "--force", str(renamed / f"New page_{new_page_id}"))
             self.assertNotIn(new_page_id, self.site.content)
-            self.assertFalse((renamed / "New page").exists())
+            self.assertFalse((renamed / f"New page_{new_page_id}").exists())
 
             for page_ref in ["100", "Renamed child", "300", "400"]:
                 output = self._succeeds(root, "page", "status", page_ref)
@@ -508,7 +509,7 @@ class TestTreeAcceptanceWorkflow(unittest.TestCase):
 
             self._succeeds(root, "page", "remove", "--force", "400")
             self.assertEqual(sorted(self.site.content), ["100", "200"])
-            self.assertFalse((tree / "Other").exists())
+            self.assertFalse((tree / "Other_400").exists())
 
             self._succeeds(root, "page", "remove", "--force", "100")
             self.assertEqual(self.site.content, {})
@@ -531,7 +532,7 @@ class TestTreeAcceptanceWorkflow(unittest.TestCase):
             self._succeeds(root, "page", "copy", "400", "Copied media")
 
             page_id = next(key for key, value in self.site.content.items() if value["title"] == "Copied media")
-            path = root / "Root" / "Copied media" / "content.md"
+            path = root / "Root_100" / f"Copied media_{page_id}" / "content.md"
             markdown = path.read_text(encoding="utf-8")
             self.assertIn("_attachments/owned-image.png", markdown)
             self.assertIn("_attachments/owned-document.txt", markdown)
@@ -577,7 +578,9 @@ class TestTreeAcceptanceWorkflow(unittest.TestCase):
             self.assertEqual(self.site.attachments["att1"]["version"], 2)
             self._succeeds(root, "page", "pull", "--force", page_id)
             self.assertIn("Supported local edit.", path.read_text(encoding="utf-8"))
-            (root / "Root" / "Recovery").mkdir()
+            # The copy's ID is not known in advance; the fake site assigns the next one, so occupy its directory.
+            recovery = root / "Root_100" / f"Recovery_{self.site.peek_next_id()}"
+            recovery.mkdir()
 
             status, output, error = self._run(root, "page", "copy", "400", "Recovery")
 
@@ -585,9 +588,10 @@ class TestTreeAcceptanceWorkflow(unittest.TestCase):
             recovery_id = next(key for key, value in self.site.content.items() if value["title"] == "Recovery")
             self.assertIn(f"cflsync page pull {recovery_id}", error)
             self.site.requests.clear()
-            (root / "Root" / "Recovery").rmdir()
+            self.assertEqual(recovery.name, f"Recovery_{recovery_id}")
+            recovery.rmdir()
             self._succeeds(root, "page", "pull", recovery_id)
-            self.assertTrue((root / "Root" / "Recovery" / "content.md").is_file())
+            self.assertTrue((recovery / "content.md").is_file())
             self.assertTrue(all(request.method == "GET" for request in self.site.requests))
 
 

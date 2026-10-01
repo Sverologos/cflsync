@@ -20,7 +20,8 @@ class TestTreeStatus(unittest.TestCase):
     def setUp(self) -> None:
         self.detector = PageChangeDetector(PandocRunner())
 
-    def _cache_page(self, workarea, page_id, title, parent_id, directory, version=1, markdown=MARKDOWN, create=True):
+    def _cache_page(self, workarea, page_id, title, parent_id, version=1, markdown=MARKDOWN, create=True):
+        directory = f"{title}_{page_id}"
         state = PageState(PageMetadata(page_id, title, parent_id, directory, version, self.detector.content_hash(MARKDOWN)), {})
         state.save(workarea.cache_path(page_id))
         if create:
@@ -52,11 +53,11 @@ class TestTreeStatus(unittest.TestCase):
     def test_classifies_every_combined_page_state(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             states = [
-                self._cache_page(workarea, "100", "Root", None, "Root"),
-                self._cache_page(workarea, "300", "Remote changed", "100", "Remote changed"),
-                self._cache_page(workarea, "400", "Local changed", "100", "Local changed", markdown="# Page\n\nEdited\n"),
-                self._cache_page(workarea, "500", "Conflict", "100", "Conflict", markdown="# Page\n\nEdited\n"),
-                self._cache_page(workarea, "600", "Absent remote", "100", "Absent remote")]
+                self._cache_page(workarea, "100", "Root", None),
+                self._cache_page(workarea, "300", "Remote changed", "100"),
+                self._cache_page(workarea, "400", "Local changed", "100", markdown="# Page\n\nEdited\n"),
+                self._cache_page(workarea, "500", "Conflict", "100", markdown="# Page\n\nEdited\n"),
+                self._cache_page(workarea, "600", "Absent remote", "100")]
 
             status = TreeStatus.from_pages(workarea, self._site().client(), self._references(), states, self.detector)
 
@@ -69,10 +70,10 @@ class TestTreeStatus(unittest.TestCase):
     def test_distinguishes_absent_remote_pages_by_their_local_changes(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             states = [
-                self._cache_page(workarea, "100", "Root", None, "Root"),
-                self._cache_page(workarea, "600", "Unchanged", "100", "Unchanged"),
-                self._cache_page(workarea, "700", "Edited", "100", "Edited", markdown="# Page\n\nEdited\n"),
-                self._cache_page(workarea, "800", "Missing", "100", "Missing", create=False)]
+                self._cache_page(workarea, "100", "Root", None),
+                self._cache_page(workarea, "600", "Unchanged", "100"),
+                self._cache_page(workarea, "700", "Edited", "100", markdown="# Page\n\nEdited\n"),
+                self._cache_page(workarea, "800", "Missing", "100", create=False)]
             status = TreeStatus.from_pages(workarea, self._site().client(), self._references()[:1], states, self.detector)
 
             self.assertEqual(
@@ -83,8 +84,8 @@ class TestTreeStatus(unittest.TestCase):
     def test_classifies_a_page_that_disappears_during_comparison_by_its_local_changes(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             states = [
-                self._cache_page(workarea, "100", "Root", None, "Root"),
-                self._cache_page(workarea, "400", "Local changed", "100", "Local changed", markdown="# Page\n\nEdited\n")]
+                self._cache_page(workarea, "100", "Root", None),
+                self._cache_page(workarea, "400", "Local changed", "100", markdown="# Page\n\nEdited\n")]
             site = self._site()
             del site.content["400"]
 
@@ -97,8 +98,8 @@ class TestTreeStatus(unittest.TestCase):
     def test_marks_a_cached_page_without_its_directory_absent_local(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             states = [
-                self._cache_page(workarea, "100", "Root", None, "Root"),
-                self._cache_page(workarea, "200", "Absent local", "100", "Absent local", create=False)]
+                self._cache_page(workarea, "100", "Root", None),
+                self._cache_page(workarea, "200", "Absent local", "100", create=False)]
 
             status = TreeStatus.from_pages(workarea, self._site().client(), self._references()[:2], states, self.detector)
 

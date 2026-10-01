@@ -80,7 +80,7 @@ class TestPageMove(unittest.TestCase):
     def test_moves_the_page_remotely_and_its_directory_locally(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea, ["100", "456789", "123456", "222222", "987654"])
-            (workarea.root_dir / "Root page" / "Current parent" / "Example page" / "notes.txt").write_text(
+            (workarea.root_dir / "Root page_100" / "Current parent_456789" / "Example page_123456" / "notes.txt").write_text(
                 "unmanaged\n", encoding="utf-8")
             descendant_cache = workarea.cache_path("222222").read_bytes()
 
@@ -88,16 +88,16 @@ class TestPageMove(unittest.TestCase):
 
             state = PageState.load(workarea.cache_path("123456"))
             remote = self.site.content["123456"]
-            moved = workarea.root_dir / "Root page" / "New parent" / "Example page"
+            moved = workarea.root_dir / "Root page_100" / "New parent_987654" / "Example page_123456"
             self.assertEqual(status, 0)
-            self.assertFalse((workarea.root_dir / "Root page" / "Current parent" / "Example page").exists())
+            self.assertFalse((workarea.root_dir / "Root page_100" / "Current parent_456789" / "Example page_123456").exists())
             self.assertEqual((moved / "notes.txt").read_text(encoding="utf-8"), "unmanaged\n")
             self.assertEqual((moved / "_attachments" / "diagram.png").read_bytes(), b"PNG")
-            self.assertTrue((moved / "Descendant" / "content.md").is_file())
+            self.assertTrue((moved / "Descendant_222222" / "content.md").is_file())
             self.assertEqual(workarea.cache_path("222222").read_bytes(), descendant_cache)
             self.assertEqual(
                 (state.page.parent_id, state.page.directory, state.page.version, state.page.title),
-                ("987654", "Example page", 18, "Example page"))
+                ("987654", "Example page_123456", 18, "Example page"))
             self.assertEqual(
                 (remote["parent_id"], remote["version"], remote["title"], remote["body"]), ("987654", 18, "Example page", BODY))
 
@@ -108,7 +108,7 @@ class TestPageMove(unittest.TestCase):
                 with temporary_workarea(root_page_id="100") as workarea:
                     self._pull(workarea)
                     if local:
-                        (workarea.root_dir / "Root page/Current parent/Example page/content.md").write_text(
+                        (workarea.root_dir / "Root page_100/Current parent_456789/Example page_123456/content.md").write_text(
                             "# Example page\n\nEdited\n", encoding="utf-8")
                     else:
                         self.site.content["123456"]["version"] = 18
@@ -150,33 +150,24 @@ class TestPageMove(unittest.TestCase):
             output, status = self._move(workarea, "987654")
 
             self.assertEqual(status, 0)
-            self.assertEqual(output, "Pulled parent 'New parent' (987654) to Root page/New parent\n")
-            self.assertTrue((workarea.root_dir / "Root page" / "New parent" / "Example page" / "content.md").is_file())
+            self.assertEqual(output, "Pulled parent 'New parent' (987654) to Root page_100/New parent_987654\n")
+            self.assertTrue(
+                (workarea.root_dir / "Root page_100" / "New parent_987654" / "Example page_123456" / "content.md").is_file())
 
-    def test_suffixes_a_name_used_by_a_cached_sibling_in_the_new_parent(self) -> None:
+    def test_moves_next_to_a_sibling_with_the_same_title(self) -> None:
         self.site.add_page("333333", "Example page", parent_id="987654")
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea, ["100", "456789", "123456", "987654", "333333"])
 
             _, status = self._move(workarea, "987654")
 
-            new_parent = workarea.root_dir / "Root page" / "New parent"
+            new_parent = workarea.root_dir / "Root page_100" / "New parent_987654"
             self.assertEqual(status, 0)
+            self.assertEqual(self.site.content["123456"]["parent_id"], "987654")
             self.assertTrue((new_parent / "Example page_123456" / "_attachments" / "diagram.png").is_file())
-            self.assertTrue((new_parent / "Example page" / "content.md").is_file())
+            self.assertTrue((new_parent / "Example page_333333" / "content.md").is_file())
             self.assertEqual(PageState.load(workarea.cache_path("123456")).page.directory, "Example page_123456")
-            self.assertEqual(PageState.load(workarea.cache_path("333333")).page.directory, "Example page")
-
-    def test_a_move_keeps_an_existing_suffix(self) -> None:
-        self.site.add_page("333333", "Example page", parent_id="987654")
-        with temporary_workarea(root_page_id="100") as workarea:
-            self._pull(workarea, ["100", "456789", "123456", "987654", "333333"])
-            self._move(workarea, "987654")
-
-            self._move(workarea, "456789")
-
-            self.assertTrue((workarea.root_dir / "Root page" / "Current parent" / "Example page_123456").is_dir())
-            self.assertEqual(PageState.load(workarea.cache_path("123456")).page.directory, "Example page_123456")
+            self.assertEqual(PageState.load(workarea.cache_path("333333")).page.directory, "Example page_333333")
 
     def test_reports_server_hierarchy_rejection_without_changing_local_state(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
@@ -189,7 +180,9 @@ class TestPageMove(unittest.TestCase):
             after = self._snapshot(workarea)
             self.assertEqual({path: after[path] for path in before}, before)
             self.assertTrue(
-                (workarea.root_dir / "Root page" / "Current parent" / "Example page" / "Descendant" / "content.md").is_file())
+                (
+                    workarea.root_dir / "Root page_100" / "Current parent_456789" / "Example page_123456" / "Descendant_222222" /
+                    "content.md").is_file())
             self.assertTrue(workarea.cache_path("222222").is_file())
             self.assertEqual(self.site.content["123456"]["parent_id"], "456789")
 
@@ -220,7 +213,8 @@ class TestPageMove(unittest.TestCase):
 
             self._pull(workarea, ["123456"])
 
-            self.assertTrue((workarea.root_dir / "Root page" / "New parent" / "Example page" / "content.md").is_file())
+            self.assertTrue(
+                (workarea.root_dir / "Root page_100" / "New parent_987654" / "Example page_123456" / "content.md").is_file())
             self.assertEqual(PageState.load(workarea.cache_path("123456")).page.parent_id, "987654")
 
 

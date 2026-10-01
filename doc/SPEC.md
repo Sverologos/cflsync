@@ -132,11 +132,11 @@ where the next pull would move its directory (see
 `page create PARENT_PAGE_REF TITLE` resolves `PARENT_PAGE_REF`, creates an
 empty child page remotely, then runs the equivalent of `page pull` for its
 returned ID. Before creating the remote child, it installs the parent and any
-missing ancestors. If a cached sibling uses the new page's directory name, the
-created page gets the page-ID suffix (see
-[Workarea and local representation](#workarea-and-local-representation)). Any
-other entry of that name in the parent directory is refused before the page is
-created remotely. It has no offline mode, so each local page begins with
+missing ancestors. The new page's directory name carries its page ID, which is
+only known once the page exists, so the pull after creation checks it for
+clashes with unmanaged entries (see
+[Workarea and local representation](#workarea-and-local-representation)). It
+has no offline mode, so each local page begins with
 Confluence-authoritative metadata.
 
 `page rename PAGE_REF TITLE` requires the referenced managed page to be in
@@ -144,9 +144,9 @@ sync. It updates the remote title with optimistic concurrency, rewrites the
 generated title heading, renames the title-derived local directory, and writes
 the updated cache state. The directory keeps its parent; child page directories
 and unmanaged files move with it, and only the renamed page's cache entry
-changes. The new name keeps an existing page-ID suffix, and gets one if a
-cached sibling uses it. Another entry of that name in the parent directory is
-refused before the remote update. `TITLE` must be non-empty, single-line text
+changes. The new name is derived from the new title and keeps the page-ID
+suffix. Another entry of that name in the parent directory is refused before
+the remote update. `TITLE` must be non-empty, single-line text
 without surrounding whitespace. It is the explicit local-title operation;
 `page push` continues to reject an edited title heading. The root page may be
 renamed.
@@ -154,9 +154,9 @@ renamed.
 `page move PAGE_REF NEW_PARENT_REF` requires the referenced managed page to be
 in sync, and not to be the workarea's root page. `NEW_PARENT_REF` resolves to a
 page in the workarea's tree. Before the remote update, it installs the new
-parent and any missing ancestors. The page keeps its directory name, and gets
-the page-ID suffix if a cached sibling in the new parent uses it; another entry
-of that name is refused. It then changes the remote parent, moves
+parent and any missing ancestors. The page keeps its directory name, which
+carries its page ID and so cannot clash with a sibling page; another entry of
+that name is refused. It then changes the remote parent, moves
 the page directory, with its child pages and unmanaged files, into the new
 parent's directory, and records the new parent in the cache. The Markdown is
 unchanged. If Confluence rejects the update, installed ancestors remain.
@@ -333,11 +333,11 @@ hierarchy:
     cache/
       123456.json
       123457.json
-  <root-page-title>/
+  <root-page-title>_<root-page-id>/
     content.md
     _attachments/
       <attachment filename>
-    <child-page-title>/
+    <child-page-title>_<child-page-id>/
       content.md
       _attachments/
 ```
@@ -367,34 +367,25 @@ names starting with `_`, such as `_attachments`, stay reserved for cflsync.
 Trailing spaces are encoded as `%20`, and Windows device names such as `CON`
 are escaped.
 
-A name has at most 64 characters, and at most 255 UTF-8 bytes. A longer name is
-cut between characters, never inside an escape, and a space left at the end of
-the cut is dropped.
+Every page directory name, including the root page's, ends in `_` and the
+page ID, as in `Release notes_123456`; the encoded title comes first. A name
+has at most 64 characters, and at most 255 UTF-8 bytes, including the suffix.
+A longer title is cut between characters, never inside an escape, to make room
+for the full suffix, and a space left at the end of the cut is dropped. A title
+that itself ends in `_` and digits, such as `Beta_300` for page 400, gets the
+suffix as well: `Beta_300_400`.
 
-Sibling pages whose names are equal, compared case-insensitively and after NFC
-normalization (because some filesystems store names decomposed), are
-disambiguated with a suffix: `_` and the page ID, as in `Release notes_123456`.
-The suffix counts towards the 64-character limit; the title part is cut to make
-room. Suffixes are assigned as follows:
+Because page IDs are unique, sibling names never clash, also when compared
+case-insensitively and after NFC normalization, and a name depends only on the
+page's title and ID, not on its siblings or on history. The page ID can be read
+back from a directory name: it is the digits after the last `_`. A cache entry
+whose directory name does not end in its own page ID is invalid.
 
-- A page arriving next to a cached sibling that uses its name gets the suffix;
-  the existing directory is not renamed.
-- When `pull` installs several new siblings with the same name, all of them get
-  the suffix, so the result does not depend on their order.
-- A suffix is stable: it is kept when the clash disappears, and after a rename
-  or move. A rename or move into a name a cached sibling uses adds one.
-- A title that literally equals a suffixed name, such as `Beta_300`, is itself
-  suffixed if that name is taken.
-
-Local paths therefore depend on history: two workareas of the same tree can use
-`Title` and `Title_123456` for the same page. Only the page ID identifies a
-page across workareas.
-
-The name is presentation only: the cache's page ID and directory name are
-authoritative. A pull moves a page directory only if its target is unused;
-otherwise it stops without overwriting data. An unmanaged entry with the same
-name as a page's directory is never suffixed around: the page fails, and the
-entry is left untouched.
+The cache's page ID and directory name are authoritative; after a remote rename
+not yet pulled, the cached name still reflects the old title. A pull moves a
+page directory only if its target is unused; otherwise it stops without
+overwriting data. An unmanaged entry with the same name as a page's directory
+makes the page fail, and the entry is left untouched.
 
 On Windows, a page directory cannot be renamed, moved, or removed when cflsync
 is running from inside it. The command stops before mutation and asks the user
@@ -446,7 +437,7 @@ or directories. Format 3 is:
     "id": "123457",
     "title": "Example page",
     "parent_id": "123456",
-    "directory": "Example page",
+    "directory": "Example page_123457",
     "version": 17,
     "content_hash": "..."
   },

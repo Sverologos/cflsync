@@ -68,7 +68,7 @@ class CopyTestCase(unittest.TestCase):
         self.assertEqual(local_snapshot(workarea), local)
         self.assertEqual((self.site.content, self.site.attachments), remote)
         self.assertTrue(all(request.method == "GET" for request in self.site.requests))
-        self.assertFalse((workarea.root_dir / "Root" / "Missing destination").exists())
+        self.assertFalse((workarea.root_dir / "Root_100" / "Missing destination_300").exists())
 
     def _copy(self, workarea, source="200", title="Copy", parent=None):
         return run_with_site(self.site, workarea, lambda: self.assertEqual(PageCopyCommand().run(source, title, parent), 0))
@@ -79,7 +79,7 @@ class TestCopySourceEligibility(CopyTestCase):
     def test_unchanged_source_is_eligible_and_unmanaged_files_are_ignored(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea)
-            directory = workarea.root_dir / "Root" / "Source"
+            directory = workarea.root_dir / "Root_100" / "Source_200"
             (directory / "notes.txt").write_text("unmanaged")
             (directory / "_attachments" / "unreferenced-local.txt").write_text("unmanaged")
             before = local_snapshot(workarea)
@@ -94,7 +94,7 @@ class TestCopySourceEligibility(CopyTestCase):
         for change in ["content", "heading", "attachment", "removed-attachment", "new-attachment", "both"]:
             with self.subTest(change=change), temporary_workarea(root_page_id="100") as workarea:
                 self._pull(workarea)
-                directory = workarea.root_dir / "Root" / "Source"
+                directory = workarea.root_dir / "Root_100" / "Source_200"
                 content = directory / "content.md"
                 if change in {"content", "both"}:
                     content.write_text(content.read_text() + "\nLocal edit\n")
@@ -141,9 +141,9 @@ class TestCopySourceEligibility(CopyTestCase):
             with self.subTest(missing=missing), temporary_workarea(root_page_id="100") as workarea:
                 self._pull(workarea)
                 if missing == "content":
-                    (workarea.root_dir / "Root" / "Source" / "content.md").unlink()
+                    (workarea.root_dir / "Root_100" / "Source_200" / "content.md").unlink()
                 elif missing == "directory":
-                    shutil.rmtree(workarea.root_dir / "Root" / "Source")
+                    shutil.rmtree(workarea.root_dir / "Root_100" / "Source_200")
                 else:
                     workarea.cache_path("200").unlink()
 
@@ -229,28 +229,29 @@ class TestCopyDestinationPreparation(CopyTestCase):
             parent = self._prepare(workarea, source_id="900", parent_ref="400")
 
             self.assertEqual(parent.id, "400")
-            self.assertTrue((workarea.root_dir / "Root" / "Missing destination" / "Deep parent" / "content.md").is_file())
+            self.assertTrue(
+                (workarea.root_dir / "Root_100" / "Missing destination_300" / "Deep parent_400" / "content.md").is_file())
             self.assertEqual(set(workarea.page_state_paths()), {"100", "300", "400"})
 
     def test_dirty_cached_ancestors_are_kept_and_missing_directories_restored(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea, "300")
-            root_content = workarea.root_dir / "Root" / "content.md"
+            root_content = workarea.root_dir / "Root_100" / "content.md"
             root_content.write_text(root_content.read_text() + "\nLocal parent edit\n")
             before = root_content.read_bytes()
-            shutil.rmtree(workarea.root_dir / "Root" / "Missing destination")
+            shutil.rmtree(workarea.root_dir / "Root_100" / "Missing destination_300")
 
             self._prepare(workarea, source_id="900", parent_ref="300")
 
             self.assertEqual(root_content.read_bytes(), before)
-            self.assertTrue((workarea.root_dir / "Root" / "Missing destination" / "content.md").is_file())
+            self.assertTrue((workarea.root_dir / "Root_100" / "Missing destination_300" / "content.md").is_file())
 
     def test_cached_parent_moved_outside_tree_is_refused_before_installation(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea, "300")
             self.site.content["300"]["parent_id"] = "900"
             before = local_snapshot(workarea)
-            for ref in ["300", "Missing destination", workarea.root_dir / "Root" / "Missing destination"]:
+            for ref in ["300", "Missing destination", workarea.root_dir / "Root_100" / "Missing destination_300"]:
                 with self.subTest(ref=ref):
                     with self.assertRaisesRegex(SyncError, "destination parent.*not in"):
                         self._prepare(workarea, source_id="900", parent_ref=ref)
@@ -271,7 +272,7 @@ class TestCopyDestinationPreparation(CopyTestCase):
 
     def test_unmanaged_ancestor_clash_aborts_whole_plan_and_partial_failure_keeps_parents(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
-            (workarea.root_dir / "Root").mkdir()
+            (workarea.root_dir / "Root_100").mkdir()
             before = local_snapshot(workarea)
             with self.assertRaisesRegex(SyncError, "already exists"):
                 self._prepare(workarea, source_id="900", parent_ref="300")
@@ -287,7 +288,7 @@ class TestCopyDestinationPreparation(CopyTestCase):
                 self._prepare(workarea, source_id="900", parent_ref="300")
 
             self.assertEqual(list(workarea.page_state_paths()), ["100"])
-            self.assertTrue((workarea.root_dir / "Root" / "content.md").is_file())
+            self.assertTrue((workarea.root_dir / "Root_100" / "content.md").is_file())
             self.assertTrue(all(request.method == "GET" for request in self.site.requests))
 
 
@@ -308,7 +309,7 @@ class TestPageCopySuccess(CopyTestCase):
             created = next(key for key in self.site.content if key not in remote[0])
             copied = self.site.content[created]
             self.assertEqual((copied["parent_id"], copied["version"], copied["labels"]), ("100", 1, ["label"]))
-            self.assertEqual(output, f"Copied page 'Copy' ({created}) to Root/Copy\n")
+            self.assertEqual(output, f"Copied page 'Copy' ({created}) to Root_100/Copy_{created}\n")
             for key, value in remote[0].items():
                 self.assertEqual(self.site.content[key], value)
 
@@ -331,8 +332,8 @@ class TestPageCopySuccess(CopyTestCase):
             for parent_form in ["id", "title", "directory", "content"]:
                 with self.subTest(source=source_form, parent=parent_form), temporary_workarea(root_page_id="100") as workarea:
                     self._pull(workarea)
-                    source_dir = workarea.root_dir / "Root" / "Source"
-                    parent_dir = workarea.root_dir / "Root"
+                    source_dir = workarea.root_dir / "Root_100" / "Source_200"
+                    parent_dir = workarea.root_dir / "Root_100"
                     source = {
                         "id": "200",
                         "title": "Source",
@@ -346,7 +347,7 @@ class TestPageCopySuccess(CopyTestCase):
 
                     output = self._copy(workarea, source=source, parent=parent)
 
-                    self.assertIn("to Root/Copy", output)
+                    self.assertIn("to Root_100/Copy_", output)
 
     def test_root_source_and_source_descendant_explicit_parents(self) -> None:
         self.site.add_page("400", "Descendant", parent_id="200")
@@ -369,7 +370,7 @@ class TestPageCopySuccess(CopyTestCase):
 
             self.assertIn("Pulled parent 'Root'", output)
             self.assertIn("Pulled parent 'Missing destination'", output)
-            self.assertIn("to Root/Missing destination/Copy", output)
+            self.assertIn("to Root_100/Missing destination_300/Copy_", output)
             state = next(state for state in workarea.page_tree().states.values() if state.page.title == "Copy")
             self.assertEqual(self.site.content[state.page.id]["space_id"], "98765")
             self.assertEqual(self.site.content[state.page.id]["labels"], ["external"])
@@ -378,14 +379,15 @@ class TestPageCopySuccess(CopyTestCase):
     def test_native_disambiguation_uses_actual_title_and_ignores_requested_name_clash(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea)
-            (workarea.root_dir / "Root" / "Copy").mkdir()
+            (workarea.root_dir / "Root_100" / "Copy").mkdir()
             self.site.copy_titles = ["Copy (2)"]
 
             output = self._copy(workarea)
 
             self.assertIn("Copied page 'Copy (2)'", output)
-            self.assertIn("to Root/Copy %282%29", output)
-            self.assertTrue((workarea.root_dir / "Root" / "Copy %282%29" / "content.md").is_file())
+            page_id = next(key for key, value in self.site.content.items() if value["title"] == "Copy (2)")
+            self.assertIn(f"to Root_100/Copy %282%29_{page_id}", output)
+            self.assertTrue((workarea.root_dir / "Root_100" / f"Copy %282%29_{page_id}" / "content.md").is_file())
 
     def test_invalid_title_and_dirty_source_precede_destination_installation(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
@@ -395,7 +397,7 @@ class TestPageCopySuccess(CopyTestCase):
 
             self.assertEqual(self.site.requests, [])
             self._pull(workarea)
-            path = workarea.root_dir / "Root" / "Source" / "content.md"
+            path = workarea.root_dir / "Root_100" / "Source_200" / "content.md"
             path.write_text(path.read_text() + "\nEdit\n")
             before = local_snapshot(workarea)
             with self.assertRaisesRegex(SyncError, "synchronize the source first"):
@@ -512,7 +514,7 @@ class TestPageCopyRecovery(CopyTestCase):
                     self.assertIn("path is too long", str(error.exception))
 
                 self.assertEqual(local_snapshot(workarea), before)
-                self.assertFalse((workarea.root_dir / "Root" / "Copy").exists())
+                self.assertFalse((workarea.root_dir / "Root_100" / f"Copy_{page_id}").exists())
                 self.assertFalse(any(path.name.startswith(".cflsync-stage-") for path in workarea.root_dir.iterdir()))
                 self._pull(workarea, page_id)
                 self.assertTrue(workarea.cache_path(page_id).is_file())
@@ -521,7 +523,8 @@ class TestPageCopyRecovery(CopyTestCase):
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea)
             self.site.copy_titles = ["Copy (2)"]
-            clash = workarea.root_dir / "Root" / "copy %282%29"
+            # The fake site assigns the next sequential ID to the copy.
+            clash = workarea.root_dir / "Root_100" / f"copy %282%29_{self.site.peek_next_id()}"
             clash.write_bytes(b"unmanaged")
             with self.assertRaisesRegex(SyncError, "copied page.*remotely.*already exists.*page pull") as error:
                 self._copy(workarea)
@@ -560,8 +563,7 @@ class TestPageCopyRecovery(CopyTestCase):
                 state = next(state for state in workarea.page_tree().states.values() if state.page.title == title)
                 self.assertLessEqual(len(state.page.directory), 64)
                 self.assertTrue(workarea.page_directory(state).is_dir())
-                if title == "source" or title.startswith("Re"):
-                    self.assertTrue(state.page.directory.endswith("_" + state.page.id))
+                self.assertTrue(state.page.directory.endswith("_" + state.page.id))
 
 
 # vim: set ts=4 sw=4 et tw=132:

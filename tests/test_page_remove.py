@@ -71,14 +71,14 @@ class TestPageRemove(unittest.TestCase):
     def test_removes_a_leaf_page_remotely_and_locally(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea, "100", "400")
-            (workarea.root_dir / "Root" / "Other" / "notes.txt").write_text("unmanaged", encoding="utf-8")
+            (workarea.root_dir / "Root_100" / "Other_400" / "notes.txt").write_text("unmanaged", encoding="utf-8")
 
             self._remove(workarea, "400")
 
             self.assertNotIn("400", self.site.content)
-            self.assertFalse((workarea.root_dir / "Root" / "Other").exists())
+            self.assertFalse((workarea.root_dir / "Root_100" / "Other_400").exists())
             self.assertFalse(workarea.cache_path("400").exists())
-            self.assertTrue((workarea.root_dir / "Root" / "content.md").is_file())
+            self.assertTrue((workarea.root_dir / "Root_100" / "content.md").is_file())
 
     def test_confirms_a_leaf_page_before_removing(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
@@ -110,10 +110,10 @@ class TestPageRemove(unittest.TestCase):
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea, "100", "200", "300")
 
-            lines = self._remove(workarea, str(workarea.root_dir / "Root" / "Child"))
+            lines = self._remove(workarea, str(workarea.root_dir / "Root_100" / "Child_200"))
 
             self.assertEqual(self._deletes(), ["/wiki/api/v2/pages/300", "/wiki/api/v2/pages/200"])
-            self.assertFalse((workarea.root_dir / "Root" / "Child").exists())
+            self.assertFalse((workarea.root_dir / "Root_100" / "Child_200").exists())
             self.assertEqual(sorted(workarea.page_tree().states), ["100"])
             self.assertEqual(lines, ["Removed page 'Child' (200) and 1 descendants."])
 
@@ -121,13 +121,13 @@ class TestPageRemove(unittest.TestCase):
         self.site.add_page("500", "Remote only", parent_id="200")
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea, "100", "200", "300")
-            (workarea.root_dir / "Root" / "Child" / "notes.txt").write_text("unmanaged", encoding="utf-8")
+            (workarea.root_dir / "Root_100" / "Child_200" / "notes.txt").write_text("unmanaged", encoding="utf-8")
 
             lines = self._remove(workarea, "200", force=False)
 
             self.assertEqual(lines[0], "This removes page 'Child' (200) and all pages below it, remotely and locally:")
-            self.assertIn("  Page '200' (Child): Root/Child; unmanaged files, which cannot be restored: notes.txt", lines)
-            self.assertIn("  Page '300' (Grandchild): Root/Child/Grandchild", lines)
+            self.assertIn("  Page '200' (Child): Root_100/Child_200; unmanaged files, which cannot be restored: notes.txt", lines)
+            self.assertIn("  Page '300' (Grandchild): Root_100/Child_200/Grandchild_300", lines)
             self.assertIn("  Page '500' (Remote only): -; not present locally", lines)
             self.assertEqual(self.prompts, ["Remove page 'Child' (200) and 2 descendant pages? [y/N] "])
             self.assertEqual(sorted(self.site.content), ["100", "400"])
@@ -135,7 +135,7 @@ class TestPageRemove(unittest.TestCase):
     def test_removes_a_cached_descendant_whose_directory_is_missing(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea, "100", "200", "300")
-            shutil.rmtree(workarea.root_dir / "Root" / "Child" / "Grandchild")
+            shutil.rmtree(workarea.root_dir / "Root_100" / "Child_200" / "Grandchild_300")
 
             self._remove(workarea, "200")
 
@@ -144,7 +144,7 @@ class TestPageRemove(unittest.TestCase):
 
     def test_refuses_unsynchronized_pages_in_the_subtree_even_with_force(self) -> None:
         cases = [
-            ("local", lambda workarea: self._edit(workarea, "Root", "Child", "Grandchild")),
+            ("local", lambda workarea: self._edit(workarea, "Root_100", "Child_200", "Grandchild_300")),
             ("remote", lambda workarea: self.site.content["300"].update(version=2))]
         for name, change in cases:
             with self.subTest(change=name):
@@ -179,7 +179,7 @@ class TestPageRemove(unittest.TestCase):
 
             self.assertEqual(self._deletes(), [])
             self.assertEqual(self.prompts, ["Remove page 'Child' (200) and 1 descendant page? [y/N] "])
-            self.assertFalse((workarea.root_dir / "Root" / "Child").exists())
+            self.assertFalse((workarea.root_dir / "Root_100" / "Child_200").exists())
             self.assertEqual(sorted(workarea.page_tree().states), ["100"])
 
     def test_removes_the_local_copy_of_a_leaf_already_removed_remotely(self) -> None:
@@ -190,13 +190,13 @@ class TestPageRemove(unittest.TestCase):
             self._remove(workarea, "400", force=False)
 
             self.assertEqual(self.prompts, ["Remove local copy of page 'Other' (400)? [y/N] "])
-            self.assertFalse((workarea.root_dir / "Root" / "Other").exists())
+            self.assertFalse((workarea.root_dir / "Root_100" / "Other_400").exists())
             self.assertFalse(workarea.cache_path("400").exists())
 
     def test_local_changes_on_a_page_removed_remotely_need_force(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea, "100", "400")
-            self._edit(workarea, "Root", "Other")
+            self._edit(workarea, "Root_100", "Other_400")
             del self.site.content["400"]
 
             self._refused(
@@ -207,7 +207,7 @@ class TestPageRemove(unittest.TestCase):
 
             self._remove(workarea, "400", force=True)
 
-            self.assertFalse((workarea.root_dir / "Root" / "Other").exists())
+            self.assertFalse((workarea.root_dir / "Root_100" / "Other_400").exists())
 
     def test_a_remote_failure_stops_the_removal_and_a_rerun_completes_it(self) -> None:
         self.site.add_page("500", "Sibling", parent_id="200")
@@ -220,8 +220,8 @@ class TestPageRemove(unittest.TestCase):
                 self._remove(workarea, "200")
 
             self.assertEqual(sorted(workarea.page_tree().states), ["100", "200", "300"])
-            self.assertFalse((workarea.root_dir / "Root" / "Child" / "Sibling").exists())
-            self.assertTrue((workarea.root_dir / "Root" / "Child" / "Grandchild" / "content.md").is_file())
+            self.assertFalse((workarea.root_dir / "Root_100" / "Child_200" / "Sibling_500").exists())
+            self.assertTrue((workarea.root_dir / "Root_100" / "Child_200" / "Grandchild_300" / "content.md").is_file())
 
             self._remove(workarea, "200")
 
@@ -231,7 +231,7 @@ class TestPageRemove(unittest.TestCase):
     def test_refuses_on_windows_while_the_current_directory_is_inside_the_subtree(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea, "100", "200", "300")
-            child = workarea.root_dir / "Root" / "Child"
+            child = workarea.root_dir / "Root_100" / "Child_200"
 
             # The current directory is inside the subtree exactly when it is inside the removed page's directory.
             with patch("cflsync.workarea._is_windows", return_value=True):
@@ -270,7 +270,7 @@ class TestPageRemove(unittest.TestCase):
             self._run(workarea, lambda: InitCommand().run("901"))
             self._run(workarea, lambda: RepositoryPullCommand().run())
             self.assertEqual(workarea.root_page_id, "901")
-            self.assertTrue((workarea.root_dir / "New root" / "content.md").is_file())
+            self.assertTrue((workarea.root_dir / "New root_901" / "content.md").is_file())
 
 
 # vim: set ts=4 sw=4 et tw=132:

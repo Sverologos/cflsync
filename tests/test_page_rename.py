@@ -85,20 +85,21 @@ class TestPageRename(unittest.TestCase):
     def test_renames_the_remote_page_heading_directory_and_cache(self) -> None:
         with temporary_workarea() as workarea:
             self._pull(workarea)
-            source = workarea.root_dir / "Example page"
+            source = workarea.root_dir / "Example page_123456"
             (source / "notes.txt").write_text("unmanaged", encoding="utf-8")
 
             _, status, transport = self._rename(workarea, "Renamed page")
 
             state = PageState.load(workarea.cache_path("123456"))
-            target = workarea.root_dir / "Renamed page"
+            target = workarea.root_dir / "Renamed page_123456"
             request = transport.requests[-1]
             self.assertEqual(status, 0)
             self.assertFalse(source.exists())
             self.assertEqual((target / "content.md").read_text(encoding="utf-8"), "# Renamed page\n\nExample\n")
             self.assertEqual((target / "_attachments/diagram.png").read_bytes(), b"PNG")
             self.assertEqual((target / "notes.txt").read_text(encoding="utf-8"), "unmanaged")
-            self.assertEqual((state.page.title, state.page.directory, state.page.version), ("Renamed page", "Renamed page", 18))
+            self.assertEqual(
+                (state.page.title, state.page.directory, state.page.version), ("Renamed page", "Renamed page_123456", 18))
             self.assertEqual(request.json_body()["title"], "Renamed page")
             self.assertEqual(request.json_body()["body"]["value"], self._page()["body"]["atlas_doc_format"]["value"])
 
@@ -108,7 +109,8 @@ class TestPageRename(unittest.TestCase):
                 with temporary_workarea() as workarea:
                     self._pull(workarea)
                     if local:
-                        (workarea.root_dir / "Example page/content.md").write_text("# Example page\n\nEdited\n", encoding="utf-8")
+                        (workarea.root_dir / "Example page_123456/content.md").write_text(
+                            "# Example page\n\nEdited\n", encoding="utf-8")
                     before = self._snapshot(workarea)
 
                     with self.assertRaisesRegex(SyncError, "rename conflicts"):
@@ -185,30 +187,22 @@ class TestPageRenameInTree(unittest.TestCase):
 
             run_with_site(self.site, workarea, lambda: PageRenameCommand().run("200", "Renamed child"))
 
-            renamed = workarea.root_dir / "Root" / "Renamed child"
-            self.assertFalse((workarea.root_dir / "Root" / "Child").exists())
+            renamed = workarea.root_dir / "Root_100" / "Renamed child_200"
+            self.assertFalse((workarea.root_dir / "Root_100" / "Child_200").exists())
             self.assertEqual((renamed / "content.md").read_text(encoding="utf-8"), "# Renamed child\n")
-            self.assertEqual(workarea.page_directory(PageState.load(workarea.cache_path("300"))), renamed / "Grandchild")
+            self.assertEqual(workarea.page_directory(PageState.load(workarea.cache_path("300"))), renamed / "Grandchild_300")
             self.assertEqual(self.site.content["200"]["title"], "Renamed child")
 
-    def test_suffixes_a_rename_into_a_name_a_cached_sibling_uses(self) -> None:
+    def test_a_rename_keeps_the_page_id_suffix(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea, "100", "200", "400")
 
-            run_with_site(self.site, workarea, lambda: PageRenameCommand().run("400", "child"))
+            run_with_site(self.site, workarea, lambda: PageRenameCommand().run("400", "Renamed other"))
 
-            self.assertEqual(self.site.content["400"]["title"], "child")
-            self.assertTrue((workarea.root_dir / "Root" / "child_400" / "content.md").is_file())
-            self.assertTrue((workarea.root_dir / "Root" / "Child" / "content.md").is_file())
-
-    def test_a_rename_keeps_an_existing_suffix(self) -> None:
-        with temporary_workarea(root_page_id="100") as workarea:
-            self._pull(workarea, "100", "200", "400")
-            run_with_site(self.site, workarea, lambda: PageRenameCommand().run("400", "child"))
-
-            run_with_site(self.site, workarea, lambda: PageRenameCommand().run("400", "Other again"))
-
-            self.assertEqual(PageState.load(workarea.cache_path("400")).page.directory, "Other again_400")
+            self.assertEqual(PageState.load(workarea.cache_path("400")).page.directory, "Renamed other_400")
+            self.assertTrue((workarea.root_dir / "Root_100" / "Renamed other_400" / "content.md").is_file())
+            self.assertFalse((workarea.root_dir / "Root_100" / "Other_400").exists())
+            self.assertTrue((workarea.root_dir / "Root_100" / "Child_200" / "content.md").is_file())
 
     def _snapshot(self, workarea):
         return {
@@ -221,31 +215,31 @@ class TestPageRenameInTree(unittest.TestCase):
 
             run_with_site(self.site, workarea, lambda: PageRenameCommand().run("100", "Renamed root"))
 
-            self.assertEqual([path.name for path in workarea.root_dir.iterdir() if path.name != ".cflsync"], ["Renamed root"])
-            self.assertTrue((workarea.root_dir / "Renamed root" / "Child" / "Grandchild" / "content.md").is_file())
-            self.assertEqual(workarea.page_tree().directory("300"), "Renamed root/Child/Grandchild")
+            self.assertEqual([path.name for path in workarea.root_dir.iterdir() if path.name != ".cflsync"], ["Renamed root_100"])
+            self.assertTrue((workarea.root_dir / "Renamed root_100" / "Child_200" / "Grandchild_300" / "content.md").is_file())
+            self.assertEqual(workarea.page_tree().directory("300"), "Renamed root_100/Child_200/Grandchild_300")
             self.assertEqual(self.site.content["100"]["title"], "Renamed root")
 
     def test_writes_only_the_renamed_page_cache_entry_and_carries_descendant_edits(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea, "100", "200", "300")
-            grandchild = workarea.root_dir / "Root" / "Child" / "Grandchild" / "content.md"
+            grandchild = workarea.root_dir / "Root_100" / "Child_200" / "Grandchild_300" / "content.md"
             grandchild.write_text("# Grandchild\n\nLocal edit\n", encoding="utf-8")
             cached = {page_id: workarea.cache_path(page_id).read_bytes() for page_id in ["100", "300"]}
 
             run_with_site(self.site, workarea, lambda: PageRenameCommand().run("200", "Renamed child"))
 
             self.assertEqual({page_id: workarea.cache_path(page_id).read_bytes() for page_id in ["100", "300"]}, cached)
-            moved = workarea.root_dir / "Root" / "Renamed child" / "Grandchild" / "content.md"
+            moved = workarea.root_dir / "Root_100" / "Renamed child_200" / "Grandchild_300" / "content.md"
             self.assertEqual(moved.read_text(encoding="utf-8"), "# Grandchild\n\nLocal edit\n")
 
     def test_refuses_an_unmanaged_entry_in_the_parent_before_the_remote_update(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea, "100", "200")
-            (workarea.root_dir / "Root" / "renamed child").mkdir()
+            (workarea.root_dir / "Root_100" / "renamed child_200").mkdir()
             before = self._snapshot(workarea)
 
-            with self.assertRaisesRegex(SyncError, "page directory 'Root/Renamed child' already exists"):
+            with self.assertRaisesRegex(SyncError, "page directory 'Root_100/Renamed child_200' already exists"):
                 run_with_site(self.site, workarea, lambda: PageRenameCommand().run("200", "Renamed child"))
 
             self.assertEqual(self._snapshot(workarea), before)
@@ -267,7 +261,7 @@ class TestPageRenameInTree(unittest.TestCase):
 
             self._pull(workarea, "200")
 
-            self.assertTrue((workarea.root_dir / "Root" / "Renamed child" / "Grandchild" / "content.md").is_file())
+            self.assertTrue((workarea.root_dir / "Root_100" / "Renamed child_200" / "Grandchild_300" / "content.md").is_file())
             self.assertEqual(PageState.load(workarea.cache_path("200")).page.title, "Renamed child")
 
 

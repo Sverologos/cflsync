@@ -78,21 +78,23 @@ or reserved on some supported platform are escaped. Names are compared
 case-insensitively and after NFC normalization, since some filesystems store
 names decomposed.
 
-Names are capped at 64 characters, including a disambiguation suffix. The cap
+Names are capped at 64 characters, including the page-ID suffix. The cap
 bounds every name well below the per-name filesystem limit, which a single long
 non-Latin title could otherwise exceed at any depth, and 97% of the titles of a
 measured 2,685-page production tree fit within it unchanged. It does not bound
 path length, which is dominated by depth.
 
-Sibling pages with the same name are told apart by appending the page ID. The
-suffix is stable: once added, it is never removed, and only the page that
-arrives next to an existing name gets one. Recomputing suffixes would make
-paths a pure function of the remote tree, but unrelated remote events would
-then rename local directories, which is disruptive for editors, Git, and on
-Windows in particular. The price is that local paths depend on history; only
-the page ID identifies a page across workareas. On a first pull, every new page
-of a clashing group is suffixed, so that the result does not depend on
-discovery order.
+Every name ends in `_` and the page ID. A page's local path is then a function
+of its own title and ID and those of its ancestors: it does not depend on
+siblings, installation order, how much of the tree a command discovered, or
+naming history. This lets page links point to pages that are not installed yet,
+at the path where a later pull installs them, and lets push recover the page ID
+from a link's path even after the target was renamed or moved. Sibling clashes,
+and the bookkeeping they need, disappear. The cost is readability: every
+directory name carries an ID. Suffixing only on a clash was rejected because
+the resulting paths depend on history and cannot be computed for pages not yet
+pulled; suffixing only on a clash with a remote sibling was rejected because a
+new remote sibling would then rename an existing directory.
 
 ### Path length
 
@@ -239,8 +241,12 @@ The full mapping, opaque-marker format, and required conversion tests are in
 - **Full paths in the cache:** a subtree relocation would have to rewrite every
   descendant's entry after one rename, leaving stale paths after an
   interruption, or require a journal.
-- **Recomputed (unstable) suffixes:** paths would follow from the remote tree
-  alone, but unrelated remote events would rename local directories.
+- **Suffixes only on a sibling clash:** readable names in the common case, but
+  either history-dependent (stable suffixes) or renamed by unrelated remote
+  events (recomputed suffixes); neither yields paths computable from a page
+  reference.
+- **ID-only directory names:** renames would never move a directory, but names
+  are unreadable.
 - **Precomputed path-length limits:** a fixed limit cannot match every system
   configuration; the operating system is the only reliable judge.
 

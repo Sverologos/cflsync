@@ -16,7 +16,7 @@ from tests.support import example_page_state, temporary_workarea
 PAGE_HASH = hashlib.sha256(b"page").hexdigest()
 
 
-def page_metadata(id="123456", title="Example page", parent_id=None, directory="Example page", content_hash=PAGE_HASH):
+def page_metadata(id="123456", title="Example page", parent_id=None, directory="Example page_123456", content_hash=PAGE_HASH):
     return PageMetadata(id, title, parent_id, directory, 17, content_hash)
 
 
@@ -53,7 +53,7 @@ class TestPageStateSerialization(unittest.TestCase):
     def test_serializes_the_format_3_state_shape(self) -> None:
         attachment_hash = hashlib.sha256(b"attachment").hexdigest()
         state = PageState(
-            page=page_metadata(id="123457", title="Child", parent_id="123456", directory="Child"),
+            page=page_metadata(id="123457", title="Child", parent_id="123456", directory="Child_123457"),
             attachments={"diagram.png": AttachmentMetadata(id="att987654", version=3, content_hash=attachment_hash)})
 
         self.assertEqual(
@@ -63,7 +63,7 @@ class TestPageStateSerialization(unittest.TestCase):
                     "id": "123457",
                     "title": "Child",
                     "parent_id": "123456",
-                    "directory": "Child",
+                    "directory": "Child_123457",
                     "version": 17,
                     "content_hash": PAGE_HASH},
                 "attachments": {
@@ -73,7 +73,7 @@ class TestPageStateSerialization(unittest.TestCase):
                         "content_hash": attachment_hash}}})
 
     def test_round_trips_a_root_and_a_child_state(self) -> None:
-        for state in [example_page_state(), example_page_state("123457", "Child", "Child", "123456")]:
+        for state in [example_page_state(), example_page_state("123457", "Child", "Child_123457", "123456")]:
             with self.subTest(page_id=state.page.id):
                 self.assertEqual(PageState.from_json(state.to_json()), state)
 
@@ -105,9 +105,7 @@ class TestPageStateSerialization(unittest.TestCase):
 class TestPageTree(unittest.TestCase):
 
     def _states(self, *pages):
-        return {
-            page_id: example_page_state(page_id, directory=directory, parent_id=parent_id)
-            for page_id, directory, parent_id in pages}
+        return {page_id: example_page_state(page_id, title, parent_id=parent_id) for page_id, title, parent_id in pages}
 
     def test_derives_directories_from_the_chain_of_cached_parents(self) -> None:
         tree = PageTree(
@@ -116,10 +114,10 @@ class TestPageTree(unittest.TestCase):
         self.assertEqual(
             {page_id: tree.directory(page_id)
              for page_id in ["1", "2", "3", "4"]}, {
-                 "1": "Root",
-                 "2": "Root/Child",
-                 "3": "Root/Child/Grandchild",
-                 "4": "Root/Sibling"})
+                 "1": "Root_1",
+                 "2": "Root_1/Child_2",
+                 "3": "Root_1/Child_2/Grandchild_3",
+                 "4": "Root_1/Sibling_4"})
 
     def test_accepts_an_empty_cache(self) -> None:
         tree = PageTree({}, "1")
@@ -146,8 +144,8 @@ class TestPageTree(unittest.TestCase):
 
             tree = workarea.page_tree()
 
-            self.assertEqual((tree.root_page_id, tree.directory("2")), ("1", "Root/Child"))
-            self.assertEqual(workarea.page_directory_path(tree.directory("2")), workarea.root_dir / "Root" / "Child")
+            self.assertEqual((tree.root_page_id, tree.directory("2")), ("1", "Root_1/Child_2"))
+            self.assertEqual(workarea.page_directory_path(tree.directory("2")), workarea.root_dir / "Root_1" / "Child_2")
 
 
 # vim: set ts=4 sw=4 et tw=132:

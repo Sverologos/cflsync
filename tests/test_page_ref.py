@@ -122,8 +122,8 @@ class TestPageRefTitles(unittest.TestCase):
 
     def test_rejects_an_ambiguous_cached_title_without_an_api_request(self) -> None:
         with temporary_workarea() as workarea:
-            first = example_page_state("123456", title="Duplicate", directory="First")
-            second = example_page_state("234567", title="Duplicate", directory="Second")
+            first = example_page_state("123456", title="Duplicate", directory="First_123456")
+            second = example_page_state("234567", title="Duplicate", directory="Second_234567")
             first.save(workarea.cache_path(first.page.id))
             second.save(workarea.cache_path(second.page.id))
             api = FakeAPI()
@@ -213,7 +213,7 @@ class TestPageRefScope(unittest.TestCase):
 
     def test_trusts_the_cache_for_cached_pages(self) -> None:
         with temporary_workarea(root_page_id="300") as workarea:
-            state = example_page_state("900", title="Outside", directory="Outside")
+            state = example_page_state("900", title="Outside")
             state.save(workarea.cache_path(state.page.id))
 
             self.assertEqual(self._resolve(workarea, "900"), "900")
@@ -230,12 +230,12 @@ class TestPageRefScope(unittest.TestCase):
 
     def test_lists_ids_and_paths_of_an_ambiguous_cached_title(self) -> None:
         with temporary_workarea(root_page_id="300") as workarea:
-            for page_id, directory in [("400", "First"), ("500", "Second")]:
+            for page_id, directory in [("400", "First_400"), ("500", "Second_500")]:
                 state = example_page_state(page_id, title="Duplicate", directory=directory)
                 state.save(workarea.cache_path(state.page.id))
 
             with self.assertRaisesRegex(PageRefError,
-                                        r"multiple pages match cached title 'Duplicate': 400 \(First\), 500 \(Second\)"):
+                                        r"multiple pages match cached title 'Duplicate': 400 \(First_400\), 500 \(Second_500\)"):
                 self._resolve(workarea, "Duplicate")
 
 
@@ -251,7 +251,7 @@ class TestCopySourceResolution(unittest.TestCase):
         return PageRef.resolve_copy_source(value, workarea, self.site.client(), cwd=workarea.root_dir).page_id
 
     def _cache(self, workarea, page_id, title, parent_id=None, directory=None):
-        state = example_page_state(page_id, title=title, parent_id=parent_id, directory=directory or title)
+        state = example_page_state(page_id, title=title, parent_id=parent_id, directory=directory)
         state.save(workarea.cache_path(page_id))
         path = workarea.page_directory(state, must_exist=False)
         path.mkdir(parents=True, exist_ok=True)
@@ -266,10 +266,10 @@ class TestCopySourceResolution(unittest.TestCase):
     def test_cached_identity_and_all_local_forms_win_without_remote_lookup(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._cache(workarea, "100", "Root")
-            path = self._cache(workarea, "200", "Shared", "100", "300")
+            path = self._cache(workarea, "200", "Shared", "100", "300_200")
             self.site.content["200"]["title"] = "Remotely renamed"
             self.site.add_page("800", "Shared", parent_id="100")
-            for ref in ["200", "Shared", path, path / "content.md", "Root/300"]:
+            for ref in ["200", "Shared", path, path / "content.md", "Root_100/300_200"]:
                 with self.subTest(ref=ref):
                     self.assertEqual(self._resolve(workarea, ref), "200")
 
@@ -287,9 +287,9 @@ class TestCopySourceResolution(unittest.TestCase):
     def test_cached_ambiguity_reports_paths_without_fallback(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._cache(workarea, "100", "Root")
-            self._cache(workarea, "200", "Shared", "100", "First")
-            self._cache(workarea, "300", "Shared", "100", "Second")
-            with self.assertRaisesRegex(PageRefError, r"200 \(Root/First\).*300 \(Root/Second\)"):
+            self._cache(workarea, "200", "Shared", "100", "First_200")
+            self._cache(workarea, "300", "Shared", "100", "Second_300")
+            with self.assertRaisesRegex(PageRefError, r"200 \(Root_100/First_200\).*300 \(Root_100/Second_300\)"):
                 self._resolve(workarea, "Shared")
 
             self.assertEqual(self.site.requests, [])

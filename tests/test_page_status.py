@@ -90,7 +90,7 @@ class TestPageStatus(unittest.TestCase):
     def test_reports_local_page_and_attachment_changes(self) -> None:
         with temporary_workarea() as workarea:
             self._pull(workarea)
-            directory = workarea.root_dir / "Example page"
+            directory = workarea.root_dir / "Example page_123456"
             (directory / "content.md").write_text("# Example page\n\nEdited\n")
             (directory / "_attachments/diagram.png").write_bytes(b"edited")
 
@@ -102,7 +102,7 @@ class TestPageStatus(unittest.TestCase):
     def test_reports_a_referenced_new_attachment(self) -> None:
         with temporary_workarea() as workarea:
             self._pull(workarea)
-            directory = workarea.root_dir / "Example page"
+            directory = workarea.root_dir / "Example page_123456"
             (directory / "_attachments/added.png").write_bytes(b"ADDED")
             (directory / "_attachments/ignored.png").write_bytes(b"IGNORED")
             with (directory / "content.md").open("a") as page_file:
@@ -126,7 +126,7 @@ class TestPageStatus(unittest.TestCase):
     def test_reports_changes_on_both_sides(self) -> None:
         with temporary_workarea() as workarea:
             self._pull(workarea)
-            (workarea.root_dir / "Example page/content.md").write_text("# Example page\n\nEdited\n")
+            (workarea.root_dir / "Example page_123456/content.md").write_text("# Example page\n\nEdited\n")
 
             output, _, _ = self._status(workarea, page=self._page(version=18))
 
@@ -136,7 +136,7 @@ class TestPageStatus(unittest.TestCase):
     def test_reports_a_missing_page_directory_as_a_local_change(self) -> None:
         with temporary_workarea() as workarea:
             self._pull(workarea)
-            directory = workarea.root_dir / "Example page"
+            directory = workarea.root_dir / "Example page_123456"
             (directory / "_attachments/diagram.png").unlink()
             (directory / "_attachments").rmdir()
             (directory / "content.md").unlink()
@@ -154,7 +154,7 @@ class TestPageStatus(unittest.TestCase):
     def test_changes_nothing(self) -> None:
         with temporary_workarea() as workarea:
             self._pull(workarea)
-            (workarea.root_dir / "Example page/content.md").write_text("# Example page\n\nEdited\n")
+            (workarea.root_dir / "Example page_123456/content.md").write_text("# Example page\n\nEdited\n")
             before = self._snapshot(workarea)
 
             _, _, transport = self._status(workarea, page=self._page(version=18))
@@ -207,7 +207,7 @@ class TestPageStatusInTree(unittest.TestCase):
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea, "100", "200")
 
-            output = self._status(workarea, str(workarea.root_dir / "Root" / "Child" / "content.md"))
+            output = self._status(workarea, str(workarea.root_dir / "Root_100" / "Child_200" / "content.md"))
 
             self.assertIn("Page '200' (Child)", output)
             self.assertIn("remote: unchanged", output)
@@ -216,9 +216,9 @@ class TestPageStatusInTree(unittest.TestCase):
     def test_reports_the_relocation_of_a_remote_rename_or_move(self) -> None:
         cases = [
             ({
-                "title": "Renamed child"}, "location: moves from 'Root/Child' to 'Root/Renamed child' on pull"),
+                "title": "Renamed child"}, "location: moves from 'Root_100/Child_200' to 'Root_100/Renamed child_200' on pull"),
             ({
-                "parent_id": "400"}, "location: moves from 'Root/Child' to 'Root/Other/Child' on pull"), ]
+                "parent_id": "400"}, "location: moves from 'Root_100/Child_200' to 'Root_100/Other_400/Child_200' on pull"), ]
         for fields, expected in cases:
             with self.subTest(fields=fields):
                 self.site = self._site()
@@ -238,12 +238,12 @@ class TestPageStatusInTree(unittest.TestCase):
 
             output = self._status(workarea)
 
-            self.assertIn("location: moves from 'Root/Child' below page '400' on pull, which pulls that page first", output)
+            self.assertIn("location: moves from 'Root_100/Child_200' below page '400' on pull, which pulls that page first", output)
 
     def test_reports_a_page_deleted_remotely_with_its_local_changes(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea, "100", "200")
-            (workarea.root_dir / "Root" / "Child" / "content.md").write_text("# Child\n\nEdited\n", encoding="utf-8")
+            (workarea.root_dir / "Root_100" / "Child_200" / "content.md").write_text("# Child\n\nEdited\n", encoding="utf-8")
             del self.site.content["200"]
 
             output = self._status(workarea)
@@ -272,7 +272,7 @@ class TestPageStatusInTree(unittest.TestCase):
 
             self._status(workarea)
 
-            self.assertTrue((workarea.root_dir / "Root" / "Child").is_dir())
+            self.assertTrue((workarea.root_dir / "Root_100" / "Child_200").is_dir())
             self.assertTrue(all(request.method == "GET" for request in self.site.requests))
 
 
