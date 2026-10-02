@@ -85,14 +85,19 @@ class TestADFToMarkdownConverter(unittest.TestCase):
                                             "href": "https://example.test",
                                             "future": 2}}, ]}
         document = {
-            "type": "doc",
-            "version": 1,
-            "content": [{
-                "type": "paragraph",
-                "content": [text, {
-                    "type": "hardBreak",
-                    "attrs": {
-                        "future": 3}}]}]}
+            "type":
+            "doc",
+            "version":
+            1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [text, {
+                        "type": "hardBreak",
+                        "attrs": {
+                            "future": 3}}, {
+                                "type": "text",
+                                "text": "after"}]}]}
         ADFToMarkdownConverter(pandoc).convert(document)
 
         inlines = pandoc.pandoc["blocks"][0]["c"]

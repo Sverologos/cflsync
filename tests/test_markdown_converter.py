@@ -333,20 +333,22 @@ class TestMarkdownToADFConverter(unittest.TestCase):
                                         "text": "code",
                                         "marks": [{
                                             "type": "code"}]}, {
-                                                "type": "hardBreak"}, ], }, {
-                                                    "type": "heading",
-                                                    "attrs": {
-                                                        "level": 2},
-                                                    "content": [{
-                                                        "type": "text",
-                                                        "text": "Heading"}]}, {
-                                                            "type": "blockquote",
-                                                            "content":
-                                                            [{
-                                                                "type": "paragraph",
-                                                                "content": [{
-                                                                    "type": "text",
-                                                                    "text": "Quote"}]}]},
+                                                "type": "hardBreak"}, {
+                                                    "type": "text",
+                                                    "text": "after the break"},
+                    ], }, {
+                        "type": "heading",
+                        "attrs": {
+                            "level": 2},
+                        "content": [{
+                            "type": "text",
+                            "text": "Heading"}]}, {
+                                "type": "blockquote",
+                                "content": [{
+                                    "type": "paragraph",
+                                    "content": [{
+                                        "type": "text",
+                                        "text": "Quote"}]}]},
                 {
                     "type":
                     "bulletList",
@@ -1586,6 +1588,63 @@ class TestMarkdownToADFMarkEdgeWhitespace(unittest.TestCase):
 
         self.assertEqual(
             document[0]["content"][-1]["content"][0]["content"][0], _paragraph(_text("a", EM), _text(NBSP), _text("x", CODE)))
+
+
+HARD_BREAK = {"type": "hardBreak"}
+
+
+class TestMarkdownToADFTrailingHardBreaks(unittest.TestCase):
+    """A hard break at the end of a block has no Markdown form; it is dropped instead of being pushed as a backslash."""
+
+    def setUp(self) -> None:
+        self.pandoc = PandocRunner()
+
+    def _round_trip(self, content):
+        markdown = ADFToMarkdownConverter(self.pandoc).convert({"type": "doc", "version": 1, "content": content})
+        return markdown, MarkdownToADFConverter(self.pandoc).convert(markdown)["content"]
+
+    def test_drops_hard_breaks_at_the_end_of_a_block(self) -> None:
+        task = lambda *content: {
+            "type": "taskList",
+            "content": [{
+                "type": "taskItem",
+                "attrs": {
+                    "state": "TODO"},
+                "content": list(content)}]}
+        heading = lambda *content: {"type": "heading", "attrs": {"level": 2}, "content": list(content)}
+        cases = {
+            "paragraph": ([_paragraph(_text("a"), HARD_BREAK)], [_paragraph(_text("a"))]),
+            "several breaks and spaces": ([_paragraph(_text("a "), HARD_BREAK, _text(" "), HARD_BREAK)], [_paragraph(_text("a"))]),
+            "list item": ([_bullet_list_of(_paragraph(_text("a"), HARD_BREAK))], [_bullet_list_of(_paragraph(_text("a")))]),
+            "heading": ([heading(_text("h"), HARD_BREAK)], [heading(_text("h"))]),
+            "task item": ([task(_text("t"), HARD_BREAK)], [task(_text("t"))]),
+            "break only": (
+                [_paragraph(_text("a")), _paragraph(HARD_BREAK),
+                 _paragraph(_text("b"))], [_paragraph(_text("a")), _paragraph(_text("b"))]), }
+        for name, (content, expected) in cases.items():
+            with self.subTest(block=name):
+                markdown, document = self._round_trip(content)
+
+                self.assertNotIn("\\", markdown)
+                self.assertEqual(document, expected)
+
+    def test_keeps_hard_breaks_inside_a_block(self) -> None:
+        paragraph = _paragraph(HARD_BREAK, _text("a"), HARD_BREAK, _text("b"))
+
+        _, document = self._round_trip([paragraph])
+
+        self.assertEqual(document, [paragraph])
+
+    def test_drops_a_trailing_hard_break_in_an_html_table_cell(self) -> None:
+        cell = _cell("tableCell", [_paragraph(_text("a"), HARD_BREAK), _paragraph(_text("z"))])
+
+        _, document = self._round_trip([{"type": "table", "content": [{"type": "tableRow", "content": [cell]}]}])
+
+        self.assertEqual(document[0]["content"][-1]["content"][0]["content"], [_paragraph(_text("a")), _paragraph(_text("z"))])
+
+
+def _bullet_list_of(*blocks):
+    return {"type": "bulletList", "content": [_list_item(*blocks)]}
 
 
 class TestMarkdownToADFAttachmentPaths(unittest.TestCase):

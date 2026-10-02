@@ -131,7 +131,7 @@ task item. Reverse conversion emits no task-list or task-item `localId`.
 | ADF node or mark | Pandoc AST | Reverse ADF form |
 | --- | --- | --- |
 | `text` | `Str` and `Space`; a `SoftBreak` read from Markdown becomes a space | `text` |
-| `hardBreak` | `LineBreak` | `hardBreak` |
+| `hardBreak` | `LineBreak`; dropped at the end of a paragraph, heading, or task item | `hardBreak` |
 | `strong` mark | `Strong` | `strong` mark |
 | `em` mark | `Emph` | `em` mark |
 | `strike` mark | `Strikeout` | `strike` mark |
@@ -148,7 +148,12 @@ task item. Reverse conversion emits no task-list or task-item `localId`.
 Underline, subscript, and superscript are represented by strict `<u>`,
 `<sub>`, and `<sup>` raw HTML inline pairs, so they remain editable in the
 local Markdown file. ADF `subsup.attrs.type` must be `sub` or `sup`; it cannot
-be combined with an ADF `code` mark. Whitespace at the start or end of `strong`, `em`, or `strike` text, such as
+be combined with an ADF `code` mark. Markdown has no hard break at the end of a block: Pandoc writes a hard break
+as a backslash before the line end, which reads back as a literal backslash
+when nothing follows. Trailing hard breaks, and spaces after them, are
+therefore dropped, as Markdown drops trailing whitespace; a paragraph that
+holds only hard breaks becomes empty. Hard breaks inside a block are kept.
+Whitespace at the start or end of `strong`, `em`, or `strike` text, such as
 a non-breaking space, is written outside the delimiters and converts back
 without that mark, since a delimiter next to whitespace cannot open or close.
 ADF combines `code` with `link` only, which

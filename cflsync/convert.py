@@ -551,6 +551,11 @@ class ADFToMarkdownConverter:
 
             inlines.extend(converted)
 
+        # Markdown has no hard break at the end of a block: a trailing backslash would read back as text. Such breaks are
+        # dropped, as Markdown drops trailing whitespace.
+        while inlines and inlines[-1].get("t") in {"LineBreak", "Space"}:
+            inlines.pop()
+
         return inlines
 
     def _convert_inline(self, node):
