@@ -476,12 +476,40 @@ class ADFToMarkdownConverter:
                 return None
 
             blocks = self._convert_blocks(item_content)
-            if blocks and blocks[0].get("t") == "Para":
+            # The first paragraph is written tight only when the next block interrupts it; otherwise, as with a paragraph,
+            # an indented code block, or a pipe table, it stays a paragraph and Pandoc writes the list loose, since the
+            # next block would read back as a continuation of the paragraph.
+            if blocks and blocks[0].get("t") == "Para" and (len(blocks) == 1 or self._interrupts_paragraph(blocks[1])):
                 blocks[0] = {"t": "Plain", "c": blocks[0]["c"]}
 
             items.append(blocks)
 
         return items
+
+    @staticmethod
+    def _interrupts_paragraph(block):
+        """Tell whether Pandoc writes a block so that it ends a paragraph written directly before it."""
+        if block.get("t") == "CodeBlock":
+            # Only a code block with attributes is fenced; one without is indented.
+            return block["c"][0] != ["", [], []]
+
+        # A list interrupts a paragraph only with a non-empty first item and, if ordered, a start number of 1.
+        if block.get("t") == "BulletList":
+            return ADFToMarkdownConverter._starts_with_content(block["c"])
+
+        if block.get("t") == "OrderedList":
+            return block["c"][0][0] == 1 and ADFToMarkdownConverter._starts_with_content(block["c"][1])
+
+        return block.get("t") in {"Header", "BlockQuote", "HorizontalRule", "Div", "RawBlock"}
+
+    @staticmethod
+    def _starts_with_content(items):
+        """Tell whether the first of some Pandoc list items is written with content after its marker."""
+        if not items or not items[0]:
+            return False
+
+        first = items[0][0]
+        return not (first.get("t") in {"Para", "Plain"} and not first["c"])
 
     def _convert_inlines(self, node):
         content = node.get("content", [])
@@ -1817,8 +1845,12 @@ class PandocRunner:
         self._validate_api_version()
 
     def gfm_to_pandoc(self, gfm: str) -> dict[str, object]:
-        """Parse GFM to a validated Pandoc native JSON document."""
-        return self._pandoc(self._run(["--from=gfm", "--to=json"], gfm))
+        """Parse GFM to a validated Pandoc native JSON document.
+
+        Bare URLs and email addresses stay text, as in CommonMark: the writer emits links as ``<URL>`` or ``[text](URL)``,
+        and autolinking would also turn URL-shaped link text into a second link nested inside the first.
+        """
+        return self._pandoc(self._run(["--from=gfm-autolink_bare_uris", "--to=json"], gfm))
 
     def html_to_pandoc(self, html: str, keep_raw: bool = False) -> dict[str, object]:
         """Parse an HTML fragment to a validated Pandoc native JSON document.

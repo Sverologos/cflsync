@@ -1259,6 +1259,167 @@ class TestMarkdownToADFEmptyListItems(unittest.TestCase):
              _paragraph(_text("z"))])
 
 
+def _code_block(text, language=None):
+    return {"type": "codeBlock", "attrs": {"language": language} if language else {}, "content": [_text(text)]}
+
+
+LIST_ITEM_SECOND_BLOCKS = {
+    "paragraph": _paragraph(_text("b")),
+    "code block without language": _code_block("select 1"),
+    "code block with language": _code_block("select 1", "sql"),
+    "pipe table": {
+        "type":
+        "table",
+        "content": [
+            {
+                "type": "tableRow",
+                "content": [_cell("tableHeader", [_paragraph(_text("h"))])]}, {
+                    "type": "tableRow",
+                    "content": [_cell("tableCell", [_paragraph(_text("c"))])]}]},
+    "nested list": {
+        "type": "bulletList",
+        "content": [_list_item(_paragraph(_text("n")))]},
+    "nested list with an empty first item": {
+        "type": "bulletList",
+        "content": [_list_item(EMPTY_PARAGRAPH), _list_item(_paragraph(_text("n")))]},
+    "nested ordered list from 1": {
+        "type": "orderedList",
+        "attrs": {
+            "order": 1},
+        "content": [_list_item(_paragraph(_text("n")))]},
+    "nested ordered list from 3": {
+        "type": "orderedList",
+        "attrs": {
+            "order": 3},
+        "content": [_list_item(_paragraph(_text("n")))]},
+    "nested ordered list with an empty first item": {
+        "type": "orderedList",
+        "attrs": {
+            "order": 1},
+        "content": [_list_item(EMPTY_PARAGRAPH), _list_item(_paragraph(_text("n")))]},
+    "heading": {
+        "type": "heading",
+        "attrs": {
+            "level": 3},
+        "content": [_text("h")]},
+    "blockquote": {
+        "type": "blockquote",
+        "content": [_paragraph(_text("q"))]},
+    "rule": {
+        "type": "rule"},
+    "panel": {
+        "type": "panel",
+        "attrs": {
+            "panelType": "warning"},
+        "content": [_paragraph(_text("p"))]}, }
+
+
+class TestMarkdownToADFListItemBlocks(unittest.TestCase):
+    """A block after the first paragraph of a list item converts back as a separate block, not as paragraph text."""
+
+    def setUp(self) -> None:
+        self.pandoc = PandocRunner()
+
+    def _round_trip(self, content):
+        markdown = ADFToMarkdownConverter(self.pandoc).convert({"type": "doc", "version": 1, "content": content})
+        return markdown, MarkdownToADFConverter(self.pandoc).convert(markdown)["content"]
+
+    def test_round_trips_every_block_after_the_first_paragraph(self) -> None:
+        for name, second in LIST_ITEM_SECOND_BLOCKS.items():
+            for list_type in ("bulletList", "orderedList"):
+                with self.subTest(block=name, list=list_type):
+                    item = _list_item(_paragraph(_text("a")), second)
+                    _, document = self._round_trip([{"type": list_type, "content": [item]}])
+
+                    content = document[0]["content"][0]["content"]
+                    self.assertEqual([block["type"] for block in content], ["paragraph", second["type"]])
+                    self.assertEqual(content[0], _paragraph(_text("a")))
+
+    def test_round_trips_in_a_nested_list(self) -> None:
+        inner = {"type": "bulletList", "content": [_list_item(_paragraph(_text("a")), _paragraph(_text("b")))]}
+        block = {"type": "bulletList", "content": [_list_item(_paragraph(_text("n")), inner)]}
+
+        _, document = self._round_trip([block])
+
+        self.assertEqual(document, [block])
+
+    def test_writes_the_list_loose_when_a_block_would_continue_the_paragraph(self) -> None:
+        block = {
+            "type":
+            "bulletList",
+            "content": [
+                _list_item(_paragraph(_text("x"))),
+                _list_item(_paragraph(_text("a")), _code_block("select 1")),
+                _list_item(_paragraph(_text("y")))]}
+
+        markdown, document = self._round_trip([block])
+
+        self.assertEqual(markdown, "- x\n\n- a\n\n      select 1\n\n- y\n")
+        self.assertEqual(document[0]["content"][1]["content"][1], {"type": "codeBlock", "content": [_text("select 1")]})
+
+    def test_keeps_the_list_tight_when_the_next_block_ends_the_paragraph(self) -> None:
+        cases = {
+            "code block with language":
+            ([_list_item(_paragraph(_text("a")), _code_block("select 1", "sql"))], "- a\n  ``` sql\n  select 1\n  ```\n"),
+            "nested list": ([_list_item(_paragraph(_text("a")), LIST_ITEM_SECOND_BLOCKS["nested list"])], "- a\n  - n\n"),
+            "single paragraphs": ([_list_item(_paragraph(_text("a"))),
+                                   _list_item(_paragraph(_text("b")))], "- a\n- b\n"), }
+        for name, (items, expected) in cases.items():
+            with self.subTest(case=name):
+                markdown, _ = self._round_trip([{"type": "bulletList", "content": items}])
+
+                self.assertEqual(markdown, expected)
+
+
+def _link(href):
+    return {"type": "link", "attrs": {"href": href}}
+
+
+class TestMarkdownToADFBareURLs(unittest.TestCase):
+    """URL-shaped text is not autolinked: it converts back as written, inside and outside links."""
+
+    def setUp(self) -> None:
+        self.pandoc = PandocRunner()
+
+    def _round_trip(self, content):
+        markdown = ADFToMarkdownConverter(self.pandoc).convert({"type": "doc", "version": 1, "content": content})
+        return markdown, MarkdownToADFConverter(self.pandoc).convert(markdown)["content"]
+
+    def test_round_trips_link_text_that_is_another_url(self) -> None:
+        text = _text("https://a.test/pages/1/Title", _link("https://a.test/pages/1"))
+
+        markdown, document = self._round_trip([_paragraph(text)])
+
+        self.assertEqual(markdown, "[https://a.test/pages/1/Title](https://a.test/pages/1)\n")
+        self.assertEqual(
+            document, [
+                _paragraph(
+                    _text(
+                        "https://a.test/pages/1/Title", {
+                            "type": "link",
+                            "attrs": {
+                                "href": "https://a.test/pages/1",
+                                "title": ""}}))])
+
+    def test_keeps_url_shaped_text_as_text(self) -> None:
+        for text in ("see https://a.test/x now", "see www.a.test now", "mail a@b.test now"):
+            with self.subTest(text=text):
+                _, document = self._round_trip([_paragraph(_text(text))])
+
+                self.assertEqual(document, [_paragraph(_text(text))])
+
+    def test_reads_angle_bracket_autolinks_as_links(self) -> None:
+        document = MarkdownToADFConverter(self.pandoc).convert("<https://a.test/x>\n")
+
+        self.assertEqual(
+            document["content"],
+            [_paragraph(_text("https://a.test/x", {
+                "type": "link",
+                "attrs": {
+                    "href": "https://a.test/x",
+                    "title": ""}}))])
+
+
 class TestMarkdownToADFHTMLTableCells(unittest.TestCase):
     """Content of a table written as HTML converts back as it does outside a table."""
 

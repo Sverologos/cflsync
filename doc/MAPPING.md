@@ -7,6 +7,9 @@ atlas_doc_format ⇄ Pandoc AST ⇄ GFM
 ```
 
 Pandoc supplies the second conversion through its `gfm` reader and writer.
+The reader runs without the `autolink_bare_uris` extension: URLs, `www.`
+hosts, and email addresses in text stay text, as in CommonMark, and only
+`<URL>` and `[text](URL)` are links. The writer emits links in these forms.
 `cflsync` exposes `ADFToMarkdownConverter` and `MarkdownToADFConverter`;
 Pandoc's JSON AST is an internal representation. The ADF API payload is a
 JSON-encoded ADF document; it is decoded before conversion and encoded again

@@ -30,7 +30,7 @@ class FakePandoc:
         self.encodings.append(encoding)
         if command[1:] == ["--version"]:
             return CompletedProcess(command, 0, f"pandoc {self.version}\n", "")
-        if command[1:] == ["--from=gfm", "--to=json"]:
+        if command[1:] in (["--from=gfm", "--to=json"], ["--from=gfm-autolink_bare_uris", "--to=json"]):
             return CompletedProcess(command, 0, ast_json(self.api_version), "")
         if command[1:4] == ["--from=json", "--to=gfm", "--wrap=none"] and len(command) == 5:
             return CompletedProcess(command, 0, "# Heading\n", "")
@@ -100,7 +100,7 @@ class TestPandocConversion(unittest.TestCase):
         class FailingPandoc(FakePandoc):
 
             def __call__(self, command, input, text, encoding, capture_output) -> CompletedProcess:
-                if command[1:] == ["--from=gfm", "--to=json"] and input:
+                if command[1:] == ["--from=gfm-autolink_bare_uris", "--to=json"] and input:
                     return CompletedProcess(command, 1, "", "invalid GFM")
                 return super().__call__(command, input, text, encoding, capture_output)
 
