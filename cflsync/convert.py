@@ -1543,10 +1543,16 @@ class MarkdownToADFConverter:
     def _convert_list_items(self, items):
         result = []
         for item in items:
-            if not isinstance(item, list) or not item:
+            if not isinstance(item, list):
                 raise ConversionError("Pandoc list item must contain blocks")
 
-            result.append({"type": "listItem", "content": self._convert_blocks(item)})
+            # An item whose first ADF block is an empty paragraph is written as a bare marker, which reads back without that
+            # paragraph; it is restored so that the item does not start with a nested list.
+            content = self._convert_blocks(item)
+            if not content or content[0].get("type") in {"bulletList", "orderedList", "taskList"}:
+                content.insert(0, {"type": "paragraph", "content": []})
+
+            result.append({"type": "listItem", "content": content})
 
         return result
 

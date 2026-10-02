@@ -74,8 +74,12 @@ ordered-list start number, and code language. Other attributes, including
 Reading GFM gives every heading an implicit Pandoc identifier, which the reverse
 mapping ignores since ADF has no counterpart.
 A paragraph with omitted or empty `content` converts to an empty paragraph,
-which Pandoc omits from canonical GFM. Malformed required values cause opaque
-fallback; malformed document structure may instead raise a conversion error.
+which Pandoc omits from canonical GFM. In a list item, this leaves a bare
+marker (`- `, `2.  `, or `<li></li>` in an HTML table), which reads back as an
+item without blocks; the reverse mapping gives such an item, and an item that
+starts with a nested list, a leading empty paragraph again. Malformed required
+values cause opaque fallback; malformed document structure may instead raise a
+conversion error.
 
 Blockquotes map to Markdown `>` blocks and back to ADF `blockquote` nodes,
 with their contained blocks and inline formatting converted recursively.

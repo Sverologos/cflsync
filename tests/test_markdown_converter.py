@@ -1179,6 +1179,85 @@ HTML_CELL_CONSTRUCTS = {
             "panelType": "warning"},
         "content": [_paragraph(STATUS)]}, }
 
+EMPTY_PARAGRAPH = {"type": "paragraph", "content": []}
+
+
+class TestMarkdownToADFEmptyListItems(unittest.TestCase):
+    """A list item holding only an empty paragraph is written as a bare marker and converts back to the same item."""
+
+    def setUp(self) -> None:
+        self.pandoc = PandocRunner()
+
+    def _round_trip(self, content):
+        markdown = ADFToMarkdownConverter(self.pandoc).convert({"type": "doc", "version": 1, "content": content})
+        return markdown, MarkdownToADFConverter(self.pandoc).convert(markdown)["content"]
+
+    def test_round_trips_empty_items_in_every_position(self) -> None:
+        a, b = _list_item(_paragraph(_text("a"))), _list_item(_paragraph(_text("b")))
+        empty = _list_item({"type": "paragraph"})
+        expected_empty = _list_item(EMPTY_PARAGRAPH)
+        cases = {
+            "last": ({
+                "type": "bulletList",
+                "content": [a, empty]}, [a, expected_empty]),
+            "first": ({
+                "type": "bulletList",
+                "content": [empty, a]}, [expected_empty, a]),
+            "only": ({
+                "type": "bulletList",
+                "content": [empty]}, [expected_empty]),
+            "ordered middle": ({
+                "type": "orderedList",
+                "attrs": {
+                    "order": 4},
+                "content": [a, empty, b]}, [a, expected_empty, b]), }
+        for name, (block, expected_items) in cases.items():
+            with self.subTest(position=name):
+                _, document = self._round_trip([block])
+
+                self.assertEqual(document, [{**block, "content": expected_items}])
+
+    def test_restores_the_empty_paragraph_before_a_nested_list(self) -> None:
+        nested = {"type": "bulletList", "content": [_list_item(_paragraph(_text("n")))]}
+        block = {"type": "bulletList", "content": [_list_item({"type": "paragraph"}, nested)]}
+
+        markdown, document = self._round_trip([block])
+
+        self.assertEqual(markdown, "- \n  - n\n")
+        self.assertEqual(document, [{"type": "bulletList", "content": [_list_item(EMPTY_PARAGRAPH, nested)]}])
+
+    def test_reads_bare_markers_without_trailing_space(self) -> None:
+        document = MarkdownToADFConverter(self.pandoc).convert("- a\n-\n- b\n")
+
+        self.assertEqual(
+            document["content"], [
+                {
+                    "type": "bulletList",
+                    "content": [
+                        _list_item(_paragraph(_text("a"))),
+                        _list_item(EMPTY_PARAGRAPH),
+                        _list_item(_paragraph(_text("b")))]}])
+
+    def test_round_trips_empty_items_in_html_table_cells(self) -> None:
+        a = _list_item(_paragraph(_text("a")))
+        cell = {
+            "type": "tableCell",
+            "attrs": {},
+            "content": [{
+                "type": "bulletList",
+                "content": [a, _list_item({"type": "paragraph"})]},
+                        _paragraph(_text("z"))]}
+
+        markdown, document = self._round_trip([{"type": "table", "content": [{"type": "tableRow", "content": [cell]}]}])
+
+        self.assertIn("<li></li>", markdown)
+        self.assertEqual(
+            document[0]["content"][-1]["content"][0]["content"],
+            [{
+                "type": "bulletList",
+                "content": [a, _list_item(EMPTY_PARAGRAPH)]},
+             _paragraph(_text("z"))])
+
 
 class TestMarkdownToADFHTMLTableCells(unittest.TestCase):
     """Content of a table written as HTML converts back as it does outside a table."""
