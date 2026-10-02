@@ -1588,6 +1588,65 @@ class TestMarkdownToADFMarkEdgeWhitespace(unittest.TestCase):
             document[0]["content"][-1]["content"][0]["content"][0], _paragraph(_text("a", EM), _text(NBSP), _text("x", CODE)))
 
 
+class TestMarkdownToADFAttachmentPaths(unittest.TestCase):
+    """Attachment paths are percent-encoded, so every attachment filename converts back to the same media."""
+
+    NAMES = ("Pasted image 20260601.png", "a)b (1).png", "café.png", "plan v2.pdf")
+
+    def setUp(self) -> None:
+        self.pandoc = PandocRunner()
+
+    def _media(self):
+        return MediaResolver((name, f"file-{number}") for number, name in enumerate(self.NAMES))
+
+    def _round_trip(self, content):
+        markdown = ADFToMarkdownConverter(self.pandoc, self._media()).convert({"type": "doc", "version": 1, "content": content})
+        return markdown, MarkdownToADFConverter(self.pandoc, self._media(), "contentId-1").convert(markdown)["content"]
+
+    @staticmethod
+    def _media_node(number, name):
+        return {"type": "media", "attrs": {"type": "file", "id": f"file-{number}", "collection": "contentId-1", "alt": name}}
+
+    def test_round_trips_images_and_attachment_links(self) -> None:
+        for number, name in enumerate(self.NAMES):
+            media = self._media_node(number, name)
+            if name.endswith(".pdf"):
+                block = _paragraph(_text("see "), {**media, "type": "mediaInline"})
+            else:
+                block = {"type": "mediaSingle", "attrs": {"layout": "center"}, "content": [media]}
+            for position, content, inner in (("top level", [block], lambda document: document[0]),
+                                             ("html table cell", [{"type": "table", "content":
+                                                                   [{"type": "tableRow", "content":
+                                                                     [_cell("tableCell", [block, _paragraph(_text("z"))])]}]}],
+                                              lambda document: document[0]["content"][-1]["content"][0]["content"][0])):
+                with self.subTest(name=name, position=position):
+                    _, document = self._round_trip(content)
+
+                    self.assertEqual(inner(document), block)
+
+    def test_writes_the_encoded_path(self) -> None:
+        markdown, _ = self._round_trip(
+            [{
+                "type": "mediaSingle",
+                "attrs": {
+                    "layout": "center"},
+                "content": [self._media_node(0, "x")]}])
+
+        self.assertEqual(markdown, "![x](_attachments/Pasted%20image%2020260601.png)\n")
+
+    def test_reads_unencoded_paths_of_earlier_releases(self) -> None:
+        document = MarkdownToADFConverter(self.pandoc, self._media(), "contentId-1").convert("![c](_attachments/café.png)\n")
+
+        self.assertEqual(document["content"][0]["content"][0]["attrs"]["id"], "file-2")
+
+    def test_reads_angle_bracket_paths(self) -> None:
+        markdown = "![p](<_attachments/Pasted image 20260601.png>)\n"
+
+        document = MarkdownToADFConverter(self.pandoc, self._media(), "contentId-1").convert(markdown)
+
+        self.assertEqual(document["content"][0]["content"][0]["attrs"]["id"], "file-0")
+
+
 class TestMarkdownToADFBareURLs(unittest.TestCase):
     """URL-shaped text is not autolinked: it converts back as written, inside and outside links."""
 

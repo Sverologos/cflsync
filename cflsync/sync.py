@@ -81,7 +81,8 @@ from .api import APIError, RemoteContentRef
 from .convert import ADFToMarkdownConverter, MarkdownToADFConverter, PandocRunner
 from .errors import SyncError
 from .workarea import (
-    AttachmentMetadata, CONTENT_FILENAME, LinkResolver, MediaResolver, PageMetadata, PageState, Workarea, filesystem_error_message)
+    AttachmentMetadata, CONTENT_FILENAME, LinkResolver, MediaResolver, PageMetadata, PageState, Workarea, attachment_filenames,
+    filesystem_error_message)
 
 ATTACHMENTS_PREFIX = "_attachments/"
 
@@ -149,15 +150,19 @@ class PageChangeDetector:
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
     def referenced_attachments(self, markdown: str) -> list[str]:
-        """Return the managed attachment filenames that *markdown* links to."""
+        """Return the managed attachment filenames that *markdown* links to.
+
+        A percent-encoded path names its decoded filename; as earlier releases wrote paths unencoded, the path as written
+        is a candidate too, and callers keep the candidates whose files exist.
+        """
         names = []
         for target in _link_targets(self._pandoc_runner.gfm_to_pandoc(markdown)):
             if not target.startswith(ATTACHMENTS_PREFIX):
                 continue
 
-            name = target[len(ATTACHMENTS_PREFIX):]
-            if name and name not in {".", ".."} and "/" not in name and "\\" not in name:
-                names.append(name)
+            for name in attachment_filenames(target[len(ATTACHMENTS_PREFIX):]):
+                if name and name not in {".", ".."} and "/" not in name and "\\" not in name:
+                    names.append(name)
 
         return names
 

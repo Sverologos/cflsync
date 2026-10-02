@@ -136,6 +136,26 @@ class TestPageChangeDetector(unittest.TestCase):
 
         self.assertEqual(self.inspector.referenced_attachments(markdown), ["report.pdf", "diagram.png"])
 
+    def test_lists_decoded_and_written_names_of_encoded_paths(self) -> None:
+        markdown = "![Pasted](_attachments/Pasted%20image.png) [Raw](_attachments/caf%C3%A9.pdf) [Plain](_attachments/a(1).png)\n"
+
+        self.assertEqual(
+            self.inspector.referenced_attachments(markdown),
+            ["Pasted image.png", "Pasted%20image.png", "café.pdf", "caf%C3%A9.pdf", "a(1).png"])
+
+    def test_detects_a_new_attachment_with_an_encoded_path(self) -> None:
+        with temporary_workarea() as workarea:
+            directory, state = self._page(workarea)
+            (directory / "_attachments").mkdir(exist_ok=True)
+            (directory / "_attachments" / "Pasted image.png").write_bytes(b"png")
+            markdown = f"{MARKDOWN}\n![Pasted](_attachments/Pasted%20image.png)\n"
+            (directory / "content.md").write_text(markdown, encoding="utf-8")
+            state.page.content_hash = self.inspector.content_hash(markdown)
+
+            _, attachments_changed = self.inspector.local_changes(directory, state)
+
+            self.assertEqual(attachments_changed, ["Pasted image.png"])
+
     def test_reports_remote_page_version_and_title_changes(self) -> None:
         for page in [remote_page(version=18), remote_page(title="Renamed page")]:
             with self.subTest(version=page.version, title=page.title):

@@ -340,7 +340,12 @@ ID used by the attachment API operations, so the media manifest is keyed on the
 file ID. The synchronization layer performs the attachment API operations and
 supplies the manifest; it never emits a guessed local path. `MediaResolver`
 receives ordered `(filename, file ID)` manifest entries and exposes the two pure
-lookups `path_for()` and `id_for()`.
+lookups `path_for()` and `id_for()`. `path_for()` percent-encodes the filename
+as page-link path segments are encoded, since Pandoc's GFM writer does not
+escape link destinations and a name with spaces or unbalanced parentheses
+would otherwise not read back as a link. `id_for()` looks up the decoded
+filename first and the path segment as written second, for unencoded paths
+written by earlier releases.
 
 Managed `_attachments/<filename>` links become `mediaInline` file references
 on push, using the manifest's file ID and the destination page's collection.

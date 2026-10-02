@@ -405,6 +405,11 @@ Attachments use relative Markdown URLs:
 ```
 
 ADF-to-GFM conversion rewrites resolved media and links to these paths. The
+filename is percent-encoded as page-link path segments are, so a name with
+spaces or parentheses stays a valid Markdown link:
+`![Pasted](_attachments/Pasted%20image%201.png)`. Reverse conversion decodes
+the path; a path that does not decode to a managed filename is looked up as
+written, which accepts the unencoded paths of releases before 0.5.3. The
 reverse conversion recognizes only paths rooted at `_attachments/`; a
 `MediaResolver` maps them to Confluence attachment references. Other links stay
 ordinary links. Filenames are validated to prevent traversal, and duplicate

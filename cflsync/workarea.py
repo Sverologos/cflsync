@@ -42,6 +42,21 @@ class MediaResolutionError(SyncError):
     """Raised when a managed attachment cannot be resolved safely."""
 
 
+def attachment_path(filename: str) -> str:
+    """Return the Markdown path of an attachment, percent-encoded as page links are."""
+    return f"_attachments/{quote(filename, safe='')}"
+
+
+def attachment_filenames(segment: str) -> list[str]:
+    """Return the attachment filenames a Markdown path segment can name, in order of preference.
+
+    Paths are percent-encoded, so the decoded segment comes first. Earlier releases wrote filenames unencoded, so the
+    segment as written follows, for a filename that itself holds a percent sign.
+    """
+    decoded = unquote(segment)
+    return [decoded] if decoded == segment else [decoded, segment]
+
+
 class MediaResolver:
     """Map a page attachment manifest between IDs and local paths."""
 
@@ -57,7 +72,7 @@ class MediaResolver:
             if attachment_id in paths_by_id:
                 raise MediaResolutionError(f"attachment ID '{attachment_id}' is ambiguous")
 
-            paths_by_id[attachment_id] = f"_attachments/{filename}"
+            paths_by_id[attachment_id] = attachment_path(filename)
             ids_by_filename[filename] = attachment_id
 
         self._paths_by_id = paths_by_id
@@ -72,12 +87,13 @@ class MediaResolver:
             raise MediaResolutionError(f"attachment ID '{attachment_id}' is not managed") from error
 
     def id_for(self, path: str) -> str:
-        """Return the attachment ID for one managed Markdown path."""
+        """Return the attachment ID for one managed Markdown path, percent-encoded or as earlier releases wrote it."""
         filename = self._filename_from_path(path)
-        try:
-            return self._ids_by_filename[filename]
-        except KeyError as error:
-            raise MediaResolutionError(f"attachment path '{path}' is not managed") from error
+        for candidate in attachment_filenames(filename):
+            if candidate in self._ids_by_filename:
+                return self._ids_by_filename[candidate]
+
+        raise MediaResolutionError(f"attachment path '{path}' is not managed")
 
     def _validate_filename(self, filename):
         if not isinstance(filename, str) or not filename or filename in {".", ".."}:
