@@ -1051,7 +1051,8 @@ class MarkdownToADFConverter:
         text_inlines = inlines[1:]
         if text_inlines:
             first_text = text_inlines.pop(0)
-            if not isinstance(first_text, Mapping) or first_text.get("t") != "Space" or not self._has_fields(first_text, {"t"}):
+            separator = isinstance(first_text, Mapping) and first_text.get("t") in {"Space", "SoftBreak"}
+            if not separator or not self._has_fields(first_text, {"t"}):
                 return None
 
         task_item = {"type": "taskItem", "attrs": {"state": state}, "content": self._convert_inline_nodes(text_inlines)}
@@ -1222,7 +1223,7 @@ class MarkdownToADFConverter:
             return None
 
         # Images sharing a paragraph with other content become inline media instead.
-        if any(not isinstance(inline, Mapping) or inline.get("t") not in {"Image", "Space"} for inline in value):
+        if any(not isinstance(inline, Mapping) or inline.get("t") not in {"Image", "Space", "SoftBreak"} for inline in value):
             return None
 
         content = [self._convert_image(image) for image in images]
@@ -1470,7 +1471,7 @@ class MarkdownToADFConverter:
             if not isinstance(inline, Mapping):
                 raise ConversionError("Pandoc inlines must be objects")
 
-            if inline.get("t") == "Space":
+            if inline.get("t") in {"Space", "SoftBreak"}:
                 text.append(" ")
             elif inline.get("t") == "Str" and isinstance(inline.get("c"), str):
                 text.append(inline["c"])
@@ -1529,7 +1530,8 @@ class MarkdownToADFConverter:
             self._convert_text(pandoc_inline, inlines, marks)
             return
 
-        if node_type == "Space":
+        # A soft break renders as a space in GFM, and the GFM writer emits it as one.
+        if node_type in {"Space", "SoftBreak"}:
             self._convert_space(pandoc_inline, inlines, marks)
             return
 

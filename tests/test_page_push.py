@@ -153,6 +153,26 @@ class TestPagePush(unittest.TestCase):
             # bytes used to store the editable Markdown file.
             self.assertEqual(state.page.content_hash, hashlib.sha256(markdown.encode("utf-8")).hexdigest())
 
+    def test_pushes_a_wrapped_paragraph_and_records_its_canonical_hash(self) -> None:
+        with temporary_workarea() as workarea:
+            self._pull(workarea)
+            self._edit(workarea, "# Example page\n\nWrapped\nparagraph\n")
+
+            _, status, transport = self._push(workarea, self._push_responses())
+
+            document = json.loads(transport.requests[-1].json_body()["body"]["value"])
+            state = PageState.load(workarea.cache_path("123456"))
+            self.assertEqual(status, 0)
+            self.assertEqual(
+                document["content"], [{
+                    "type": "paragraph",
+                    "content": [{
+                        "type": "text",
+                        "text": "Wrapped paragraph"}]}])
+            # Pulling the pushed page writes the joined line, so the baseline matches it and status stays clean.
+            canonical = "# Example page\n\nWrapped paragraph\n"
+            self.assertEqual(state.page.content_hash, hashlib.sha256(canonical.encode("utf-8")).hexdigest())
+
     def test_resolves_a_mailto_link_to_a_mention_when_pushing(self) -> None:
         with temporary_workarea() as workarea:
             self._pull(workarea)

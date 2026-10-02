@@ -105,7 +105,7 @@ task item. Reverse conversion emits no task-list or task-item `localId`.
 
 | ADF node or mark | Pandoc AST | Reverse ADF form |
 | --- | --- | --- |
-| `text` | `Str` and `Space` | `text` |
+| `text` | `Str` and `Space`; a `SoftBreak` read from Markdown becomes a space | `text` |
 | `hardBreak` | `LineBreak` | `hardBreak` |
 | `strong` mark | `Strong` | `strong` mark |
 | `em` mark | `Emph` | `em` mark |

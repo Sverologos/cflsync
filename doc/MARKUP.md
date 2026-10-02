@@ -41,7 +41,7 @@ headings in the page body.
 
 | Content | Markdown |
 | --- | --- |
-| Paragraphs and hard line breaks | Ordinary text; end a line with two spaces for a hard break. |
+| Paragraphs and hard line breaks | Ordinary text; lines wrapped within a paragraph are joined with a space; end a line with two spaces for a hard break. |
 | Emphasis | `*italic*`, `**bold**`, `~~strikethrough~~`, `` `code` ``, `<u>underline</u>`, `<sub>subscript</sub>`, and `<sup>superscript</sup>` |
 | Links | `[label](https://example.com)` |
 | Headings | `## Heading` through `###### Heading` |

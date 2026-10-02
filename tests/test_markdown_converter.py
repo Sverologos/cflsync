@@ -1044,4 +1044,39 @@ class TestMarkdownToADFLinkResolution(unittest.TestCase):
         self.assertEqual(links.calls, [])
 
 
+class TestMarkdownToADFSoftBreaks(unittest.TestCase):
+    """A line wrapped within a paragraph converts like a space, as the GFM writer and renderers treat it."""
+
+    def _convert(self, markdown, links=None):
+        media = MediaResolver([("diagram.png", "file-1"), ("chart.png", "file-2")])
+        return MarkdownToADFConverter(PandocRunner(), media, "contentId-123456", links=links).convert(markdown)
+
+    def test_joins_a_wrapped_paragraph_with_a_space(self) -> None:
+        document = self._convert("Wrapped\nparagraph\n")
+
+        self.assertEqual(document["content"], [{"type": "paragraph", "content": [{"type": "text", "text": "Wrapped paragraph"}]}])
+
+    def test_converts_wrapped_content_like_spaced_content(self) -> None:
+        cases = {
+            "marked text": ("**bold\ntext** after\n", "**bold text** after\n"),
+            "image description": ("![A\ndiagram](_attachments/diagram.png)\n", "![A diagram](_attachments/diagram.png)\n"),
+            "image group": (
+                "![A](_attachments/diagram.png)\n![B](_attachments/chart.png)\n",
+                "![A](_attachments/diagram.png) ![B](_attachments/chart.png)\n"),
+            "task marker": ("- ☐\n  task\n", "- ☐ task\n"),
+            "HTML table cell": (
+                "<table><tbody><tr><td><p>a\nb</p></td></tr></tbody></table>\n",
+                "<table><tbody><tr><td><p>a b</p></td></tr></tbody></table>\n"), }
+        for name, (wrapped, spaced) in cases.items():
+            with self.subTest(case=name):
+                self.assertEqual(self._convert(wrapped), self._convert(spaced))
+
+    def test_passes_wrapped_link_text_to_the_resolver_with_a_space(self) -> None:
+        links = RecordingLinks()
+
+        self._convert("[link\ntext](a.md)\n", links)
+
+        self.assertEqual(links.calls, [("a.md", "link text")])
+
+
 # vim: set ts=4 sw=4 et tw=132:
