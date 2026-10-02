@@ -116,6 +116,8 @@ cflsync 0.4 does not recognize a new workarea before its first pull. Do not use
 cflsync 0.4 in a new workarea: if it pulls into one, this version refuses the
 workarea afterwards, and it must be created again.
 
+### Working with pages
+
 Pull reports when the page is already in sync. Use `page pull --force PAGE_REF`
 to prefer remote content, overwriting local edits to managed files even when
 the remote version is unchanged. Unmanaged files are preserved.
@@ -213,6 +215,51 @@ An empty workarea created by cflsync 0.3 is converted the same way.
 
 Use `cflsync --help` for top-level help, `cflsync page --help` for page-command
 help, and `cflsync page COMMAND --help` for a command's arguments.
+
+### Page links
+
+Links between pages of the managed tree become ordinary relative Markdown links
+between their `content.md` files, so they work in editors, previews, and Git
+hosts. A link from `Root_100/A_200/content.md` to page 300 at `Root_100/B_300`
+becomes `../B_300/content.md`; push turns it back into a link to page 300.
+
+- **Pull** converts links to pages in the managed tree, whether or not those
+  pages are pulled yet: a link to a page that is not installed points to where
+  pulling that page will put it. Recognized are links to the page itself on the
+  configured site, by page ID (`/wiki/spaces/KEY/pages/ID/...`,
+  `viewpage.action?pageId=ID`) or by title (`/wiki/display/KEY/TITLE`). Links
+  to pages outside the tree, links with other query parameters such as comment
+  or version links, edit and history links, short links (`/wiki/x/...`), and
+  all other URLs stay unchanged.
+- **Push** turns local links to pages in the tree back into
+  `https://SITE/wiki/spaces/KEY/pages/ID` links. Other local links, such as
+  `../notes.md`, are pushed as they are. A page with a local link to a page that
+  is no longer in the tree (deleted, moved outside the root, or not visible with
+  the profile's credentials) is not pushed; push lists each such link with its
+  file, text, and target, and pushes nothing for that page, so the links can be
+  corrected first.
+- **Fragments** after `#` are copied unchanged in both directions. Confluence
+  and Markdown previews name heading anchors differently, so a fragment works
+  where its exact text matches that environment's anchor; links to headings may
+  work in only one of them.
+
+Limitations:
+
+- Links are only rewritten in pages that a command writes. `page rename`,
+  `page move`, and remote renames and moves pulled into the workarea do not
+  update links in other pages, so those links can point to an old location.
+  They still name the right page: push resolves them by the page ID at the end
+  of the directory name. Correct them by editing, for example with an AI agent,
+  or let a later pull of the referring page rewrite them.
+- During one repository pull, a page converted before another page is moved by
+  a remote rename or move in the same pull links to that page's previous
+  location, although the page was just written. Push still resolves the link.
+- Smart Links (link cards) are not supported: they stay as retained ADF, and
+  so do ordinary links in the same paragraph.
+- Page commands look up each linked page in Confluence (up to two requests per
+  linked page, plus one per uninstalled ancestor), so pages with many links
+  take longer to pull and push. Repository commands use the tree listing they
+  already make.
 
 ### Long paths
 
