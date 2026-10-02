@@ -749,9 +749,17 @@ class ADFToMarkdownConverter:
             if result is None:
                 return None
 
-        for mark_type, pandoc_type in (("strike", "Strikeout"), ("em", "Emph"), ("strong", "Strong")):
-            if mark_type in values:
+        delimited = [
+            pandoc_type for mark_type, pandoc_type in (("strike", "Strikeout"), ("em", "Emph"), ("strong", "Strong"))
+            if mark_type in values]
+        if delimited:
+            # A delimiter next to whitespace cannot open or close emphasis. Pandoc moves ASCII spaces out of the
+            # delimiters itself; other whitespace, such as a non-breaking space, is moved out here, without the mark.
+            leading, result, trailing = self._split_edge_whitespace(result)
+            for pandoc_type in delimited if result else []:
                 result = [{"t": pandoc_type, "c": result}]
+
+            result = [*leading, *result, *trailing]
 
         if "underline" in values:
             result = [{"t": "RawInline", "c": ["html", "<u>"]}, *result, {"t": "RawInline", "c": ["html", "</u>"]}, ]
@@ -765,6 +773,36 @@ class ADFToMarkdownConverter:
             return self._convert_link_mark(result, values["link"])
 
         return result
+
+    @staticmethod
+    def _split_edge_whitespace(inlines):
+        """Split whitespace at the edges of some inlines off: spaces and the whitespace that edge ``Str`` nodes hold.
+
+        Return the leading whitespace, the remaining inlines, and the trailing whitespace.
+        """
+        inlines = list(inlines)
+        leading, trailing = [], []
+        while inlines and inlines[0].get("t") in {"Space", "Str"}:
+            first = inlines[0]
+            stripped = first["c"].lstrip() if first["t"] == "Str" else ""
+            if first["t"] == "Str" and stripped == first["c"]:
+                break
+
+            whitespace = first if not stripped else {"t": "Str", "c": first["c"][:len(first["c"]) - len(stripped)]}
+            leading.append(whitespace)
+            inlines[0:1] = [{"t": "Str", "c": stripped}] if stripped else []
+
+        while inlines and inlines[-1].get("t") in {"Space", "Str"}:
+            last = inlines[-1]
+            stripped = last["c"].rstrip() if last["t"] == "Str" else ""
+            if last["t"] == "Str" and stripped == last["c"]:
+                break
+
+            whitespace = last if not stripped else {"t": "Str", "c": last["c"][len(stripped):]}
+            trailing.insert(0, whitespace)
+            inlines[-1:] = [{"t": "Str", "c": stripped}] if stripped else []
+
+        return leading, inlines, trailing
 
     def _convert_subsup_mark(self, inlines, mark):
         attrs = mark.get("attrs")

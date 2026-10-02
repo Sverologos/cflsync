@@ -148,7 +148,10 @@ task item. Reverse conversion emits no task-list or task-item `localId`.
 Underline, subscript, and superscript are represented by strict `<u>`,
 `<sub>`, and `<sup>` raw HTML inline pairs, so they remain editable in the
 local Markdown file. ADF `subsup.attrs.type` must be `sub` or `sup`; it cannot
-be combined with an ADF `code` mark. ADF combines `code` with `link` only, which
+be combined with an ADF `code` mark. Whitespace at the start or end of `strong`, `em`, or `strike` text, such as
+a non-breaking space, is written outside the delimiters and converts back
+without that mark, since a delimiter next to whitespace cannot open or close.
+ADF combines `code` with `link` only, which
 maps to code inside a link (`` [`x`](URL) ``); `Code` inside any other
 formatting is rejected on reverse conversion. Supported text marks are emitted in a
 deterministic nesting order. Other marks

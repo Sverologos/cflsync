@@ -1523,6 +1523,71 @@ class TestMarkdownToADFCodeLinks(unittest.TestCase):
                     MarkdownToADFConverter(self.pandoc).convert(markdown)
 
 
+NBSP = " "
+EM, STRONG, STRIKE, CODE = {"type": "em"}, {"type": "strong"}, {"type": "strike"}, {"type": "code"}
+
+
+class TestMarkdownToADFMarkEdgeWhitespace(unittest.TestCase):
+    """Whitespace at the edges of emphasis, strong, and strike text is written outside the delimiters, without the mark."""
+
+    def setUp(self) -> None:
+        self.pandoc = PandocRunner()
+
+    def _round_trip(self, content):
+        markdown = ADFToMarkdownConverter(self.pandoc).convert({"type": "doc", "version": 1, "content": content})
+        return markdown, MarkdownToADFConverter(self.pandoc).convert(markdown)["content"]
+
+    def test_moves_edge_whitespace_out_of_the_mark(self) -> None:
+        cases = {
+            "em before code": (
+                [_text(f"a{NBSP}", EM), _text("x", CODE),
+                 _text(f"{NBSP}b", EM)], [_text("a", EM),
+                                          _text(NBSP), _text("x", CODE),
+                                          _text(NBSP), _text("b", EM)]),
+            "strong before text": ([_text(f"a{NBSP}", STRONG), _text("b")], [_text("a", STRONG),
+                                                                             _text(f"{NBSP}b")]),
+            "strike after text": ([_text("a"), _text(f"{NBSP}b", STRIKE)], [_text(f"a{NBSP}"),
+                                                                            _text("b", STRIKE)]),
+            "both edges, several characters": (
+                [_text("a"), _text(f"{NBSP} b c {NBSP}", EM, STRONG),
+                 _text("d")], [_text(f"a{NBSP} "), _text("b c", EM, STRONG),
+                               _text(f" {NBSP}d")]),
+            "space before non-breaking space": ([_text("a"), _text(f" {NBSP}b", EM)], [_text(f"a {NBSP}"),
+                                                                                       _text("b", EM)]),
+            "whitespace only": ([_text("a"), _text(NBSP, EM), _text("b")], [_text(f"a{NBSP}b")]),
+            "adjacent marks": ([_text(f"a{NBSP}", EM), _text("b", STRONG)], [_text("a", EM),
+                                                                             _text(NBSP),
+                                                                             _text("b", STRONG)]), }
+        for name, (content, expected) in cases.items():
+            with self.subTest(case=name):
+                _, document = self._round_trip([_paragraph(*content)])
+
+                self.assertEqual(document, [_paragraph(*expected)])
+
+    def test_keeps_outer_marks_on_the_moved_whitespace(self) -> None:
+        link = {"type": "link", "attrs": {"href": "https://a.test/x", "title": ""}}
+        underline = {"type": "underline"}
+
+        _, document = self._round_trip([_paragraph(_text(f"a{NBSP}", EM, link), _text(f"c{NBSP}", EM, underline), _text("d"))])
+
+        self.assertEqual(
+            document,
+            [_paragraph(_text("a", link, EM), _text(NBSP, link), _text("c", underline, EM), _text(NBSP, underline), _text("d"))])
+
+    def test_writes_the_whitespace_outside_the_delimiters(self) -> None:
+        markdown, _ = self._round_trip([_paragraph(_text(f"a{NBSP}", EM), _text("x", CODE))])
+
+        self.assertEqual(markdown, f"*a*{NBSP}`x`\n")
+
+    def test_round_trips_in_an_html_table_cell(self) -> None:
+        cell = _cell("tableCell", [_paragraph(_text(f"a{NBSP}", EM), _text("x", CODE)), _paragraph(_text("z"))])
+
+        _, document = self._round_trip([{"type": "table", "content": [{"type": "tableRow", "content": [cell]}]}])
+
+        self.assertEqual(
+            document[0]["content"][-1]["content"][0]["content"][0], _paragraph(_text("a", EM), _text(NBSP), _text("x", CODE)))
+
+
 class TestMarkdownToADFBareURLs(unittest.TestCase):
     """URL-shaped text is not autolinked: it converts back as written, inside and outside links."""
 
