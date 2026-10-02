@@ -987,13 +987,18 @@ class TestMarkdownToADFLinkResolution(unittest.TestCase):
         self.assertEqual(links.calls, [("a.md", "Plain text"), ("b.md", "")])
 
     def test_passes_an_empty_text_for_code_link_content(self) -> None:
-        # ADF cannot combine code and link marks, so the link itself is refused, as without a resolver.
-        links = RecordingLinks()
+        links = RecordingLinks({"c.md": self.URL})
 
-        with self.assertRaisesRegex(ConversionError, "Pandoc code has unsupported marks"):
-            MarkdownToADFConverter(PandocRunner(), links=links).convert("[`code`](c.md)\n")
+        document = MarkdownToADFConverter(PandocRunner(), links=links).convert("[`code`](c.md)\n")
 
         self.assertEqual(links.calls, [("c.md", "")])
+        self.assertEqual(
+            document["content"],
+            [_paragraph(_text("code", {
+                "type": "link",
+                "attrs": {
+                    "href": self.URL,
+                    "title": ""}}, {"type": "code"}))])
 
     def test_replaces_link_targets_in_formatted_links(self) -> None:
         links = RecordingLinks({"../B_300/content.md": self.URL})
@@ -1472,6 +1477,50 @@ class TestMarkdownToADFBlockSeparators(unittest.TestCase):
 
 def _link(href):
     return {"type": "link", "attrs": {"href": href}}
+
+
+class TestMarkdownToADFCodeLinks(unittest.TestCase):
+    """Code inside a link converts to text with link and code marks, the only mark ADF combines with code."""
+
+    def setUp(self) -> None:
+        self.pandoc = PandocRunner()
+
+    def _round_trip(self, content):
+        markdown = ADFToMarkdownConverter(self.pandoc).convert({"type": "doc", "version": 1, "content": content})
+        return markdown, MarkdownToADFConverter(self.pandoc).convert(markdown)["content"]
+
+    def test_round_trips_code_in_a_link(self) -> None:
+        link = {"type": "link", "attrs": {"href": "https://a.test/x", "title": ""}}
+        # In HTML table cells, Pandoc moves spaces at the edges of link text outside the link, so only the top-level case
+        # has linked spaces.
+        top = _paragraph(_text("see "), _text("a ", link), _text("x", link, {"type": "code"}), _text(" b", link))
+        in_cell = _paragraph(_text("see "), _text("x", link, {"type": "code"}), _text(" now"))
+        cases = {
+            "top level": ([top], top, lambda document: document[0]),
+            "html table cell": (
+                [
+                    {
+                        "type": "table",
+                        "content": [{
+                            "type": "tableRow",
+                            "content": [_cell("tableCell", [in_cell, _paragraph(_text("z"))])]}]}], in_cell,
+                lambda document: document[0]["content"][-1]["content"][0]["content"][0]), }
+        for name, (content, expected, inner) in cases.items():
+            with self.subTest(position=name):
+                _, document = self._round_trip(content)
+
+                self.assertEqual(inner(document), expected)
+
+    def test_writes_code_inside_the_link(self) -> None:
+        markdown, _ = self._round_trip([_paragraph(_text("x", _link("https://a.test/x"), {"type": "code"}))])
+
+        self.assertEqual(markdown, "[`x`](https://a.test/x)\n")
+
+    def test_rejects_code_with_other_marks(self) -> None:
+        for markdown in ("**`x`**\n", "*`x`*\n", "[**`x`**](https://a.test/x)\n"):
+            with self.subTest(markdown=markdown):
+                with self.assertRaisesRegex(ConversionError, "Pandoc code has unsupported marks"):
+                    MarkdownToADFConverter(self.pandoc).convert(markdown)
 
 
 class TestMarkdownToADFBareURLs(unittest.TestCase):

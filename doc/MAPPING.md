@@ -148,7 +148,9 @@ task item. Reverse conversion emits no task-list or task-item `localId`.
 Underline, subscript, and superscript are represented by strict `<u>`,
 `<sub>`, and `<sup>` raw HTML inline pairs, so they remain editable in the
 local Markdown file. ADF `subsup.attrs.type` must be `sub` or `sup`; it cannot
-be combined with an ADF `code` mark. Supported text marks are emitted in a
+be combined with an ADF `code` mark. ADF combines `code` with `link` only, which
+maps to code inside a link (`` [`x`](URL) ``); `Code` inside any other
+formatting is rejected on reverse conversion. Supported text marks are emitted in a
 deterministic nesting order. Other marks
 are ignored while retaining their text and supported marks. Extra fields on
 supported marks are ignored, but required values such as a link's non-empty

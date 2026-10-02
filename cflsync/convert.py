@@ -1755,10 +1755,11 @@ class MarkdownToADFConverter:
         if not isinstance(value, list) or len(value) != 2 or value[0] != ["", [], []] or not isinstance(value[1], str):
             raise ConversionError("Pandoc code has invalid content")
 
-        if marks or not value[1]:
+        # ADF combines the code mark with no mark other than link.
+        if any(mark.get("type") != "link" for mark in marks) or not value[1]:
             raise ConversionError("Pandoc code has unsupported marks or content")
 
-        self._append_text(inlines, value[1], [{"type": "code"}])
+        self._append_text(inlines, value[1], [*marks, {"type": "code"}])
 
     def _convert_link(self, pandoc_inline, inlines, marks):
         if not self._has_fields(pandoc_inline, {"t", "c"}):
