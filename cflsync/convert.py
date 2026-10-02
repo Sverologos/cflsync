@@ -43,6 +43,7 @@ RAW_MARKS = {
         "type": "subsup",
         "attrs": {
             "type": "sup"}}, "superscript"), }
+TYPED_RAW_MARKS = {"Underline": "<u>", "Subscript": "<sub>", "Superscript": "<sup>"}
 
 
 def _local_zone_name():
@@ -936,11 +937,43 @@ class MarkdownToADFConverter:
         return {"type": "blockquote", "content": self._convert_blocks(blocks)}
 
     def _convert_div(self, pandoc_block):
+        code_block = self._highlighted_code_block(pandoc_block)
+        if code_block is not None:
+            return self._convert_code_block(code_block)
+
         panel = self._convert_panel(pandoc_block)
         if panel is None:
             raise ConversionError("unsupported Pandoc div")
 
         return panel
+
+    def _highlighted_code_block(self, pandoc_block):
+        """Return the plain code block of a syntax-highlighted one, which earlier releases wrote in HTML tables."""
+        value = pandoc_block.get("c")
+        if not self._has_fields(pandoc_block, {"t", "c"}) or not isinstance(value, list) or len(value) != 2:
+            return None
+
+        attributes, blocks = value
+        if not isinstance(attributes, list) or len(attributes) != 3 or attributes[1:] != [["sourceCode"], []]:
+            return None
+
+        if not isinstance(blocks, list) or len(blocks) != 1 or not isinstance(blocks[0], Mapping):
+            return None
+
+        code = blocks[0]
+        code_value = code.get("c")
+        if code.get("t") != "CodeBlock" or not isinstance(code_value, list) or len(code_value) != 2:
+            return None
+
+        code_attributes, text = code_value
+        if not isinstance(code_attributes, list) or len(code_attributes) != 3 or code_attributes[0] != "":
+            return None
+
+        classes, key_values = code_attributes[1:]
+        if not isinstance(classes, list) or len(classes) != 2 or classes[0] != "sourceCode" or key_values != []:
+            return None
+
+        return {"t": "CodeBlock", "c": [["", classes[1:], []], text]}
 
     def _convert_panel(self, pandoc_block):
         if not self._has_fields(pandoc_block, {"t", "c"}):
@@ -1036,7 +1069,7 @@ class MarkdownToADFConverter:
         if not isinstance(first, Mapping) or first.get("t") != "Plain" or not self._has_fields(first, {"t", "c"}):
             return None
 
-        inlines = first.get("c")
+        inlines = self._without_task_label(first.get("c"))
         if not isinstance(inlines, list) or not inlines or not isinstance(inlines[0], Mapping):
             return None
 
@@ -1070,6 +1103,19 @@ class MarkdownToADFConverter:
 
         return [task_item, nested]
 
+    @staticmethod
+    def _without_task_label(inlines):
+        """Remove the raw <label> pair around a task item that an HTML table holds, keeping its checkbox marker."""
+        if not isinstance(inlines, list) or len(inlines) < 2:
+            return inlines
+
+        opening = {"t": "RawInline", "c": ["html", "<label>"]}
+        closing = {"t": "RawInline", "c": ["html", "</label>"]}
+        if inlines[0] == opening and inlines[-1] == closing:
+            return inlines[1:-1]
+
+        return inlines
+
     def _convert_ordered_list(self, pandoc_block):
         if not self._has_fields(pandoc_block, {"t", "c"}):
             raise ConversionError("Pandoc ordered list has unsupported fields")
@@ -1079,7 +1125,9 @@ class MarkdownToADFConverter:
             raise ConversionError("Pandoc ordered list has invalid content")
 
         attributes, items = value
-        if not isinstance(attributes, list) or len(attributes) != 3 or attributes[1:] != [{"t": "Decimal"}, {"t": "Period"}]:
+        # Reading an HTML table reports the delimiter of <ol type="1"> as the default.
+        delimiters = [[{"t": "Decimal"}, {"t": "Period"}], [{"t": "Decimal"}, {"t": "DefaultDelim"}]]
+        if not isinstance(attributes, list) or len(attributes) != 3 or attributes[1:] not in delimiters:
             raise ConversionError("Pandoc ordered list has unsupported attributes")
 
         order = attributes[0]
@@ -1207,7 +1255,8 @@ class MarkdownToADFConverter:
         if not value[1].lstrip().startswith("<table"):
             raise ConversionError("raw content other than an HTML table cannot be represented in ADF")
 
-        blocks = self._pandoc_runner.html_to_pandoc(value[1]).get("blocks")
+        # Raw HTML in cells stays raw, as in the rest of the document, rather than being dropped by the HTML reader.
+        blocks = self._pandoc_runner.html_to_pandoc(value[1], keep_raw=True).get("blocks")
         if not isinstance(blocks, list) or len(blocks) != 1 or not isinstance(blocks[0], Mapping):
             raise ConversionError("raw HTML must contain exactly one table")
 
@@ -1233,7 +1282,10 @@ class MarkdownToADFConverter:
         return {"type": "mediaGroup", "content": content}
 
     def _convert_span(self, pandoc_inline, inlines, marks):
-        """Accept the emoji span that reading a `:shortcode:` produces, keeping its Unicode text."""
+        """Accept the emoji span that reading a `:shortcode:` produces, keeping its Unicode text, and a cflsync span.
+
+        Reading an HTML table turns a cflsync span into a Pandoc span rather than a pair of raw HTML inlines.
+        """
         if not self._has_fields(pandoc_inline, {"t", "c"}):
             raise ConversionError("Pandoc span has unsupported fields")
 
@@ -1242,10 +1294,18 @@ class MarkdownToADFConverter:
             raise ConversionError("Pandoc span has invalid content")
 
         attributes = value[0]
-        if not isinstance(attributes, list) or len(attributes) != 3 or attributes[1] != ["emoji"]:
-            raise ConversionError("only emoji spans can be represented in ADF")
+        if isinstance(attributes, list) and len(attributes) == 3 and attributes[1] == ["emoji"]:
+            self._convert_inline_nodes_into(value[1], inlines, marks)
+            return
 
-        self._convert_inline_nodes_into(value[1], inlines, marks)
+        key_values = attributes[2] if isinstance(attributes, list) and len(attributes) == 3 else None
+        if not isinstance(key_values, list) or not any(isinstance(pair, list) and pair[:1] == ["cfl-type"] for pair in key_values):
+            raise ConversionError("only emoji and cflsync spans can be represented in ADF")
+
+        if marks:
+            raise ConversionError("cflsync span has unsupported marks")
+
+        self._convert_cflsync_span(self._raw_span_attributes(pandoc_inline), value[1], inlines)
 
     def _convert_raw_span(self, pandoc_inlines, index, inlines, marks):
         if marks:
@@ -1276,26 +1336,25 @@ class MarkdownToADFConverter:
                 if self._raw_html(pandoc_inline) != "</span>":
                     raise ConversionError("raw HTML cflsync span has an invalid closing tag")
 
-                text = self._plain_text(text_inlines)
-                span_type = attributes.get("cfl-type")
-                if span_type == "status":
-                    self._convert_status_span(attributes, text, inlines)
-                    return index + 1
-
-                if span_type == "date":
-                    self._convert_date_span(attributes, text, inlines)
-                    return index + 1
-
-                if span_type == "mention":
-                    self._convert_mention_span(attributes, text, inlines)
-                    return index + 1
-
-                raise ConversionError("raw HTML span has an unsupported cflsync type")
+                self._convert_cflsync_span(attributes, text_inlines, inlines)
+                return index + 1
 
             text_inlines.append(pandoc_inline)
             index += 1
 
         raise ConversionError("raw HTML cflsync span is not closed")
+
+    def _convert_cflsync_span(self, attributes, text_inlines, inlines):
+        text = self._plain_text(text_inlines)
+        span_type = attributes.get("cfl-type")
+        if span_type == "status":
+            self._convert_status_span(attributes, text, inlines)
+        elif span_type == "date":
+            self._convert_date_span(attributes, text, inlines)
+        elif span_type == "mention":
+            self._convert_mention_span(attributes, text, inlines)
+        else:
+            raise ConversionError("raw HTML span has an unsupported cflsync type")
 
     def _convert_raw_mark(self, pandoc_inlines, index, inlines, marks, closing, mark, name):
         if any(existing["type"] == mark["type"] for existing in marks):
@@ -1363,12 +1422,13 @@ class MarkdownToADFConverter:
         if set(attributes) != {"cfl-type", "style"} or not text:
             raise ConversionError("status span has unsupported attributes")
 
-        background = attributes["style"]
+        # Pandoc's HTML reader writes the declaration without the space after the colon.
+        name, separator, background = attributes["style"].partition(":")
         colors = {css: adf for adf, css in STATUS_COLORS.items()}
-        if not isinstance(background, str) or not background.startswith("background-color: "):
+        if name != "background-color" or not separator:
             raise ConversionError("status span has unsupported attributes")
 
-        color = colors.get(background.removeprefix("background-color: "))
+        color = colors.get(background.strip())
         if color is None:
             raise ConversionError("status span has unsupported attributes")
 
@@ -1557,6 +1617,11 @@ class MarkdownToADFConverter:
 
         if node_type == "Strikeout":
             self._convert_strikeout(pandoc_inline, inlines, marks)
+            return
+
+        # Reading an HTML table turns the raw <u>, <sub>, and <sup> pairs into these nodes.
+        if node_type in TYPED_RAW_MARKS:
+            self._convert_marked_inlines(pandoc_inline, inlines, marks, RAW_MARKS[TYPED_RAW_MARKS[node_type]][1])
             return
 
         if node_type == "Code":
@@ -1749,14 +1814,29 @@ class PandocRunner:
         """Parse GFM to a validated Pandoc native JSON document."""
         return self._pandoc(self._run(["--from=gfm", "--to=json"], gfm))
 
-    def html_to_pandoc(self, html: str) -> dict[str, object]:
-        """Parse an HTML fragment to a validated Pandoc native JSON document."""
-        return self._pandoc(self._run(["--from=html", "--to=json"], html))
+    def html_to_pandoc(self, html: str, keep_raw: bool = False) -> dict[str, object]:
+        """Parse an HTML fragment to a validated Pandoc native JSON document.
+
+        With *keep_raw*, HTML that Pandoc does not model, such as ``<details>`` or ``<time>``, is kept as raw HTML instead of
+        being dropped, as the GFM reader does.
+        """
+        source = "html+raw_html" if keep_raw else "html"
+        return self._pandoc(self._run([f"--from={source}", "--to=json"], html))
 
     def pandoc_to_gfm(self, pandoc: Mapping[str, object]) -> str:
         """Render a validated Pandoc native JSON document to canonical GFM."""
         self._validate_pandoc(pandoc)
-        return self._run(["--from=json", "--to=gfm", "--wrap=none"], json.dumps(pandoc, ensure_ascii=False, separators=(",", ":")))
+        return self._run(
+            ["--from=json", "--to=gfm", "--wrap=none", self._no_highlighting_option()],
+            json.dumps(pandoc, ensure_ascii=False, separators=(",", ":")))
+
+    def _no_highlighting_option(self) -> str:
+        # Code blocks in HTML tables are otherwise written as highlighted HTML. Pandoc 3.8 replaced the deprecated option.
+        numbers = re.match(r"(\d+)\.(\d+)", self.version)
+        if numbers is not None and (int(numbers.group(1)), int(numbers.group(2))) >= (3, 8):
+            return "--syntax-highlighting=none"
+
+        return "--no-highlight"
 
     def _discover_version(self) -> str:
         output = self._run(["--version"], "")

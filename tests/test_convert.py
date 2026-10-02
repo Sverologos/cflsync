@@ -19,8 +19,9 @@ def ast_json(version: tuple[int, ...] = PandocRunner.API_VERSION) -> str:
 
 class FakePandoc:
 
-    def __init__(self, api_version: tuple[int, ...] = PandocRunner.API_VERSION) -> None:
+    def __init__(self, api_version: tuple[int, ...] = PandocRunner.API_VERSION, version: str = "3.10") -> None:
         self.api_version = api_version
+        self.version = version
         self.calls: list[list[str]] = []
         self.encodings: list[str] = []
 
@@ -28,10 +29,10 @@ class FakePandoc:
         self.calls.append(command)
         self.encodings.append(encoding)
         if command[1:] == ["--version"]:
-            return CompletedProcess(command, 0, "pandoc 3.10\n", "")
+            return CompletedProcess(command, 0, f"pandoc {self.version}\n", "")
         if command[1:] == ["--from=gfm", "--to=json"]:
             return CompletedProcess(command, 0, ast_json(self.api_version), "")
-        if command[1:] == ["--from=json", "--to=gfm", "--wrap=none"]:
+        if command[1:4] == ["--from=json", "--to=gfm", "--wrap=none"] and len(command) == 5:
             return CompletedProcess(command, 0, "# Heading\n", "")
         raise AssertionError(f"unexpected Pandoc command: {command}")
 
@@ -83,6 +84,16 @@ class TestPandocConversion(unittest.TestCase):
 
         self.assertEqual(first, "# Heading\n\nParagraph\n")
         self.assertEqual(second, first)
+
+    def test_disables_syntax_highlighting_with_the_option_of_the_pandoc_version(self) -> None:
+        for version, option in (("3.10", "--syntax-highlighting=none"), ("3.8", "--syntax-highlighting=none"),
+                                ("3.7.0.2", "--no-highlight"), ("3.1.11", "--no-highlight")):
+            with self.subTest(version=version):
+                pandoc = FakePandoc(version=version)
+
+                PandocRunner(run=pandoc).pandoc_to_gfm(json.loads(ast_json()))
+
+                self.assertEqual(pandoc.calls[-1][1:], ["--from=json", "--to=gfm", "--wrap=none", option])
 
     def test_reports_a_failed_conversion_as_a_domain_error(self) -> None:
 

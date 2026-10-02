@@ -772,7 +772,7 @@ class TestMarkdownToADFConverter(unittest.TestCase):
                         "t": "Str",
                         "c": "text"}]]}]}]))
 
-        with self.assertRaisesRegex(ConversionError, "emoji spans"):
+        with self.assertRaisesRegex(ConversionError, "only emoji and cflsync spans"):
             MarkdownToADFConverter(pandoc).convert("source")
 
     def test_rejects_raw_html_that_is_not_a_table(self) -> None:
@@ -1077,6 +1077,167 @@ class TestMarkdownToADFSoftBreaks(unittest.TestCase):
         self._convert("[link\ntext](a.md)\n", links)
 
         self.assertEqual(links.calls, [("a.md", "link text")])
+
+
+def _text(text, *marks):
+    node = {"type": "text", "text": text}
+    if marks:
+        node["marks"] = list(marks)
+
+    return node
+
+
+def _paragraph(*content):
+    return {"type": "paragraph", "content": list(content)}
+
+
+def _list_item(*blocks):
+    return {"type": "listItem", "content": list(blocks)}
+
+
+STATUS = {"type": "status", "attrs": {"text": "OPEN", "color": "green"}}
+UNDERLINE = {"type": "underline"}
+SUPERSCRIPT = {"type": "subsup", "attrs": {"type": "sup"}}
+
+# Constructs whose Markdown form is raw HTML or that Pandoc's HTML reader represents differently from its GFM reader, each
+# alone and in the nested positions a table cell admits.
+HTML_CELL_CONSTRUCTS = {
+    "underline": _paragraph(_text("u", UNDERLINE)),
+    "subscript": _paragraph(_text("s", {
+        "type": "subsup",
+        "attrs": {
+            "type": "sub"}})),
+    "superscript": _paragraph(_text("s", SUPERSCRIPT)),
+    "strong underline": _paragraph(_text("bu", {"type": "strong"}, UNDERLINE)),
+    "status": _paragraph(STATUS),
+    "date": _paragraph({
+        "type": "date",
+        "attrs": {
+            "timestamp": "1767225600000"}}),
+    "mention": _paragraph({
+        "type": "mention",
+        "attrs": {
+            "id": "account-2",
+            "text": "@Bob",
+            "accessLevel": "CONTAINER"}}),
+    "status in a heading": {
+        "type": "heading",
+        "attrs": {
+            "level": 3},
+        "content": [_text("Heading "), STATUS]},
+    "status in a nested bullet list": {
+        "type": "bulletList",
+        "content":
+        [_list_item(_paragraph(STATUS), {
+            "type": "bulletList",
+            "content": [_list_item(_paragraph(_text("c", UNDERLINE)))]})]},
+    "ordered list": {
+        "type": "orderedList",
+        "attrs": {
+            "order": 1},
+        "content": [_list_item(_paragraph(_text("a")))]},
+    "ordered list from 3 with superscript": {
+        "type": "orderedList",
+        "attrs": {
+            "order": 3},
+        "content": [_list_item(_paragraph(_text("a", SUPERSCRIPT)))]},
+    "nested task list with status": {
+        "type":
+        "taskList",
+        "content": [
+            {
+                "type": "taskItem",
+                "attrs": {
+                    "state": "TODO"},
+                "content": [_text("todo "), STATUS]}, {
+                    "type": "taskList",
+                    "content": [{
+                        "type": "taskItem",
+                        "attrs": {
+                            "state": "DONE"},
+                        "content": [_text("done")]}]}]},
+    "code block with language": {
+        "type": "codeBlock",
+        "attrs": {
+            "language": "python"},
+        "content": [_text("if a < b:\n    pass")]},
+    "code block in a list item": {
+        "type":
+        "bulletList",
+        "content":
+        [_list_item(_paragraph(_text("a")), {
+            "type": "codeBlock",
+            "attrs": {
+                "language": "sql"},
+            "content": [_text("select 1")]})]},
+    "status in a blockquote": {
+        "type": "blockquote",
+        "content": [_paragraph(STATUS)]},
+    "status in a panel": {
+        "type": "panel",
+        "attrs": {
+            "panelType": "warning"},
+        "content": [_paragraph(STATUS)]}, }
+
+
+class TestMarkdownToADFHTMLTableCells(unittest.TestCase):
+    """Content of a table written as HTML converts back as it does outside a table."""
+
+    def setUp(self) -> None:
+        self.pandoc = PandocRunner()
+
+    def _round_trip(self, content):
+        markdown = ADFToMarkdownConverter(self.pandoc).convert({"type": "doc", "version": 1, "content": content})
+        return markdown, MarkdownToADFConverter(self.pandoc).convert(markdown)["content"]
+
+    def test_converts_cell_content_as_outside_a_table(self) -> None:
+        for name, block in HTML_CELL_CONSTRUCTS.items():
+            with self.subTest(construct=name):
+                _, expected = self._round_trip([block])
+                cell = {"type": "tableCell", "attrs": {}, "content": [block, _paragraph(_text("second"))]}
+                markdown, document = self._round_trip([{"type": "table", "content": [{"type": "tableRow", "content": [cell]}]}])
+
+                self.assertIn("<table>", markdown)
+                self.assertEqual(document[0]["content"][-1]["content"][0]["content"], [*expected, _paragraph(_text("second"))])
+
+    def test_writes_code_blocks_in_cells_without_syntax_highlighting(self) -> None:
+        block = HTML_CELL_CONSTRUCTS["code block with language"]
+        cell = {"type": "tableCell", "attrs": {}, "content": [block, _paragraph(_text("second"))]}
+
+        markdown, _ = self._round_trip([{"type": "table", "content": [{"type": "tableRow", "content": [cell]}]}])
+
+        self.assertIn('<pre class="python"><code>if a &lt; b:\n    pass</code></pre>', markdown)
+        self.assertNotIn("sourceCode", markdown)
+
+    def test_reads_syntax_highlighted_code_blocks_written_by_earlier_releases(self) -> None:
+        markdown = (
+            '<table>\n<tbody>\n<tr>\n<td><div class="sourceCode" id="cb1"><pre class="sourceCode python">'
+            '<code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a>'
+            '<span class="bu">print</span>(<span class="dv">1</span>)</span></code></pre></div>\n<p>second</p></td>\n'
+            '</tr>\n</tbody>\n</table>\n')
+
+        document = MarkdownToADFConverter(self.pandoc).convert(markdown)
+
+        self.assertEqual(
+            document["content"][0]["content"][-1]["content"][0]["content"],
+            [{
+                "type": "codeBlock",
+                "attrs": {
+                    "language": "python"},
+                "content": [_text("print(1)")]},
+             _paragraph(_text("second"))])
+
+    def test_rejects_raw_html_in_cells_that_has_no_adf_form(self) -> None:
+        markdown = '<table>\n<tbody>\n<tr>\n<td><p>On <time datetime="2026-01-01">1 January</time></p>\n<p>second</p></td>\n</tr>\n</tbody>\n</table>\n'
+
+        with self.assertRaises(ConversionError):
+            MarkdownToADFConverter(self.pandoc).convert(markdown)
+
+    def test_rejects_a_span_in_a_cell_that_is_not_a_cflsync_span(self) -> None:
+        markdown = '<table>\n<tbody>\n<tr>\n<td><p><span class="note">x</span></p>\n<p>second</p></td>\n</tr>\n</tbody>\n</table>\n'
+
+        with self.assertRaisesRegex(ConversionError, "only emoji and cflsync spans"):
+            MarkdownToADFConverter(self.pandoc).convert(markdown)
 
 
 # vim: set ts=4 sw=4 et tw=132:

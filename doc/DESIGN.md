@@ -215,7 +215,10 @@ Unsupported structures, such as macros, are retained as `atlas_doc_format`
 fenced blocks containing complete original ADF-node JSON. Tables convert
 instead: Pandoc writes a pipe table where GFM allows one and an HTML table
 otherwise, keeping spans and multi-block cells at the cost of one extra Pandoc
-invocation when reading such a table back. For
+invocation when reading such a table back. That invocation uses Pandoc's HTML
+reader with raw HTML kept, so cell content arrives either as in the GFM reader
+or as typed Pandoc nodes, and the reverse mapping accepts both (see
+[MAPPING.md](MAPPING.md#tables-and-media)). For
 unsupported inline nodes, the smallest enclosing ADF block is retained so the
 fence remains valid GFM. Retained JSON is not normalized or stripped of metadata.
 Malformed or contextually invalid retained JSON stops reverse conversion.

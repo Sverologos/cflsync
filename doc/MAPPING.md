@@ -160,6 +160,25 @@ block and is parsed back into a Pandoc `Table` by a second Pandoc invocation,
 after which both representations share one mapping. Only raw blocks that are
 HTML tables are accepted; other raw content has no ADF equivalent.
 
+Pandoc's HTML reader, used for that second invocation, represents some cell
+content differently from the GFM reader. The reverse mapping accepts both
+forms:
+
+| Content | GFM reader | HTML reader |
+| --- | --- | --- |
+| `<u>`, `<sub>`, `<sup>` | raw HTML inline pair | `Underline`, `Subscript`, `Superscript` |
+| status, date, and mention spans | raw HTML inline pair | `Span` with the same attributes; a `style` declaration loses the space after its colon |
+| ordered list | `Decimal`, `Period` | `Decimal`, `DefaultDelim` |
+| task item | `☐`/`☒` marker | the same marker inside a raw `<label>` pair, which is ignored |
+
+The HTML reader runs with Pandoc's `raw_html` extension, so HTML that Pandoc
+does not model stays raw, as in the GFM reader, instead of being dropped with
+only its text kept; such HTML is rejected like anywhere else. Writing GFM
+disables syntax highlighting, so a code block in an HTML table is written as
+`<pre class="LANGUAGE"><code>`. Earlier releases wrote highlighted HTML
+(`<div class="sourceCode">`); that form is still read as a code block with its
+language.
+
 Cell content uses the ordinary block mapping, so opaque markers inside a cell
 are retained like anywhere else. An ADF table converts unless its structure is
 invalid; a leading row of `tableHeader` cells becomes the table head, and a
