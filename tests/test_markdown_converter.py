@@ -1371,6 +1371,105 @@ class TestMarkdownToADFListItemBlocks(unittest.TestCase):
                 self.assertEqual(markdown, expected)
 
 
+def _bullet_list(*texts):
+    return {"type": "bulletList", "content": [_list_item(_paragraph(_text(text))) for text in texts]}
+
+
+def _ordered_list(*texts):
+    return {"type": "orderedList", "attrs": {"order": 1}, "content": [_list_item(_paragraph(_text(text))) for text in texts]}
+
+
+def _task_list(text):
+    return {"type": "taskList", "content": [{"type": "taskItem", "attrs": {"state": "TODO"}, "content": [_text(text)]}]}
+
+
+PLAIN_CODE = {"type": "codeBlock", "content": [_text("select 1")]}
+SEPARATED_BLOCKS = {
+    "code block after a list": [_bullet_list("a"), PLAIN_CODE],
+    "bullet list after a bullet list": [_bullet_list("a"), _bullet_list("b")],
+    "ordered list after an ordered list": [_ordered_list("a"), _ordered_list("b")],
+    "task list after a task list": [_task_list("a"), _task_list("b")],
+    "task list after a bullet list": [_bullet_list("a"), _task_list("b")],
+    "code block after a code block": [PLAIN_CODE, {
+        "type": "codeBlock",
+        "content": [_text("select 2")]}], }
+
+
+class TestMarkdownToADFBlockSeparators(unittest.TestCase):
+    """Blocks that Markdown would read as one are written with an empty HTML comment between them."""
+
+    def setUp(self) -> None:
+        self.pandoc = PandocRunner()
+
+    def _round_trip(self, content):
+        markdown = ADFToMarkdownConverter(self.pandoc).convert({"type": "doc", "version": 1, "content": content})
+        return markdown, MarkdownToADFConverter(self.pandoc).convert(markdown)["content"]
+
+    def test_round_trips_separated_blocks_in_every_position(self) -> None:
+        for name, (first, second) in SEPARATED_BLOCKS.items():
+            for separated_by_empty_paragraph in (False, True):
+                blocks = [first, EMPTY_PARAGRAPH, second] if separated_by_empty_paragraph else [first, second]
+                positions = {
+                    "top level": ([*blocks], lambda document: document),
+                    "list item": (
+                        [{
+                            "type": "bulletList",
+                            "content": [_list_item(_paragraph(_text("n")),
+                                                   *blocks)]}], lambda document: document[0]["content"][0]["content"][1:]),
+                    "blockquote": ([{
+                        "type": "blockquote",
+                        "content": [*blocks]}], lambda document: document[0]["content"]),
+                    "html table cell": (
+                        [
+                            {
+                                "type": "table",
+                                "content":
+                                [{
+                                    "type": "tableRow",
+                                    "content": [_cell("tableCell", [*blocks, _paragraph(_text("z"))])]}]}],
+                        lambda document: document[0]["content"][-1]["content"][0]["content"][:-1]), }
+                for position, (content, inner) in positions.items():
+                    with self.subTest(blocks=name, empty_paragraph=separated_by_empty_paragraph, position=position):
+                        _, document = self._round_trip(content)
+
+                        self.assertEqual(inner(document), [first, second])
+
+    def test_writes_an_empty_comment_between_separated_blocks(self) -> None:
+        markdown, _ = self._round_trip([_bullet_list("a"), EMPTY_PARAGRAPH, _bullet_list("b")])
+
+        self.assertEqual(markdown, "- a\n\n<!-- -->\n\n- b\n")
+
+    def test_writes_no_separator_between_lists_of_different_kinds(self) -> None:
+        markdown, document = self._round_trip([_ordered_list("a"), _bullet_list("b")])
+
+        self.assertEqual(markdown, "1.  a\n\n- b\n")
+        self.assertEqual(document, [_ordered_list("a"), _bullet_list("b")])
+
+    def test_ignores_every_comment_only_block(self) -> None:
+        for comment in ("<!-- -->", "<!-- note -->", "<!--\nnote\n-->", "<!---->"):
+            with self.subTest(comment=comment):
+                document = MarkdownToADFConverter(self.pandoc).convert(f"- a\n\n{comment}\n\n- b\n")
+
+                self.assertEqual(document["content"], [_bullet_list("a"), _bullet_list("b")])
+
+    def test_ignores_comments_between_blocks_of_html_table_cells(self) -> None:
+        markdown = "<table>\n<tbody>\n<tr>\n<td><p>a</p>\n<!-- note -->\n<p>b</p></td>\n</tr>\n</tbody>\n</table>\n"
+
+        document = MarkdownToADFConverter(self.pandoc).convert(markdown)
+
+        self.assertEqual(
+            document["content"][0]["content"][0]["content"][0]["content"],
+            [_paragraph(_text("a")), _paragraph(_text("b"))])
+
+    def test_rejects_a_comment_inside_a_paragraph(self) -> None:
+        with self.assertRaises(ConversionError):
+            MarkdownToADFConverter(self.pandoc).convert("a <!-- note --> b\n")
+
+    def test_rejects_a_raw_block_with_more_than_one_comment(self) -> None:
+        with self.assertRaisesRegex(ConversionError, "raw content other than an HTML table"):
+            MarkdownToADFConverter(self.pandoc).convert("<!-- a --><div>b</div>\n")
+
+
 def _link(href):
     return {"type": "link", "attrs": {"href": href}}
 

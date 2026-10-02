@@ -44,6 +44,9 @@ RAW_MARKS = {
         "attrs": {
             "type": "sup"}}, "superscript"), }
 TYPED_RAW_MARKS = {"Underline": "<u>", "Subscript": "<sub>", "Superscript": "<sup>"}
+# An empty HTML comment between two blocks keeps Markdown from reading them as one; any comment-only block is ignored.
+BLOCK_SEPARATOR = "<!-- -->"
+HTML_COMMENT = re.compile(r"\s*<!--(?:(?!-->).)*-->\s*", re.DOTALL)
 
 
 def _local_zone_name():
@@ -125,14 +128,35 @@ class ADFToMarkdownConverter:
         return {"pandoc-api-version": list(PANDOC_API_VERSION), "meta": {}, "blocks": blocks}
 
     def _convert_blocks(self, nodes):
-        blocks = []
+        blocks: list[Mapping[str, object]] = []
+        previous: Mapping[str, object] | None = None
         for node in nodes:
             if not isinstance(node, Mapping):
                 raise ConversionError("ADF block must be an object")
 
-            blocks.append(self._convert_block(node))
+            block = self._convert_block(node)
+            if previous is not None and self._continues(previous, block):
+                blocks.append({"t": "RawBlock", "c": ["html", BLOCK_SEPARATOR]})
+
+            blocks.append(block)
+            # Pandoc writes an empty paragraph as nothing, so it separates nothing.
+            if block.get("t") != "Para" or block["c"]:
+                previous = block
 
         return blocks
+
+    @staticmethod
+    def _continues(previous, block):
+        """Tell whether a block would read back as part of the block written before it.
+
+        A list continues a preceding list of the same kind, and an indented code block continues a preceding list or
+        indented code block. Pandoc separates some of these pairs itself, but not across an empty paragraph.
+        """
+        lists = {"BulletList", "OrderedList"}
+        if block.get("t") == "CodeBlock" and block["c"][0] == ["", [], []]:
+            return previous.get("t") in lists or (previous.get("t") == "CodeBlock" and previous["c"][0] == ["", [], []])
+
+        return block.get("t") in lists and previous.get("t") == block.get("t")
 
     def _convert_block(self, node):
         node_type = node.get("type")
@@ -873,9 +897,37 @@ class MarkdownToADFConverter:
             if not isinstance(pandoc_block, Mapping):
                 raise ConversionError("Pandoc block must be an object")
 
+            if self._is_comment(pandoc_block):
+                continue
+
             blocks.append(self._convert_block(pandoc_block))
 
         return blocks
+
+    @staticmethod
+    def _is_comment(pandoc_block):
+        """Tell whether a Pandoc block holds only an HTML comment, such as a block separator, which has no ADF form.
+
+        The GFM reader returns a comment line as a raw block; the HTML reader, inside HTML tables, as a plain block holding
+        only raw inline comments.
+        """
+        if pandoc_block.get("t") == "RawBlock":
+            return MarkdownToADFConverter._is_raw_comment(pandoc_block)
+
+        inlines = pandoc_block.get("c")
+        return (
+            pandoc_block.get("t") == "Plain" and isinstance(inlines, list) and bool(inlines) and all(
+                isinstance(inline, Mapping) and (
+                    inline.get("t") in {"Space", "SoftBreak"} or
+                    (inline.get("t") == "RawInline" and MarkdownToADFConverter._is_raw_comment(inline)))
+                for inline in inlines) and any(inline.get("t") == "RawInline" for inline in inlines))
+
+    @staticmethod
+    def _is_raw_comment(pandoc_node):
+        value = pandoc_node.get("c")
+        return (
+            isinstance(value, list) and len(value) == 2 and value[0] == "html" and isinstance(value[1], str)
+            and HTML_COMMENT.fullmatch(value[1]) is not None)
 
     def _convert_block(self, pandoc_block):
         node_type = pandoc_block.get("t")

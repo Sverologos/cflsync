@@ -84,6 +84,24 @@ starts with a nested list, a leading empty paragraph again. Malformed required
 values cause opaque fallback; malformed document structure may instead raise a
 conversion error.
 
+A list item's first paragraph is written tight only when the next block in the
+item interrupts a paragraph: a fenced code block, a heading, a blockquote or
+alert, a rule, raw HTML, or a list whose first item has content and, if
+ordered, starts at 1. Otherwise, as before a second paragraph, an image, a code
+block without language, or a pipe table, it stays a paragraph and Pandoc writes
+the list loose, so that the next block does not read back as a continuation of
+the paragraph.
+
+Some adjacent blocks would read back as one: a list followed by a list of the
+same kind, and a list or code block without language followed by a code block
+without language. An empty paragraph between them does not separate them,
+since Pandoc writes it as nothing. In any block container, including list
+items and table cells, such a pair is written with an empty HTML comment
+`<!-- -->` between the blocks. Reverse conversion ignores every block that
+holds only an HTML comment, whatever its text, so Pandoc's own separators and
+hand-written comments are accepted; the comments are not pushed. A comment
+inside a paragraph is rejected like other raw inline HTML.
+
 Blockquotes map to Markdown `>` blocks and back to ADF `blockquote` nodes,
 with their contained blocks and inline formatting converted recursively.
 
