@@ -79,6 +79,21 @@ Pulled tables that require merged cells or multiple blocks in a cell may be
 written as HTML tables. These are accepted on push, but table layout, widths,
 cell colours, alignment, and similar presentation settings are not retained.
 
+## How Markdown reads text
+
+Text pushed to Confluence is what Markdown makes of `content.md`, so ordinary
+Markdown rules apply, also to text that came from Confluence:
+
+- Runs of spaces become one space, and spaces at the start or end of a
+  paragraph or table cell are dropped.
+- A hard break at the end of a paragraph, heading, or task item is dropped.
+- A line holding only `---` is a horizontal rule; write `\---` for the text.
+- A list item that starts with `[ ]`, `[x]`, `☐`, or `☒` is a task item.
+- A bare URL or email address stays text; write `<https://example.com>` or
+  `[label](https://example.com)` for a link.
+- HTML comments, such as the `<!-- -->` that pull writes between two lists
+  that would otherwise merge, are not pushed.
+
 ## Macros
 
 ### Supported macros

@@ -36,6 +36,12 @@ JSON in a Pandoc code block, which Pandoc writes as a fenced GFM block.
   before an API request.
 - The resulting GFM is canonicalized by Pandoc. Preservation concerns document
   structure and opaque JSON payloads, not original Markdown spelling.
+- Text follows Markdown's reading rules, which are accepted rather than
+  compensated: runs of spaces collapse to one, spaces at the edges of
+  paragraphs and table cells are trimmed, a paragraph holding only `---`
+  reads back as a rule, and a list item whose text starts with `☐` or `☒`
+  reads back as a task item. A push of unchanged pulled Markdown can therefore
+  differ from the original ADF in these respects.
 
 ## Root document
 
