@@ -119,7 +119,7 @@ the one the Atlassian `twg` CLI uses; a pulled date is written as:
 <time datetime="2026-04-01">April 1, 2026</time>
 ```
 
-Date spans written by cflsync 0.5, such as
+Date spans written by cflsync 0.5.3 and earlier, such as
 `<span cfl-type="date">2026-04-01[Europe/Brussels]</span>`, are no longer
 accepted; push reports them, and they must be rewritten as `<time>` elements.
 

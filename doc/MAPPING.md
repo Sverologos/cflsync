@@ -288,9 +288,9 @@ spells out the same date in English. Reverse conversion, as twg's, reads only
 `datetime` and pushes the UTC midnight of that date; the text is ignored. A
 `datetime` other than `YYYY-MM-DD`, an invalid calendar date, a date with
 marks, or an unclosed element causes conversion to fail before an API request.
-The date spans of cflsync 0.5 (`<span cfl-type="date">`, with or without a
-zone or `cfl-timestamp`) are rejected with a message naming the `<time>`
-form.
+The date spans of cflsync 0.5.3 and earlier (`<span cfl-type="date">`, with
+or without a zone or `cfl-timestamp`) are rejected with a message naming the
+`<time>` form.
 
 A status becomes `<span cfl-type="status" style="background-color: COLOR">TEXT</span>`.
 ADF `neutral` uses CSS `gray`; every other supported ADF status color uses the
