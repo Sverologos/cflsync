@@ -12,11 +12,8 @@ import json
 import re
 import subprocess
 from collections.abc import Mapping
-from datetime import date, datetime, time
+from datetime import date, datetime, timezone
 from html import escape
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-
-from tzlocal import get_localzone_name
 
 from .errors import SyncError
 
@@ -49,38 +46,31 @@ BLOCK_SEPARATOR = "<!-- -->"
 HTML_COMMENT = re.compile(r"\s*<!--(?:(?!-->).)*-->\s*", re.DOTALL)
 
 
-def _local_zone_name():
-    """Return the local machine's IANA time-zone name."""
-    try:
-        return get_localzone_name()
-    except ZoneInfoNotFoundError as error:
-        raise ConversionError("local time zone is unavailable") from error
+MONTHS = (
+    "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+# A date is written as twg writes it: the calendar date of its UTC timestamp, with that date in words as text.
+TIME_OPENING = re.compile(r'<time datetime="(\d{4}-\d{2}-\d{2})">')
 
 
-def _date_text(timestamp):
+def _date_html(timestamp):
+    """Return the ``datetime`` value and text of the ``<time>`` element for an ADF date timestamp, or ``None``."""
     if not isinstance(timestamp, str) or not timestamp.isdigit():
         return None
 
     try:
-        zone_name = _local_zone_name()
-        local_time = datetime.fromtimestamp(int(timestamp) / 1000, ZoneInfo(zone_name))
-    except (OSError, OverflowError, ValueError, ZoneInfoNotFoundError):
+        calendar_date = datetime.fromtimestamp(int(timestamp) / 1000, timezone.utc).date()
+    except (OSError, OverflowError, ValueError):
         return None
 
-    return f"{local_time.date().isoformat()}[{zone_name}]"
+    return calendar_date.isoformat(), f"{MONTHS[calendar_date.month - 1]} {calendar_date.day}, {calendar_date.year}"
 
 
-def _date_timestamp(text):
-    match = re.fullmatch(r"(\d{4}-\d{2}-\d{2})(?:\[([^\[\]]+)\])?", text)
-    if match is None:
-        return None
-
+def _date_timestamp(value):
+    """Return the ADF timestamp of a ``YYYY-MM-DD`` date, its UTC midnight as twg reads it, or ``None``."""
     try:
-        calendar_date = date.fromisoformat(match.group(1))
-        zone_name = match.group(2) or _local_zone_name()
-        zone = ZoneInfo(zone_name)
-        return str(int(datetime.combine(calendar_date, time.min, zone).timestamp() * 1000))
-    except (OSError, OverflowError, ValueError, ZoneInfoNotFoundError):
+        calendar_date = date.fromisoformat(value)
+        return str(int(datetime(calendar_date.year, calendar_date.month, calendar_date.day, tzinfo=timezone.utc).timestamp() * 1000))
+    except (OverflowError, ValueError):
         return None
 
 
@@ -649,16 +639,16 @@ class ADFToMarkdownConverter:
                     "c": ["html", "</span>"]}, ]
 
     def _convert_date(self, node):
-        """Convert an ADF timestamp to a local calendar date with its IANA zone."""
+        """Convert an ADF timestamp to twg's ``<time>`` element for its UTC calendar date."""
         attrs = node.get("attrs")
         if not isinstance(attrs, Mapping):
             return None
 
-        timestamp = attrs.get("timestamp")
-        text = _date_text(timestamp)
-        if text is None:
+        date_html = _date_html(attrs.get("timestamp"))
+        if date_html is None:
             return None
 
+        value, text = date_html
         inlines = self._convert_text({"type": "text", "text": text})
         if inlines is None:
             return None
@@ -666,9 +656,9 @@ class ADFToMarkdownConverter:
         return [
             {
                 "t": "RawInline",
-                "c": ["html", '<span cfl-type="date">']}, *inlines, {
+                "c": ["html", f'<time datetime="{value}">']}, *inlines, {
                     "t": "RawInline",
-                    "c": ["html", "</span>"]}, ]
+                    "c": ["html", "</time>"]}, ]
 
     def _convert_status(self, node):
         """Render a status lozenge as a canonical raw HTML span."""
@@ -1473,7 +1463,7 @@ class MarkdownToADFConverter:
         if span_type == "status":
             self._convert_status_span(attributes, text, inlines)
         elif span_type == "date":
-            self._convert_date_span(attributes, text, inlines)
+            raise ConversionError('date spans are no longer supported; write a date as <time datetime="YYYY-MM-DD">…</time>')
         elif span_type == "mention":
             self._convert_mention_span(attributes, text, inlines)
         else:
@@ -1557,24 +1547,35 @@ class MarkdownToADFConverter:
 
         inlines.append({"type": "status", "attrs": {"text": text, "color": color}})
 
-    def _convert_date_span(self, attributes, text, inlines):
-        if attributes.get("cfl-type") != "date":
-            raise ConversionError("date span has unsupported attributes")
+    def _convert_raw_time(self, pandoc_inlines, index, inlines, marks):
+        """Convert a ``<time datetime="YYYY-MM-DD">`` pair to a date at UTC midnight, as twg does; its text is ignored."""
+        if marks:
+            raise ConversionError("date has unsupported marks")
 
-        if "cfl-timestamp" in attributes:
-            if set(attributes) != {"cfl-type", "cfl-timestamp"} or not attributes["cfl-timestamp"].isdigit():
-                raise ConversionError("date span has unsupported attributes")
+        match = TIME_OPENING.fullmatch(self._raw_html(pandoc_inlines[index]))
+        if match is None:
+            raise ConversionError('date must be written as <time datetime="YYYY-MM-DD">…</time>')
 
-            timestamp = attributes["cfl-timestamp"]
-        else:
-            if set(attributes) != {"cfl-type"}:
-                raise ConversionError("date span has unsupported attributes")
+        timestamp = _date_timestamp(match.group(1))
+        if timestamp is None:
+            raise ConversionError(f"date '{match.group(1)}' is not a calendar date")
 
-            timestamp = _date_timestamp(text)
-            if timestamp is None:
-                raise ConversionError("date span must contain YYYY-MM-DD[time-zone]")
+        index += 1
+        while index < len(pandoc_inlines):
+            pandoc_inline = pandoc_inlines[index]
+            if not isinstance(pandoc_inline, Mapping):
+                raise ConversionError("Pandoc inline must be an object")
 
-        inlines.append({"type": "date", "attrs": {"timestamp": timestamp}})
+            if pandoc_inline.get("t") == "RawInline":
+                if self._raw_html(pandoc_inline) != "</time>":
+                    raise ConversionError("date has an invalid closing tag")
+
+                inlines.append({"type": "date", "attrs": {"timestamp": timestamp}})
+                return index + 1
+
+            index += 1
+
+        raise ConversionError("date is not closed")
 
     def _convert_mention_span(self, attributes, text, inlines):
         allowed = {"cfl-type", "cfl-id", "cfl-access-level", "cfl-user-type", }
@@ -1703,9 +1704,12 @@ class MarkdownToADFConverter:
                 raise ConversionError("Pandoc inline must be an object")
 
             if pandoc_inline.get("t") == "RawInline":
-                raw_mark = RAW_MARKS.get(self._raw_html(pandoc_inline))
+                raw_html = self._raw_html(pandoc_inline)
+                raw_mark = RAW_MARKS.get(raw_html)
                 if raw_mark is not None:
                     index = self._convert_raw_mark(pandoc_inlines, index, inlines, marks, *raw_mark)
+                elif raw_html.startswith("<time"):
+                    index = self._convert_raw_time(pandoc_inlines, index, inlines, marks)
                 else:
                     index = self._convert_raw_span(pandoc_inlines, index, inlines, marks)
                 continue

@@ -98,28 +98,30 @@ Markdown rules apply, also to text that came from Confluence:
 
 ### Supported macros
 
-Pulled dates and status lozenges are represented by special HTML spans, which
-cflsync converts back to their Confluence forms on push. Mentions whose users
-have no visible email address also use a special HTML span. They can be edited,
-but their required attributes must remain intact:
+Pulled dates are represented by an HTML `<time>` element, and status lozenges
+by a special HTML span; cflsync converts both back to their Confluence forms on
+push. Mentions whose users have no visible email address also use a special
+HTML span. They can be edited, but their required attributes must remain
+intact:
 
 - Change the text inside a status span and, if needed, its
   `background-color` to `gray`, `purple`, `blue`, `red`, `yellow`, or `green`.
-- Change a date span's `YYYY-MM-DD[Region/City]` text. The symbolic time zone
-  makes the date deterministic across contributors. A date without `[Region/City]`
-  uses the local machine time zone on push.
+- Change a date by changing its `datetime="YYYY-MM-DD"` attribute. The text
+  inside `<time>` is for reading only and is ignored on push; update it to
+  match. The same element creates a new date.
 - A mention span needs its non-empty `cfl-id`; preserve its other metadata
   unless the corresponding Confluence account values are known.
 
-These are cflsync-specific HTML forms rather than ordinary Markdown syntax.
-For example, a pulled date is written as:
+These are HTML forms rather than ordinary Markdown syntax. The date form is
+the one the Atlassian `twg` CLI uses; a pulled date is written as:
 
 ```html
-<span cfl-type="date">2026-04-01[Europe/Brussels]</span>
+<time datetime="2026-04-01">April 1, 2026</time>
 ```
 
-Date spans with `cfl-timestamp` preserve that
-timestamp unchanged.
+Date spans written by cflsync 0.5, such as
+`<span cfl-type="date">2026-04-01[Europe/Brussels]</span>`, are no longer
+accepted; push reports them, and they must be rewritten as `<time>` elements.
 
 ### Creating mentions
 

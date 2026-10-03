@@ -9,10 +9,7 @@
 import json
 from typing import Any
 import unittest
-from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import patch
-from zoneinfo import ZoneInfo
 
 from cflsync import ADFToMarkdownConverter, MediaResolver, PandocRunner
 
@@ -607,31 +604,38 @@ class TestADFToMarkdownConverter(unittest.TestCase):
                         "t": "Str",
                         "c": "\U0001F604"}]})
 
-    def test_maps_a_date_to_a_raw_html_span(self) -> None:
-        pandoc = RecordingPandoc()
-        timestamp = "1775001600000"
-        zone_name = "Europe/Brussels"
-        expected = f"{datetime.fromtimestamp(int(timestamp) / 1000, ZoneInfo(zone_name)).date().isoformat()}[{zone_name}]"
-        date = {"type": "date", "attrs": {"timestamp": timestamp}}
+    def test_maps_a_date_to_a_time_element_for_its_utc_date(self) -> None:
+        # 2026-04-01 00:00 UTC, and 2026-04-01 23:30 UTC, which is already 2 April in time zones east of UTC.
+        for timestamp in ("1775001600000", "1775086200000"):
+            with self.subTest(timestamp=timestamp):
+                pandoc = RecordingPandoc()
 
-        with patch("cflsync.convert._local_zone_name", return_value=zone_name):
-            ADFToMarkdownConverter(pandoc).convert(
-                {
-                    "type": "doc",
-                    "version": 1,
-                    "content": [{
-                        "type": "paragraph",
-                        "content": [date]}], })
+                ADFToMarkdownConverter(pandoc).convert(
+                    {
+                        "type": "doc",
+                        "version": 1,
+                        "content": [{
+                            "type": "paragraph",
+                            "content": [{
+                                "type": "date",
+                                "attrs": {
+                                    "timestamp": timestamp}}]}], })
 
-        self.assertEqual(
-            pandoc.pandoc["blocks"][0]["c"], [
-                {
-                    "t": "RawInline",
-                    "c": ["html", '<span cfl-type="date">']}, {
-                        "t": "Str",
-                        "c": expected}, {
+                self.assertEqual(
+                    pandoc.pandoc["blocks"][0]["c"], [
+                        {
                             "t": "RawInline",
-                            "c": ["html", "</span>"]}])
+                            "c": ["html", '<time datetime="2026-04-01">']}, {
+                                "t": "Str",
+                                "c": "April"}, {
+                                    "t": "Space"}, {
+                                        "t": "Str",
+                                        "c": "1,"}, {
+                                            "t": "Space"}, {
+                                                "t": "Str",
+                                                "c": "2026"}, {
+                                                    "t": "RawInline",
+                                                    "c": ["html", "</time>"]}])
 
     def test_maps_a_status_to_a_raw_html_span(self) -> None:
         pandoc = RecordingPandoc()

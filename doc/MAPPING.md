@@ -148,7 +148,7 @@ task item. Reverse conversion emits no task-list or task-item `localId`.
 | `emoji` with `attrs.text` | `Str` holding that text | `text` |
 | `mention` with `attrs.id` and a resolvable email address | `Link` with a `mailto:` target | `mention` |
 | `mention` with `attrs.id` but no email address | raw HTML `span` | `mention` |
-| `date` with a millisecond timestamp | raw HTML `span` | `date` |
+| `date` with a millisecond timestamp | raw HTML `<time datetime>` inline pair | `date` at UTC midnight |
 | `status` | raw HTML `span` | `status` |
 
 Underline, subscript, and superscript are represented by strict `<u>`,
@@ -208,7 +208,8 @@ forms:
 | Content | GFM reader | HTML reader |
 | --- | --- | --- |
 | `<u>`, `<sub>`, `<sup>` | raw HTML inline pair | `Underline`, `Subscript`, `Superscript` |
-| status, date, and mention spans | raw HTML inline pair | `Span` with the same attributes; a `style` declaration loses the space after its colon |
+| status and mention spans | raw HTML inline pair | `Span` with the same attributes; a `style` declaration loses the space after its colon |
+| `<time datetime>` | raw HTML inline pair | raw HTML inline pair |
 | ordered list | `Decimal`, `Period` | `Decimal`, `DefaultDelim` |
 | task item | `☐`/`☒` marker | the same marker inside a raw `<label>` pair, which is ignored |
 
@@ -280,14 +281,16 @@ keeping its identity. Reading GFM turns a typed `:shortcode:` into a Pandoc
 emoji span, which the reverse mapping accepts and reduces to the same Unicode
 text; other spans have no ADF form.
 
-A date becomes `<span cfl-type="date">YYYY-MM-DD[REGION/CITY]</span>`,
-where the date and IANA zone are derived from `TIMESTAMP` in the pulling
-machine's local time zone. Reverse conversion parses the date and zone to an
-ADF timestamp at local midnight. A date without `[REGION/CITY]` uses the local
-zone of the machine performing the push. Spans containing `cfl-timestamp` use
-that timestamp as the canonical value and copy it
-without conversion. Invalid date text or symbolic zones cause conversion to
-fail before an API request.
+A date is a calendar day, which Confluence stores as the timestamp of its UTC
+midnight. It becomes twg's form, `<time datetime="YYYY-MM-DD">Month D,
+YYYY</time>`: `datetime` is the UTC calendar date of `TIMESTAMP`, and the text
+spells out the same date in English. Reverse conversion, as twg's, reads only
+`datetime` and pushes the UTC midnight of that date; the text is ignored. A
+`datetime` other than `YYYY-MM-DD`, an invalid calendar date, a date with
+marks, or an unclosed element causes conversion to fail before an API request.
+The date spans of cflsync 0.5 (`<span cfl-type="date">`, with or without a
+zone or `cfl-timestamp`) are rejected with a message naming the `<time>`
+form.
 
 A status becomes `<span cfl-type="status" style="background-color: COLOR">TEXT</span>`.
 ADF `neutral` uses CSS `gray`; every other supported ADF status color uses the

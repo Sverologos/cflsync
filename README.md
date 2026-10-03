@@ -97,6 +97,20 @@ is over 64 characters is renamed, together with its child pages and unmanaged
 files. Push local changes first, or commit the workarea to version control, so
 the moves can be reviewed.
 
+### Dates written by cflsync 0.5
+
+Dates are now written as `<time datetime="YYYY-MM-DD">April 1, 2026</time>`, the
+calendar date that Confluence stores as UTC midnight. cflsync 0.5 wrote
+`<span cfl-type="date">2026-04-01[Europe/Brussels]</span>` and pushed the local
+midnight of that date, which changes the stored timestamp, and outside UTC can
+show a different day in Confluence. Push now rejects those spans:
+
+1. In pages with local changes, rewrite each date span as a `<time>` element
+   with the intended date, then push.
+2. Run `cflsync pull --force` to rewrite all other pages in the new form; a
+   normal pull rewrites only pages that changed remotely. `--force` overwrites
+   local changes, so run it only after step 1.
+
 ### Upgrading workareas created by cflsync 0.4
 
 This version of cflsync uses workarea version 3, recorded in

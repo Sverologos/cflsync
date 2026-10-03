@@ -8,10 +8,7 @@
 
 import json
 import unittest
-from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import patch
-from zoneinfo import ZoneInfo
 
 from cflsync import ADFToMarkdownConverter, ConversionError, MarkdownToADFConverter, MediaResolver, PandocRunner
 
@@ -607,51 +604,22 @@ class TestMarkdownToADFConverter(unittest.TestCase):
 
         self.assertEqual(document, source)
 
-    def test_preserves_a_timestamp_date_through_pandoc(self) -> None:
-        timestamp = "1775001600000"
-        document = MarkdownToADFConverter(
-            PandocRunner()).convert(f'<span cfl-type="date" cfl-timestamp="{timestamp}">changed text</span>\n')
+    def test_maps_a_time_element_to_utc_midnight_and_ignores_its_text(self) -> None:
+        for text in ("April 1, 2026", "changed text", ""):
+            with self.subTest(text=text):
+                document = MarkdownToADFConverter(PandocRunner()).convert(f'On <time datetime="2026-04-01">{text}</time>\n')
 
-        self.assertEqual(
-            document["content"][0], {
-                "type": "paragraph",
-                "content": [{
-                    "type": "date",
-                    "attrs": {
-                        "timestamp": timestamp}}]})
-
-    def test_maps_a_symbolic_time_zone_date_through_pandoc(self) -> None:
-        zone_name = "Europe/Brussels"
-        calendar_date = "2026-04-01"
-        timestamp = str(int(datetime(2026, 4, 1, tzinfo=ZoneInfo(zone_name)).timestamp() * 1000))
-        document = MarkdownToADFConverter(PandocRunner()).convert(f'<span cfl-type="date">{calendar_date}[{zone_name}]</span>\n')
-
-        self.assertEqual(
-            document["content"][0], {
-                "type": "paragraph",
-                "content": [{
-                    "type": "date",
-                    "attrs": {
-                        "timestamp": timestamp}}]})
-
-    def test_maps_a_date_without_a_symbolic_time_zone_in_the_local_zone(self) -> None:
-        zone_name = "Europe/Brussels"
-        calendar_date = "2026-04-01"
-        timestamp = str(int(datetime(2026, 4, 1, tzinfo=ZoneInfo(zone_name)).timestamp() * 1000))
-        with patch("cflsync.convert._local_zone_name", return_value=zone_name):
-            document = MarkdownToADFConverter(PandocRunner()).convert(f'<span cfl-type="date">{calendar_date}</span>\n')
-
-        self.assertEqual(
-            document["content"][0], {
-                "type": "paragraph",
-                "content": [{
-                    "type": "date",
-                    "attrs": {
-                        "timestamp": timestamp}}]})
+                self.assertEqual(
+                    document["content"][0], {
+                        "type": "paragraph",
+                        "content": [{
+                            "type": "text",
+                            "text": "On "}, {
+                                "type": "date",
+                                "attrs": {
+                                    "timestamp": "1775001600000"}}]})
 
     def test_round_trips_a_date(self) -> None:
-        zone_name = "Europe/Brussels"
-        timestamp = str(int(datetime(2026, 4, 1, tzinfo=ZoneInfo(zone_name)).timestamp() * 1000))
         source = {
             "type": "doc",
             "version": 1,
@@ -660,13 +628,42 @@ class TestMarkdownToADFConverter(unittest.TestCase):
                 "content": [{
                     "type": "date",
                     "attrs": {
-                        "timestamp": timestamp}}]}]}
+                        "timestamp": "1775001600000"}}]}]}
         pandoc = PandocRunner()
-        with patch("cflsync.convert._local_zone_name", return_value=zone_name):
-            markdown = ADFToMarkdownConverter(pandoc).convert(source)
+
+        markdown = ADFToMarkdownConverter(pandoc).convert(source)
         document = MarkdownToADFConverter(pandoc).convert(markdown)
 
+        self.assertEqual(markdown, '<time datetime="2026-04-01">April 1, 2026</time>\n')
         self.assertEqual(document, source)
+
+    def test_pushes_a_date_off_utc_midnight_at_utc_midnight_of_its_utc_date(self) -> None:
+        pandoc = PandocRunner()
+        source = {"type": "doc", "version": 1, "content": [_paragraph({"type": "date", "attrs": {"timestamp": "1775086200000"}})]}
+
+        document = MarkdownToADFConverter(pandoc).convert(ADFToMarkdownConverter(pandoc).convert(source))
+
+        self.assertEqual(document["content"], [_paragraph({"type": "date", "attrs": {"timestamp": "1775001600000"}})])
+
+    def test_rejects_date_spans_of_earlier_releases(self) -> None:
+        for markdown in ('<span cfl-type="date">2026-04-01[Europe/Brussels]</span>\n', '<span cfl-type="date">2026-04-01</span>\n',
+                         '<span cfl-type="date" cfl-timestamp="1775001600000">April 1</span>\n'):
+            with self.subTest(markdown=markdown):
+                with self.assertRaisesRegex(ConversionError, "date spans are no longer supported"):
+                    MarkdownToADFConverter(PandocRunner()).convert(markdown)
+
+    def test_rejects_invalid_time_elements(self) -> None:
+        cases = {
+            "<time>April 1</time>\n": "YYYY-MM-DD",
+            '<time datetime="2026-4-1">April 1</time>\n': "YYYY-MM-DD",
+            '<time datetime="2026-04-01T10:00">April 1</time>\n': "YYYY-MM-DD",
+            '<time datetime="2026-02-30">February 30</time>\n': "not a calendar date",
+            '<time datetime="2026-04-01">April 1\n': "not closed",
+            '**<time datetime="2026-04-01">April 1</time>**\n': "unsupported marks", }
+        for markdown, message in cases.items():
+            with self.subTest(markdown=markdown):
+                with self.assertRaisesRegex(ConversionError, message):
+                    MarkdownToADFConverter(PandocRunner()).convert(markdown)
 
     def test_maps_a_raw_html_mention_through_pandoc(self) -> None:
         document = MarkdownToADFConverter(PandocRunner()).convert(
@@ -747,10 +744,6 @@ class TestMarkdownToADFConverter(unittest.TestCase):
     def test_rejects_a_mention_without_an_account_id(self) -> None:
         with self.assertRaisesRegex(ConversionError, "non-empty account ID"):
             MarkdownToADFConverter(PandocRunner()).convert('<span cfl-type="mention">@Example User</span>\n')
-
-    def test_rejects_a_date_with_an_invalid_symbolic_time_zone(self) -> None:
-        with self.assertRaisesRegex(ConversionError, "YYYY-MM-DD"):
-            MarkdownToADFConverter(PandocRunner()).convert('<span cfl-type="date">2026-04-01[Not/AZone]</span>\n')
 
     def test_rejects_a_status_with_an_unsupported_css_color(self) -> None:
         with self.assertRaisesRegex(ConversionError, "unsupported attributes"):
@@ -1799,7 +1792,7 @@ class TestMarkdownToADFHTMLTableCells(unittest.TestCase):
              _paragraph(_text("second"))])
 
     def test_rejects_raw_html_in_cells_that_has_no_adf_form(self) -> None:
-        markdown = '<table>\n<tbody>\n<tr>\n<td><p>On <time datetime="2026-01-01">1 January</time></p>\n<p>second</p></td>\n</tr>\n</tbody>\n</table>\n'
+        markdown = '<table>\n<tbody>\n<tr>\n<td><p>Press <kbd>Ctrl</kbd></p>\n<p>second</p></td>\n</tr>\n</tbody>\n</table>\n'
 
         with self.assertRaises(ConversionError):
             MarkdownToADFConverter(self.pandoc).convert(markdown)
