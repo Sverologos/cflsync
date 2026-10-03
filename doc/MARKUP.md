@@ -56,9 +56,12 @@ headings in the page body.
 Nest list items with indentation. Images or files in `_attachments/` are
 uploaded and maintained with the page. Links outside `_attachments/` remain
 ordinary links; external images are supported as external media.
-Pull writes attachment filenames percent-encoded, as in
-`![](_attachments/Pasted%20image.png)` for `Pasted image.png`; write a name with
-spaces the same way, or in angle brackets: `![](<_attachments/Pasted image.png>)`.
+Pull writes attachment filenames percent-encoded in the path, as in
+`![Pasted image.png](_attachments/Pasted%20image.png)` for `Pasted image.png`;
+write a name with spaces the same way, or in angle brackets:
+`![](<_attachments/Pasted image.png>)`. The label is the alt text, or the plain
+filename when Confluence has none, and is pushed as alt text. cflsync 0.5.4 and
+0.5.5 wrote the encoded name as that label; edit it, or it is pushed as written.
 File links such as `[Report](_attachments/report.pdf)` become inline Confluence
 file references using that page's attachment manifest. After page copy, these
 references resolve to the copied files; ordinary source download URLs remain

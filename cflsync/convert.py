@@ -14,6 +14,7 @@ import subprocess
 from collections.abc import Mapping
 from datetime import date, datetime, timezone
 from html import escape
+from urllib.parse import unquote
 
 from .errors import SyncError
 
@@ -466,7 +467,12 @@ class ADFToMarkdownConverter:
             return None
 
     def _convert_media_target(self, url, alt):
-        text = alt if isinstance(alt, str) and alt else url.rsplit("/", 1)[-1]
+        # Without alt text, the label is the file name; attachment paths are percent-encoded, their labels are not.
+        name = url.rsplit("/", 1)[-1]
+        if url.startswith("_attachments/"):
+            name = unquote(name)
+
+        text = alt if isinstance(alt, str) and alt else name
         inlines = self._convert_text({"type": "text", "text": text})
         if inlines is None:
             return None

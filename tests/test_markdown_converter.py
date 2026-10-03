@@ -1686,6 +1686,24 @@ class TestMarkdownToADFAttachmentPaths(unittest.TestCase):
 
         self.assertEqual(markdown, "![x](_attachments/Pasted%20image%2020260601.png)\n")
 
+    def test_labels_media_without_alt_text_with_the_decoded_filename(self) -> None:
+        for number, name in enumerate(self.NAMES):
+            attrs = {"type": "file", "id": f"file-{number}", "collection": "contentId-1"}
+            media = {"type": "media", "attrs": attrs}
+            labelled = {"type": "media", "attrs": {**attrs, "alt": name}}
+            block: dict[str, object]
+            if name.endswith(".pdf"):
+                block = {"type": "mediaGroup", "content": [media]}
+                pushed = _paragraph({"type": "mediaInline", "attrs": labelled["attrs"]})
+            else:
+                block = {"type": "mediaSingle", "attrs": {"layout": "center"}, "content": [media]}
+                pushed = {"type": "mediaSingle", "attrs": {"layout": "center"}, "content": [labelled]}
+            with self.subTest(name=name):
+                markdown, document = self._round_trip([block])
+
+                self.assertIn(f"[{name}](_attachments/", markdown.replace("\\", ""))
+                self.assertEqual(document, [pushed])
+
     def test_reads_unencoded_paths_of_earlier_releases(self) -> None:
         document = MarkdownToADFConverter(self.pandoc, self._media(), "contentId-1").convert("![c](_attachments/café.png)\n")
 

@@ -238,7 +238,10 @@ which has no ADF counterpart in either direction.
 inlines when the page attachment manifest resolves the ADF media identifier to
 a managed local `_attachments/<filename>` path. `Image` is used for filenames
 with an image suffix and `Link` otherwise, since the ADF media node carries no
-media type. External media uses its own URL and needs no manifest. The reverse
+media type. The `alt` text is the inline text; media without `alt` is labelled
+with its filename, decoded from the percent-encoded path, or with the last
+path segment of an external URL. External media uses its own URL and needs no
+manifest. The reverse
 mapping uses the manifest to reconstruct images as ADF media; file links become
 `mediaInline` references, so their original block container is not retained.
 Media that the manifest cannot resolve stays opaque. Layout, width, and height
@@ -366,7 +369,8 @@ written by earlier releases.
 Managed `_attachments/<filename>` links become `mediaInline` file references
 on push, using the manifest's file ID and the destination page's collection.
 This restores downloaded inline-file references rather than publishing a local
-filesystem URL. Plain link labels become media alt text; ordinary Confluence
+filesystem URL. Plain link labels become media alt text, so media pulled
+without `alt` is pushed with its filename as `alt`; ordinary Confluence
 download URLs remain unchanged links and are not redirected to copied files.
 
 ## Required tests
