@@ -97,13 +97,13 @@ is over 64 characters is renamed, together with its child pages and unmanaged
 files. Push local changes first, or commit the workarea to version control, so
 the moves can be reviewed.
 
-### Dates written by cflsync 0.5
+### Dates written by cflsync 0.5.3 and earlier
 
-Dates are now written as `<time datetime="YYYY-MM-DD">April 1, 2026</time>`, the
-calendar date that Confluence stores as UTC midnight. cflsync 0.5 wrote
-`<span cfl-type="date">2026-04-01[Europe/Brussels]</span>` and pushed the local
-midnight of that date, which changes the stored timestamp, and outside UTC can
-show a different day in Confluence. Push now rejects those spans:
+Dates are now written as `<time datetime="YYYY-MM-DD">April 1, 2026</time>`,
+the calendar date that Confluence stores as UTC midnight. cflsync 0.5.3 and
+earlier wrote `<span cfl-type="date">2026-04-01[Europe/Brussels]</span>` and
+pushed the local midnight of that date, which changes the stored timestamp, and
+outside UTC can show a different day in Confluence. Push now rejects those spans:
 
 1. In pages with local changes, rewrite each date span as a `<time>` element
    with the intended date, then push.
