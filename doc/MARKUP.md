@@ -89,6 +89,8 @@ Markdown rules apply, also to text that came from Confluence:
 - A hard break at the end of a paragraph, heading, or task item is dropped.
 - A line holding only `---` is a horizontal rule; write `\---` for the text.
 - A list item that starts with `[ ]`, `[x]`, `☐`, or `☒` is a task item.
+- A code block loses its final line break; a code block without a language,
+  which pull writes indented, also loses blank lines at its start and end.
 - A bare URL or email address stays text; write `<https://example.com>` or
   `[label](https://example.com)` for a link.
 - HTML comments, such as the `<!-- -->` that pull writes between two lists

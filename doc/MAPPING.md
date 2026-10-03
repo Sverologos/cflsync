@@ -39,8 +39,10 @@ JSON in a Pandoc code block, which Pandoc writes as a fenced GFM block.
 - Text follows Markdown's reading rules, which are accepted rather than
   compensated: runs of spaces collapse to one, spaces at the edges of
   paragraphs and table cells are trimmed, a paragraph holding only `---`
-  reads back as a rule, and a list item whose text starts with `☐` or `☒`
-  reads back as a task item. A push of unchanged pulled Markdown can therefore
+  reads back as a rule, a list item whose text starts with `☐` or `☒`
+  reads back as a task item, and a code block loses its final line break and,
+  when written indented (without language), its leading and trailing blank
+  lines. A push of unchanged pulled Markdown can therefore
   differ from the original ADF in these respects.
 
 ## Root document
