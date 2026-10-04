@@ -100,6 +100,12 @@ Markdown rules apply, also to text that came from Confluence:
 - A list item that starts with `[ ]`, `[x]`, `☐`, or `☒` is a task item.
 - A code block loses its final line break; a code block without a language,
   which pull writes indented, also loses blank lines at its start and end.
+- An image alone in a paragraph is a block image, also when Confluence showed
+  it inline.
+- Bold and italic that overlap without nesting, such as bold over "a b" and
+  italic over "b c", cannot be written in Markdown; such text is pushed with
+  literal asterisks. Nest one inside the other, or separate them by a space,
+  as in `**a *b*** *c*`.
 - A bare URL or email address stays text; write `<https://example.com>` or
   `[label](https://example.com)` for a link.
 - HTML comments, such as the `<!-- -->` that pull writes between two lists

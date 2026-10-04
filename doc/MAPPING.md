@@ -40,9 +40,11 @@ JSON in a Pandoc code block, which Pandoc writes as a fenced GFM block.
   compensated: runs of spaces collapse to one, spaces at the edges of
   paragraphs and table cells are trimmed, a paragraph holding only `---`
   reads back as a rule, a list item whose text starts with `☐` or `☒`
-  reads back as a task item, and a code block loses its final line break and,
+  reads back as a task item, a code block loses its final line break and,
   when written indented (without language), its leading and trailing blank
-  lines. A push of unchanged pulled Markdown can therefore
+  lines, an inline image alone in a paragraph reads back as a block image,
+  and `strong`, `em`, or `strike` runs that cross read back with literal
+  delimiters. A push of unchanged pulled Markdown can therefore
   differ from the original ADF in these respects.
 
 ## Root document
