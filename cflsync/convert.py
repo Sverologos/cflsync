@@ -46,11 +46,70 @@ TYPED_RAW_MARKS = {"Underline": "<u>", "Subscript": "<sub>", "Superscript": "<su
 DELIMITED_MARKS = (("strong", "Strong"), ("em", "Emph"), ("strike", "Strikeout"))
 # An empty HTML comment between two blocks keeps Markdown from reading them as one; any comment-only block is ignored.
 BLOCK_SEPARATOR = "<!-- -->"
+# A layout section and its columns are written in twg's HTML form, with a generic section type, around Markdown bodies.
+LAYOUT_SECTION_TYPE = "layout-section"
+LAYOUT_BREAKOUT_MODES = {"wide", "full-width"}
+LAYOUT_TAG = re.compile(r"<(section|div)((?:\s+[\w-]+=\"[^\"<>]*\")*)\s*>|</(section|div)>")
+LAYOUT_ATTRIBUTE = re.compile(r'\s+([\w-]+)="([^"<>]*)"')
 HTML_COMMENT = re.compile(r"\s*<!--(?:(?!-->).)*-->\s*", re.DOTALL)
 
 MONTHS = ("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
 # A date is written as twg writes it: the calendar date of its UTC timestamp, with that date in words as text.
 TIME_OPENING = re.compile(r'<time datetime="(\d{4}-\d{2}-\d{2})">')
+
+
+class _LayoutTag:
+    """One tag line of the HTML form of layouts: a ``<section>`` or ``<div>`` opening tag, or its closing tag."""
+
+    def __init__(self, kind, opening, attributes, text):
+        self.kind = kind
+        self.opening = opening
+        self.attributes = attributes
+        self.text = text
+        self.block = {"t": "RawBlock", "c": ["html", text]}
+
+    @classmethod
+    def parse(cls, text):
+        """Return the tag that *text* consists of, or ``None``."""
+        match = LAYOUT_TAG.fullmatch(text)
+        if match is None:
+            return None
+
+        if match.group(3) is not None:
+            return cls(match.group(3), False, {}, text)
+
+        attributes = dict(LAYOUT_ATTRIBUTE.findall(match.group(2)))
+        return cls(match.group(1), True, attributes, text)
+
+    @property
+    def is_column(self):
+        return self.kind == "div" and self.opening and self.attributes.get("data-type") == "column"
+
+    @property
+    def is_layout(self):
+        """Tell whether the tag belongs to a layout: a layout section, its end, or a column."""
+        if self.kind == "section":
+            return not self.opening or self.attributes.get("data-type", "").startswith("layout-")
+
+        return self.is_column
+
+
+def _layout_width_text(width):
+    """Return a layout column width as written in ``data-width``, ``50`` rather than ``50.0``, or ``None``."""
+    if type(width) not in {int, float} or not 0 < width <= 100:
+        return None
+
+    return str(int(width)) if float(width).is_integer() else repr(float(width))
+
+
+def _layout_width(text):
+    """Return the ADF layout column width of a ``data-width`` value, or ``None``."""
+    try:
+        width = float(text)
+    except ValueError:
+        return None
+
+    return width if 0 < width <= 100 else None
 
 
 def _date_html(timestamp):
@@ -109,7 +168,7 @@ class ADFToMarkdownConverter:
         if not isinstance(content, list):
             raise ConversionError("ADF document content must be a list")
 
-        blocks = self._convert_blocks(content)
+        blocks = self._convert_blocks(content, top_level=True)
         if title is not None:
             inlines = self._convert_text({"type": "text", "text": title})
             if not title or inlines is None:
@@ -119,12 +178,19 @@ class ADFToMarkdownConverter:
 
         return {"pandoc-api-version": list(PANDOC_API_VERSION), "meta": {}, "blocks": blocks}
 
-    def _convert_blocks(self, nodes):
+    def _convert_blocks(self, nodes, top_level=False):
         blocks: list[Mapping[str, object]] = []
         previous: Mapping[str, object] | None = None
         for node in nodes:
             if not isinstance(node, Mapping):
                 raise ConversionError("ADF block must be an object")
+
+            # ADF allows layouts only at the top level of a page; elsewhere one stays opaque.
+            layout = self._convert_layout_section(node) if top_level and node.get("type") == "layoutSection" else None
+            if layout is not None:
+                blocks.extend(layout)
+                previous = layout[-1]
+                continue
 
             block = self._convert_block(node)
             if previous is not None and self._continues(previous, block):
@@ -189,6 +255,60 @@ class ADFToMarkdownConverter:
             return self._convert_media_group(node)
 
         return self._convert_opaque(node)
+
+    def _convert_layout_section(self, node):
+        """Write a layout section as a ``<section>`` and one ``<div>`` per column around Markdown, or return ``None``.
+
+        The section type is always the generic ``layout-section``: the columns' number and widths define the layout.
+        A section with attributes or marks that this form cannot hold stays opaque.
+        """
+        attrs = node.get("attrs", {})
+        marks = node.get("marks", [])
+        content = node.get("content")
+        if not isinstance(attrs, Mapping) or set(attrs) - {"localId"} or not isinstance(marks, list):
+            return None
+
+        if not isinstance(content, list) or not content:
+            return None
+
+        section = [f'data-type="{LAYOUT_SECTION_TYPE}"']
+        if marks:
+            breakout = marks[0] if len(marks) == 1 and isinstance(marks[0], Mapping) else {}
+            breakout_attrs = breakout.get("attrs")
+            if breakout.get("type") != "breakout" or set(breakout) - {"type", "attrs"} or not isinstance(breakout_attrs, Mapping):
+                return None
+
+            mode, width = breakout_attrs.get("mode"), breakout_attrs.get("width")
+            if mode not in LAYOUT_BREAKOUT_MODES or set(breakout_attrs) - {"mode", "width"}:
+                return None
+
+            section.append(f'data-breakout="{mode}"')
+            if width is not None:
+                if type(width) is not int or width <= 0:
+                    return None
+
+                section.append(f'data-breakout-width="{width}"')
+
+        blocks = [{"t": "RawBlock", "c": ["html", f"<section {' '.join(section)}>"]}]
+        for column in content:
+            if not isinstance(column, Mapping) or column.get("type") != "layoutColumn":
+                return None
+
+            column_attrs = column.get("attrs")
+            column_content = column.get("content")
+            if not isinstance(column_attrs, Mapping) or set(column_attrs) - {"width", "localId"}:
+                return None
+
+            width = _layout_width_text(column_attrs.get("width"))
+            if width is None or not isinstance(column_content, list):
+                return None
+
+            blocks.append({"t": "RawBlock", "c": ["html", f'<div data-type="column" data-width="{width}">']})
+            blocks.extend(self._convert_blocks(column_content))
+            blocks.append({"t": "RawBlock", "c": ["html", "</div>"]})
+
+        blocks.append({"t": "RawBlock", "c": ["html", "</section>"]})
+        return blocks
 
     def _convert_paragraph(self, node):
         inlines = self._convert_inlines(node)
@@ -989,7 +1109,7 @@ class MarkdownToADFConverter:
         if title is not None:
             blocks = self._without_title(blocks, title)
 
-        return {"type": "doc", "version": 1, "content": self._convert_blocks(blocks)}
+        return {"type": "doc", "version": 1, "content": self._convert_top_level_blocks(blocks)}
 
     def _without_title(self, blocks, title):
         """Drop the leading level-1 heading that the forward conversion adds for *title*."""
@@ -1005,6 +1125,139 @@ class MarkdownToADFConverter:
             raise ConversionError(f"title heading does not match the page title '{title}'; renaming is not supported")
 
         return blocks[1:]
+
+    def _convert_top_level_blocks(self, pandoc_blocks):
+        """Convert the blocks of a page, grouping layout sections, which ADF allows only at the top level."""
+        tokens = self._layout_tokens(pandoc_blocks)
+        content: list[Mapping[str, object]] = []
+        index = 0
+        while index < len(tokens):
+            token = tokens[index]
+            if isinstance(token, _LayoutTag) and token.is_layout:
+                if token.kind != "section" or not token.opening:
+                    raise ConversionError(f"'{token.text}' is outside a layout section")
+
+                node, index = self._convert_layout_section(tokens, index)
+                content.append(node)
+                continue
+
+            content.extend(self._convert_blocks([token.block if isinstance(token, _LayoutTag) else token]))
+            index += 1
+
+        return content
+
+    @staticmethod
+    def _layout_tokens(pandoc_blocks):
+        """Return the blocks with every raw block made only of layout tags split into one tag per line.
+
+        Written with blank lines, each tag is a raw block of its own; without them, Markdown joins neighbouring tag lines
+        into one raw block. Other ``<div>`` tags count too, so that a column ends at its own ``</div>``.
+        """
+        tokens: list[object] = []
+        for pandoc_block in pandoc_blocks:
+            value = pandoc_block.get("c") if isinstance(pandoc_block, Mapping) else None
+            lines = value[1].split("\n") if (
+                pandoc_block.get("t") == "RawBlock" and isinstance(value, list) and len(value) == 2 and value[0] == "html"
+                and isinstance(value[1], str)) else []
+            lines = [line.strip() for line in lines if line.strip()]
+            tags = [_LayoutTag.parse(line) for line in lines]
+            if tags and all(tag is not None for tag in tags):
+                tokens.extend(tags)
+            else:
+                tokens.append(pandoc_block)
+
+        return tokens
+
+    def _convert_layout_section(self, tokens, index):
+        """Convert the layout section opened by ``tokens[index]``; return it and the index after ``</section>``."""
+        attributes = tokens[index].attributes
+        unsupported = set(attributes) - {"data-type", "data-breakout", "data-breakout-width", "data-local-id"}
+        if unsupported:
+            raise ConversionError(f"layout section has unsupported attribute '{sorted(unsupported)[0]}'")
+
+        marks = []
+        mode, width = attributes.get("data-breakout"), attributes.get("data-breakout-width")
+        if mode is not None:
+            if mode not in LAYOUT_BREAKOUT_MODES:
+                raise ConversionError(f"layout section has an invalid data-breakout '{mode}'")
+
+            breakout: dict[str, object] = {"mode": mode}
+            if width is not None:
+                if not width.isdigit() or int(width) <= 0:
+                    raise ConversionError(f"layout section has an invalid data-breakout-width '{width}'")
+
+                breakout["width"] = int(width)
+
+            marks.append({"type": "breakout", "attrs": breakout})
+        elif width is not None:
+            raise ConversionError("layout section has a data-breakout-width without data-breakout")
+
+        columns = []
+        index += 1
+        while True:
+            if index == len(tokens):
+                raise ConversionError("layout section is not closed with </section>")
+
+            token = tokens[index]
+            if isinstance(token, _LayoutTag) and token.kind == "section" and not token.opening:
+                index += 1
+                break
+
+            if isinstance(token, _LayoutTag) and token.is_column:
+                column, index = self._convert_layout_column(tokens, index)
+                columns.append(column)
+                continue
+
+            if isinstance(token, Mapping) and self._is_comment(token):
+                index += 1
+                continue
+
+            raise ConversionError('content of a layout section must be inside a column, <div data-type="column">')
+
+        if not columns:
+            raise ConversionError("layout section has no columns")
+
+        node: dict[str, object] = {"type": "layoutSection", "content": columns}
+        if marks:
+            node["marks"] = marks
+
+        return node, index
+
+    def _convert_layout_column(self, tokens, index):
+        """Convert the layout column opened by ``tokens[index]``; return it and the index after its ``</div>``."""
+        attributes = tokens[index].attributes
+        unsupported = set(attributes) - {"data-type", "data-width", "data-local-id"}
+        if unsupported:
+            raise ConversionError(f"layout column has unsupported attribute '{sorted(unsupported)[0]}'")
+
+        width = _layout_width(attributes.get("data-width", ""))
+        if width is None:
+            raise ConversionError("layout column needs a data-width between 0 and 100")
+
+        blocks = []
+        depth = 0
+        index += 1
+        while True:
+            if index == len(tokens):
+                raise ConversionError("layout column is not closed with </div>")
+
+            token = tokens[index]
+            index += 1
+            if isinstance(token, _LayoutTag):
+                if token.kind == "section" or token.is_column:
+                    raise ConversionError("layout sections and columns cannot be nested")
+
+                if not token.opening and depth == 0:
+                    break
+
+                depth += 1 if token.opening else -1
+                token = token.block
+
+            blocks.append(token)
+
+        # A column holds at least one block; an empty one is written as nothing, as an empty paragraph is.
+        content = self._convert_blocks(blocks) or [{"type": "paragraph", "content": []}]
+        return {"type": "layoutColumn", "attrs": {"width": width}, "content": content}, index
 
     def _convert_blocks(self, pandoc_blocks):
         blocks = []
@@ -1448,6 +1701,10 @@ class MarkdownToADFConverter:
             raise ConversionError("raw content other than an HTML table cannot be represented in ADF")
 
         if not value[1].lstrip().startswith("<table"):
+            tag = _LayoutTag.parse(value[1].strip().split("\n")[0].strip())
+            if tag is not None and tag.is_layout:
+                raise ConversionError("a layout is allowed only at the top level of a page, not inside another block")
+
             raise ConversionError("raw content other than an HTML table cannot be represented in ADF")
 
         # Raw HTML in cells stays raw, as in the rest of the document, rather than being dropped by the HTML reader.

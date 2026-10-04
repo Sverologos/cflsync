@@ -81,6 +81,7 @@ rename` rewrites the generated heading separately from body conversion.
 | `taskList` and `taskItem` | `BulletList` beginning each item with `☐` or `☒` | `taskList` and `taskItem` |
 | `codeBlock` | `CodeBlock`; `attrs.language` becomes its language class | `codeBlock` with `attrs.language` |
 | `rule` | `HorizontalRule` | `rule` |
+| `layoutSection` and `layoutColumn`, at the top level | raw HTML `<section>` and `<div>` tag blocks around the columns' blocks | `layoutSection` and `layoutColumn` |
 
 Handlers validate and convert meaningful fields such as heading level,
 ordered-list start number, and code language. Other attributes, including
@@ -112,6 +113,44 @@ items and table cells, such a pair is written with an empty HTML comment
 holds only an HTML comment, whatever its text, so Pandoc's own separators and
 hand-written comments are accepted; the comments are not pushed. A comment
 inside a paragraph is rejected like other raw inline HTML.
+
+A layout section at the top level of the page is written in twg's HTML form,
+each tag on a line of its own and separated by blank lines from the column
+content, which stays Markdown:
+
+```markdown
+<section data-type="layout-section" data-breakout="wide" data-breakout-width="1800">
+
+<div data-type="column" data-width="50">
+
+Column text
+
+</div>
+
+<div data-type="column" data-width="50">
+
+- item
+
+</div>
+
+</section>
+```
+
+The section type is always the generic `layout-section`, where twg names it
+after the column widths (`layout-two-equal` and others). The columns alone
+define the layout: their number and order, and each `data-width`, the column's
+`attrs.width`, written without a trailing `.0`. The section's `breakout` mark
+becomes `data-breakout` (`wide` or `full-width`) and, when present,
+`data-breakout-width`. `localId` is dropped, as on other nodes. A section with
+other attributes or marks, or a column with other attributes, stays opaque, as
+does a layout anywhere but at the top level, where ADF does not allow one.
+Reverse conversion groups the tag blocks at the top level: it accepts any
+section `data-type` that starts with `layout-`, twg's `data-local-id`, and tag
+lines written without blank lines between them. Content in a section outside a
+column, an unclosed section or column, nested sections or columns, a layout
+inside another block, and unknown or invalid attributes are rejected. A column
+without blocks becomes a column holding an empty paragraph, the form in which
+an empty column was written.
 
 Blockquotes map to Markdown `>` blocks and back to ADF `blockquote` nodes,
 with their contained blocks and inline formatting converted recursively.
@@ -215,7 +254,8 @@ single paragraph and all spans are 1, and an HTML `<table>` otherwise. The
 reverse direction reads a pipe table directly; an HTML table arrives as a raw
 block and is parsed back into a Pandoc `Table` by a second Pandoc invocation,
 after which both representations share one mapping. Only raw blocks that are
-HTML tables are accepted; other raw content has no ADF equivalent. Pandoc's
+HTML tables or layout tags are accepted; other raw content has no ADF
+equivalent. Pandoc's
 HTML writer adds the text-presentation selector U+FE0E after `↔` and `↩` that
 lack one, so these characters in an HTML-table cell are pushed with it; the
 change happens once, and is accepted.
@@ -353,8 +393,8 @@ retains the nearest valid ancestor rather than changing the document shape.
 ### Initially opaque ADF features
 
 - `inlineCard`, custom emoji, and unsupported media.
-- `expand`, `nestedExpand`, decision lists, layouts, and
-  `extensionFrame`.
+- `expand`, `nestedExpand`, decision lists, and `extensionFrame`. Layouts
+  were promoted to a readable mapping (see Direct block mappings).
 - `extension`, `bodiedExtension`, `multiBodiedExtension`, sync blocks, and
   third-party Confluence macro nodes.
 - Tables, including multi-paragraph cells and unsupported geometry.

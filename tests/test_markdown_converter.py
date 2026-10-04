@@ -1158,4 +1158,101 @@ class TestMarkdownToADFHTMLTableCells(unittest.TestCase):
              _paragraph(_text("second"))])
 
 
+def _column(width, *blocks):
+    return {"type": "layoutColumn", "attrs": {"width": width}, "content": list(blocks)}
+
+
+def _layout(*columns, breakout=None):
+    node = {"type": "layoutSection", "content": list(columns)}
+    if breakout is not None:
+        node["marks"] = [{"type": "breakout", "attrs": breakout}]
+    return node
+
+
+class TestLayouts(unittest.TestCase):
+    """Layout sections are written as twg's HTML form with a generic type around Markdown column bodies."""
+
+    def setUp(self) -> None:
+        self.pandoc = PandocRunner()
+
+    def _markdown(self, content):
+        return ADFToMarkdownConverter(self.pandoc).convert({"type": "doc", "version": 1, "content": content})
+
+    def _adf(self, markdown):
+        return MarkdownToADFConverter(self.pandoc).convert(markdown)["content"]
+
+    def test_round_trips_a_layout_with_breakout_and_column_widths(self) -> None:
+        layout = _layout(
+            _column(49.99, _bullet_list("a", "b")),
+            _column(50.0, _bullet_list("c"), _paragraph(_text("d"))),
+            breakout={
+                "mode": "wide",
+                "width": 1800})
+        content = [_paragraph(_text("before")), layout, _paragraph(_text("after"))]
+
+        markdown = self._markdown(content)
+
+        self.assertEqual(
+            markdown, "before\n\n"
+            '<section data-type="layout-section" data-breakout="wide" data-breakout-width="1800">\n\n'
+            '<div data-type="column" data-width="49.99">\n\n- a\n- b\n\n</div>\n\n'
+            '<div data-type="column" data-width="50">\n\n- c\n\nd\n\n</div>\n\n</section>\n\nafter\n')
+        self.assertEqual(self._adf(markdown), content)
+
+    def test_round_trips_layouts_without_breakout_and_with_an_empty_column(self) -> None:
+        cases = {
+            "single column": [_layout(_column(100.0, _paragraph(_text("x"))))],
+            "empty column": [_layout(_column(50.0, EMPTY_PARAGRAPH), _column(50.0, _paragraph(_text("y"))))],
+            "full width without width": [_layout(_column(100.0, _paragraph(_text("z"))), breakout={"mode": "full-width"})],
+            "two layouts": [_layout(_column(100.0, _paragraph(_text("a")))),
+                            _layout(_column(100.0, _paragraph(_text("b"))))], }
+        for name, content in cases.items():
+            with self.subTest(case=name):
+                self.assertEqual(self._adf(self._markdown(content)), content)
+
+    def test_reads_twg_section_types_local_ids_and_tags_without_blank_lines(self) -> None:
+        markdown = (
+            '<section data-local-id="s" data-type="layout-two-equal">\n<div data-type="column" data-width="50">\n\nx\n\n'
+            '</div>\n<div data-local-id="c" data-type="column" data-width="50">\n\ny\n\n</div>\n</section>\n')
+
+        self.assertEqual(
+            self._adf(markdown), [_layout(_column(50.0, _paragraph(_text("x"))), _column(50.0, _paragraph(_text("y"))))])
+
+    def test_keeps_a_layout_with_unsupported_attributes_opaque(self) -> None:
+        layout = _layout(_column(100.0, _paragraph(_text("x"))))
+        layout["attrs"] = {"unknown": True}
+
+        markdown = self._markdown([layout])
+
+        self.assertIn("``` atlas_doc_format", markdown)
+        self.assertEqual(self._adf(markdown), [layout])
+
+    def test_rejects_malformed_layouts(self) -> None:
+        column = '<div data-type="column" data-width="50">\n\nx\n\n</div>\n\n'
+        cases = {
+            "not closed": ('<section data-type="layout-section">\n\n' + column, "not closed with </section>"),
+            "column not closed":
+            ('<section data-type="layout-section">\n\n<div data-type="column" data-width="50">\n\nx\n', "column is not closed"),
+            "content outside a column":
+            ('<section data-type="layout-section">\n\nx\n\n' + column + "</section>\n", "must be inside a column"),
+            "no columns": ('<section data-type="layout-section">\n\n</section>\n', "has no columns"),
+            "column outside a section": (column, "outside a layout section"),
+            "nested section": (
+                '<section data-type="layout-section">\n\n<div data-type="column" data-width="50">\n\n'
+                '<section data-type="layout-section">\n\n', "cannot be nested"),
+            "inside a list item": ('- a\n\n  <section data-type="layout-section">\n', "only at the top level"),
+            "invalid width": (
+                '<section data-type="layout-section">\n\n<div data-type="column" data-width="0">\n\nx\n\n'
+                "</div>\n\n</section>\n", "data-width between 0 and 100"),
+            "unsupported attribute":
+            ('<section data-type="layout-section" style="x">\n\n' + column + "</section>\n", "unsupported attribute 'style'"),
+            "breakout width without mode": (
+                '<section data-type="layout-section" data-breakout-width="1800">\n\n' + column + "</section>\n",
+                "without data-breakout"), }
+        for name, (markdown, message) in cases.items():
+            with self.subTest(case=name):
+                with self.assertRaisesRegex(ConversionError, message):
+                    self._adf(markdown)
+
+
 # vim: set ts=4 sw=4 et tw=132:

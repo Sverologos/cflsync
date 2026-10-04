@@ -52,6 +52,7 @@ headings in the page body.
 | Horizontal rules | `---` |
 | Tables | Pipe tables with a header row, for example `| Name | Value |` |
 | Attachments | `![](_attachments/image.png)` for images and `[](_attachments/file.pdf)` for downloadable files |
+| Layouts | An HTML `<section>` with one `<div data-type="column">` per column around Markdown; see [Layouts](#layouts) |
 
 Nest list items with indentation. Images or files in `_attachments/` are
 uploaded and maintained with the page. Links outside `_attachments/` remain
@@ -87,6 +88,39 @@ cell colours, alignment, and similar presentation settings are not retained.
 In HTML tables, pull writes `↔` and `↩` followed by the invisible character
 U+FE0E, which selects their text form, and push keeps it; the arrows look the
 same.
+
+## Layouts
+
+A Confluence layout, columns side by side, is written as HTML tags around
+ordinary Markdown:
+
+```markdown
+<section data-type="layout-section" data-breakout="wide" data-breakout-width="1800">
+
+<div data-type="column" data-width="66.66">
+
+Main text, with **formatting**, lists, tables, and images.
+
+</div>
+
+<div data-type="column" data-width="33.33">
+
+Sidebar text.
+
+</div>
+
+</section>
+```
+
+Edit the text in the columns as any other Markdown. Keep each tag on a line of
+its own with a blank line before and after it; otherwise the next lines are
+read as HTML rather than Markdown. A column is a `<div data-type="column">`
+with its width in percent as `data-width`; add, remove, or reorder columns, or
+change their widths, to change the layout. `data-breakout` (`wide` or
+`full-width`) and `data-breakout-width` set the width of the whole layout and
+may be left out. Layouts can only be placed at the top level of a page, not
+inside a list, quote, panel, or table, and cannot be nested. Content between
+the columns of a section, outside any column, is rejected on push.
 
 ## How Markdown reads text
 
