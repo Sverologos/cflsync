@@ -111,6 +111,21 @@ outside UTC can show a different day in Confluence. Push now rejects those spans
    normal pull rewrites only pages that changed remotely. `--force` overwrites
    local changes, so run it only after step 1.
 
+### Statuses and panels written by cflsync 0.5.6 and earlier
+
+Status lozenges are now written in the Atlassian `twg` CLI's form,
+`<span data-type="status" data-color="green" data-status-style="bold">Done</span>`.
+Push rejects the status spans of cflsync 0.5.6 and earlier,
+`<span cfl-type="status" style="background-color: green">Done</span>`. GitHub
+alerts now map one to one to panel types (`[!NOTE]` is an info panel, `[!TIP]`
+a success panel), and other panels are written as `<div data-type="panel-…">`;
+alerts written earlier still push, with the new mapping.
+
+1. In pages with local changes, rewrite each status span in the new form, then
+   push.
+2. Run `cflsync pull --force` to rewrite all other pages in the new forms;
+   `--force` overwrites local changes, so run it only after step 1.
+
 ### Upgrading workareas created by cflsync 0.4
 
 This version of cflsync uses workarea version 3, recorded in

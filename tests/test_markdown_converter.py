@@ -10,6 +10,7 @@ import unittest
 from types import SimpleNamespace
 
 from cflsync import ADFToMarkdownConverter, ConversionError, MarkdownToADFConverter, MediaResolver, PandocRunner
+from cflsync.convert import STATUS_COLORS
 
 
 class RecordingPandoc:
@@ -481,10 +482,6 @@ class TestMarkdownToADFConverter(unittest.TestCase):
         with self.assertRaisesRegex(ConversionError, "non-empty account ID"):
             MarkdownToADFConverter(PandocRunner()).convert('<span cfl-type="mention">@Example User</span>\n')
 
-    def test_rejects_a_status_with_an_unsupported_css_color(self) -> None:
-        with self.assertRaisesRegex(ConversionError, "unsupported attributes"):
-            MarkdownToADFConverter(PandocRunner()).convert('<span cfl-type="status" style="background-color: orange">Done</span>\n')
-
     def test_rejects_an_unclosed_superscript(self) -> None:
         with self.assertRaisesRegex(ConversionError, "superscript is not closed"):
             MarkdownToADFConverter(PandocRunner()).convert('<sup>text\n')
@@ -499,7 +496,7 @@ class TestMarkdownToADFConverter(unittest.TestCase):
                         "t": "Str",
                         "c": "text"}]]}]}]))
 
-        with self.assertRaisesRegex(ConversionError, "only emoji and cflsync spans"):
+        with self.assertRaisesRegex(ConversionError, "only emoji, status, and cflsync spans"):
             MarkdownToADFConverter(pandoc).convert("source")
 
     def test_rejects_raw_html_that_is_not_a_table(self) -> None:
@@ -1365,6 +1362,92 @@ class TestPanels(unittest.TestCase):
             "in a cell": (
                 '<table><tr><td><div data-type="panel-info" style="x"><p>x</p></div></td></tr></table>\n',
                 "unsupported attribute 'style'"), }
+        for name, (markdown, message) in cases.items():
+            with self.subTest(case=name):
+                with self.assertRaisesRegex(ConversionError, message):
+                    self._adf(markdown)
+
+
+def _status(text, color, style=None, **extra):
+    attrs = {"text": text, "color": color, **extra}
+    if style is not None:
+        attrs["style"] = style
+
+    return {"type": "status", "attrs": attrs}
+
+
+class TestStatus(unittest.TestCase):
+    """A status is written in twg's form, a <span data-type="status" data-color data-status-style> around its text."""
+
+    def setUp(self) -> None:
+        self.pandoc = PandocRunner()
+
+    def _markdown(self, content):
+        return ADFToMarkdownConverter(self.pandoc).convert({"type": "doc", "version": 1, "content": content})
+
+    def _adf(self, markdown):
+        return MarkdownToADFConverter(self.pandoc).convert(markdown)["content"]
+
+    def test_writes_twg_status_spans(self) -> None:
+        cases = {
+            "with style": (
+                _status("In *review*", "blue",
+                        "bold"), '<span data-type="status" data-color="blue" data-status-style="bold">In \\*review\\*</span>'),
+            "without style": (_status("Done", "green"), '<span data-type="status" data-color="green">Done</span>'),
+            "escaped style":
+            (_status("x", "red", 'a"b'), '<span data-type="status" data-color="red" data-status-style="a&quot;b">x</span>'), }
+        for name, (status, expected) in cases.items():
+            with self.subTest(case=name):
+                content = [_paragraph(_text("State: "), status)]
+
+                markdown = self._markdown(content)
+
+                self.assertEqual(markdown, f"State: {expected}\n")
+                self.assertEqual(self._adf(markdown), content)
+
+    def test_round_trips_every_colour_in_paragraphs_and_html_table_cells(self) -> None:
+        statuses = [_status(color.upper(), color, style) for color in sorted(STATUS_COLORS) for style in ("bold", "mixedCase")]
+        cell = {"type": "tableCell", "attrs": {"colspan": 1, "rowspan": 1}}
+        cases = {
+            "paragraph": [_paragraph(*statuses)],
+            "html table cell": [
+                {
+                    "type":
+                    "table",
+                    "content":
+                    [{
+                        "type": "tableRow",
+                        "content": [{
+                            **cell, "content": [_paragraph(*statuses), _paragraph(_text("second"))]}]}]}], }
+        for name, content in cases.items():
+            with self.subTest(case=name):
+                self.assertEqual(self._adf(self._markdown(content)), content)
+
+    def test_reads_twg_defaults_and_local_ids(self) -> None:
+        markdown = (
+            '<span data-type="status">a</span> <span data-local-id="x" data-color="green" '
+            'data-type="status" data-status-style="bold">b</span>\n')
+
+        self.assertEqual(self._adf(markdown), [_paragraph(_status("a", "neutral"), _text(" "), _status("b", "green", "bold"))])
+
+    def test_keeps_a_status_with_unsupported_attributes_opaque(self) -> None:
+        for name, status in {"attribute": _status("x", "green", unknown="y"), "colour": _status("x", "orange")}.items():
+            with self.subTest(case=name):
+                content = [_paragraph(status)]
+
+                markdown = self._markdown(content)
+
+                self.assertIn("``` atlas_doc_format", markdown)
+                self.assertEqual(self._adf(markdown), content)
+
+    def test_rejects_malformed_statuses(self) -> None:
+        cases = {
+            "cfl-type form": ('<span cfl-type="status" style="background-color: green">Done</span>\n', "no longer supported"),
+            "invalid colour": ('<span data-type="status" data-color="orange">x</span>\n', "invalid data-color 'orange'"),
+            "unsupported attribute": ('<span data-type="status" style="x">x</span>\n', "unsupported attribute 'style'"),
+            "no text": ('<span data-type="status" data-color="green"></span>\n', "status needs text"),
+            "in a cell":
+            ('<table><tr><td><span data-type="status" data-color="orange">x</span></td></tr></table>\n', "invalid data-color"), }
         for name, (markdown, message) in cases.items():
             with self.subTest(case=name):
                 with self.assertRaisesRegex(ConversionError, message):

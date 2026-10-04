@@ -185,13 +185,17 @@ Markdown rules apply, also to text that came from Confluence:
 ### Supported macros
 
 Pulled dates are represented by an HTML `<time>` element, and status lozenges
-by a special HTML span; cflsync converts both back to their Confluence forms on
-push. Mentions whose users have no visible email address also use a special
-HTML span. They can be edited, but their required attributes must remain
-intact:
+by an HTML span; cflsync converts both back to their Confluence forms on push.
+Mentions whose users have no visible email address also use a special HTML
+span. They can be edited, but their required attributes must remain intact:
 
-- Change the text inside a status span and, if needed, its
-  `background-color` to `gray`, `purple`, `blue`, `red`, `yellow`, or `green`.
+- Change the text inside a status span and, if needed, its `data-color` to
+  `neutral`, `purple`, `blue`, `red`, `yellow`, or `green`. A status is
+  written as
+  `<span data-type="status" data-color="green" data-status-style="bold">Done</span>`;
+  `data-status-style` (`bold` or `mixedCase` in Confluence) and `data-color`
+  may be left out, and the same element creates a new status, `neutral` without
+  `data-color`.
 - Change a date by changing its `datetime="YYYY-MM-DD"` attribute. The text
   inside `<time>` is for reading only and is ignored on push; update it to
   match. The same element creates a new date.
@@ -210,8 +214,9 @@ push, and Confluence shows the card's own title. The same element creates a
 new card. A card cannot be inside bold, italic, or other formatting. Other
 HTML links are not supported; write them as `[text](URL)`.
 
-These are HTML forms rather than ordinary Markdown syntax. The date and card
-forms are the ones the Atlassian `twg` CLI uses; a pulled date is written as:
+These are HTML forms rather than ordinary Markdown syntax. The status, date,
+and card forms are the ones the Atlassian `twg` CLI uses; a pulled date is
+written as:
 
 ```html
 <time datetime="2026-04-01">April 1, 2026</time>
@@ -220,6 +225,9 @@ forms are the ones the Atlassian `twg` CLI uses; a pulled date is written as:
 Date spans written by cflsync 0.5.3 and earlier, such as
 `<span cfl-type="date">2026-04-01[Europe/Brussels]</span>`, are no longer
 accepted; push reports them, and they must be rewritten as `<time>` elements.
+Status spans written by cflsync 0.5.6 and earlier, such as
+`<span cfl-type="status" style="background-color: green">Done</span>`, are
+rejected the same way and must be rewritten in the form above.
 
 ### Creating mentions
 

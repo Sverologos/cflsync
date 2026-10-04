@@ -215,7 +215,7 @@ task item. Reverse conversion emits no task-list or task-item `localId`.
 | `mention` with `attrs.id` and a resolvable email address | `Link` with a `mailto:` target | `mention` |
 | `mention` with `attrs.id` but no email address | raw HTML `span` | `mention` |
 | `date` with a millisecond timestamp | raw HTML `<time datetime>` inline pair | `date` at UTC midnight |
-| `status` | raw HTML `span` | `status` |
+| `status` | raw HTML `<span data-type="status">` inline pair | `status` |
 | `inlineCard` with `attrs.url` | raw HTML `<a href="URL" data-card-appearance="inline">` inline pair around the URL | `inlineCard` |
 
 Underline, subscript, and superscript are represented by strict `<u>`,
@@ -290,7 +290,7 @@ forms:
 | Content | GFM reader | HTML reader |
 | --- | --- | --- |
 | `<u>`, `<sub>`, `<sup>` | raw HTML inline pair | `Underline`, `Subscript`, `Superscript` |
-| status and mention spans | raw HTML inline pair | `Span` with the same attributes; a `style` declaration loses the space after its colon |
+| status and mention spans | raw HTML inline pair | `Span` with the same attributes, except that `data-status-style` and `data-local-id` lose the `data-` prefix |
 | `<time datetime>` | raw HTML inline pair | raw HTML inline pair |
 | inline card `<a … data-card-appearance="inline">` | raw HTML inline pair | `Link` with the attribute `card-appearance` (the `data-` prefix dropped), its `href` percent-encoded as for any link |
 | ordered list | `Decimal`, `Period` | `Decimal`, `DefaultDelim` |
@@ -380,12 +380,18 @@ The date spans of cflsync 0.5.3 and earlier (`<span cfl-type="date">`, with
 or without a zone or `cfl-timestamp`) are rejected with a message naming the
 `<time>` form.
 
-A status becomes `<span cfl-type="status" style="background-color: COLOR">TEXT</span>`.
-ADF `neutral` uses CSS `gray`; every other supported ADF status color uses the
-same CSS name. Reverse conversion parses this raw HTML through Pandoc and
-accepts only one plain-text status span with those exact attributes. Renderers
-may sanitize the custom attribute or style, but the Markdown source remains
-reversible for cflsync.
+A status becomes twg's form,
+`<span data-type="status" data-color="COLOR" data-status-style="STYLE">TEXT</span>`.
+`COLOR` is the ADF colour (`neutral`, `purple`, `blue`, `red`, `yellow`, or
+`green`); `data-status-style` holds `style`, HTML-escaped, and is left out when
+the status has none. `localId` is not written. A status with another colour or
+other attributes stays opaque within its paragraph. Reverse conversion parses
+the opening tag through Pandoc and reads the plain text up to `</span>` as
+`text`; as in twg, a missing `data-color` is `neutral`. twg's `data-local-id`
+is accepted and ignored. An unknown colour, other attributes, and an empty text
+are rejected. The status spans of cflsync 0.5.6 and earlier
+(`<span cfl-type="status" style="background-color: COLOR">`) are rejected
+with a message naming the new form.
 
 A mention whose account ID resolves to a user with an email address becomes
 `[Display name](mailto:address)`; the leading `@` in the ADF text is omitted

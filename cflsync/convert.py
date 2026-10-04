@@ -20,7 +20,9 @@ from .errors import SyncError
 
 PANDOC_API_VERSION = (1, 23, 1, 2)
 IMAGE_SUFFIXES = (".apng", ".avif", ".bmp", ".gif", ".jpeg", ".jpg", ".png", ".svg", ".tif", ".tiff", ".webp")
-STATUS_COLORS = {"neutral": "gray", "purple": "purple", "blue": "blue", "red": "red", "yellow": "yellow", "green": "green"}
+# A status is written in twg's form, <span data-type="status" data-color="COLOR" data-status-style="STYLE">TEXT</span>.
+STATUS_COLORS = {"neutral", "purple", "blue", "red", "yellow", "green"}
+STATUS_ATTRIBUTES = {"data-type", "data-color", "data-status-style", "data-local-id"}
 # A panel of one of these types without icon or colour is a GFM alert; any other panel is twg's <div data-type="panel-TYPE">.
 PANEL_ALERTS = {"info": "note", "note": "important", "success": "tip", "warning": "warning", "error": "caution"}
 ALERT_PANELS = {alert: panel_type for panel_type, alert in PANEL_ALERTS.items()}
@@ -884,30 +886,38 @@ class ADFToMarkdownConverter:
                     "c": ["html", "</time>"]}, ]
 
     def _convert_status(self, node):
-        """Render a status lozenge as a canonical raw HTML span."""
+        """Write a status lozenge in twg's form, a ``<span data-type="status">`` around its text, or return ``None``.
+
+        The local ID is not kept; a status with other attributes stays opaque.
+        """
         attrs = node.get("attrs")
-        if not isinstance(attrs, Mapping):
+        if not isinstance(attrs, Mapping) or set(attrs) - {"text", "color", "style", "localId"}:
             return None
 
         text = attrs.get("text")
         color = attrs.get("color")
-        if not isinstance(text, str) or not text or not isinstance(color, str):
+        style = attrs.get("style")
+        if not isinstance(text, str) or not text or color not in STATUS_COLORS:
             return None
 
-        background = STATUS_COLORS.get(color)
-        if background is None:
+        if style is not None and not isinstance(style, str):
             return None
 
         inlines = self._convert_text({"type": "text", "text": text})
         if inlines is None:
             return None
 
+        tag = ['data-type="status"', f'data-color="{color}"']
+        # twg leaves out a blank style; it is kept here as it is.
+        if style is not None:
+            tag.append(f'data-status-style="{escape(style)}"')
+
         return [
             {
                 "t": "RawInline",
-                "c": ["html", f'<span cfl-type="status" style="background-color: {background}">']}, *inlines, {
+                "c": ["html", f"<span {' '.join(tag)}>"]}, *inlines, {
                     "t": "RawInline",
-                    "c": ["html", "</span>"]}, ]
+                    "c": ["html", "</span>"]}]
 
     def _convert_inline_card(self, node):
         """Write an inline card as twg does, ``<a href="URL" data-card-appearance="inline">URL</a>``, or return ``None``.
@@ -1875,9 +1885,9 @@ class MarkdownToADFConverter:
         return {"type": "mediaGroup", "content": content}
 
     def _convert_span(self, pandoc_inline, inlines, marks):
-        """Accept the emoji span that reading a `:shortcode:` produces, keeping its Unicode text, and a cflsync span.
+        """Accept the emoji span that reading a `:shortcode:` produces, keeping its Unicode text, and a status or cflsync span.
 
-        Reading an HTML table turns a cflsync span into a Pandoc span rather than a pair of raw HTML inlines.
+        Reading an HTML table turns a status or cflsync span into a Pandoc span rather than a pair of raw HTML inlines.
         """
         if not self._has_fields(pandoc_inline, {"t", "c"}):
             raise ConversionError("Pandoc span has unsupported fields")
@@ -1892,8 +1902,9 @@ class MarkdownToADFConverter:
             return
 
         key_values = attributes[2] if isinstance(attributes, list) and len(attributes) == 3 else None
-        if not isinstance(key_values, list) or not any(isinstance(pair, list) and pair[:1] == ["cfl-type"] for pair in key_values):
-            raise ConversionError("only emoji and cflsync spans can be represented in ADF")
+        if not isinstance(key_values, list) or not any(
+                isinstance(pair, list) and (pair[:1] == ["cfl-type"] or pair == ["data-type", "status"]) for pair in key_values):
+            raise ConversionError("only emoji, status, and cflsync spans can be represented in ADF")
 
         if marks:
             raise ConversionError("cflsync span has unsupported marks")
@@ -1940,8 +1951,12 @@ class MarkdownToADFConverter:
     def _convert_cflsync_span(self, attributes, text_inlines, inlines):
         text = self._plain_text(text_inlines)
         span_type = attributes.get("cfl-type")
-        if span_type == "status":
+        if attributes.get("data-type") == "status":
             self._convert_status_span(attributes, text, inlines)
+        elif span_type == "status":
+            raise ConversionError(
+                'cfl-type status spans are no longer supported; write a status as '
+                '<span data-type="status" data-color="COLOR">TEXT</span>')
         elif span_type == "date":
             raise ConversionError('date spans are no longer supported; write a date as <time datetime="YYYY-MM-DD">…</time>')
         elif span_type == "mention":
@@ -2011,21 +2026,27 @@ class MarkdownToADFConverter:
 
         return values
 
-    def _convert_status_span(self, attributes, text, inlines):
-        if set(attributes) != {"cfl-type", "style"} or not text:
-            raise ConversionError("status span has unsupported attributes")
+    @staticmethod
+    def _convert_status_span(attributes, text, inlines):
+        """Convert the attributes and text of a status span; a missing colour is ``neutral``, as for twg."""
+        # The HTML reader drops the data- prefix of attributes whose names HTML does not also have without it.
+        attributes = {f"data-{name}" if f"data-{name}" in STATUS_ATTRIBUTES else name: value for name, value in attributes.items()}
+        unsupported = set(attributes) - STATUS_ATTRIBUTES
+        if unsupported:
+            raise ConversionError(f"status has unsupported attribute '{sorted(unsupported)[0]}'")
 
-        # Pandoc's HTML reader writes the declaration without the space after the colon.
-        name, separator, background = attributes["style"].partition(":")
-        colors = {css: adf for adf, css in STATUS_COLORS.items()}
-        if name != "background-color" or not separator:
-            raise ConversionError("status span has unsupported attributes")
+        color = attributes.get("data-color", "neutral")
+        if color not in STATUS_COLORS:
+            raise ConversionError(f"status has an invalid data-color '{color}'; use one of {', '.join(sorted(STATUS_COLORS))}")
 
-        color = colors.get(background.strip())
-        if color is None:
-            raise ConversionError("status span has unsupported attributes")
+        if not text:
+            raise ConversionError("status needs text")
 
-        inlines.append({"type": "status", "attrs": {"text": text, "color": color}})
+        status_attrs = {"text": text, "color": color}
+        if "data-status-style" in attributes:
+            status_attrs["style"] = attributes["data-status-style"]
+
+        inlines.append({"type": "status", "attrs": status_attrs})
 
     def _convert_raw_time(self, pandoc_inlines, index, inlines, marks):
         """Convert a ``<time datetime="YYYY-MM-DD">`` pair to a date at UTC midnight, as twg does; its text is ignored."""
