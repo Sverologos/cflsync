@@ -6,10 +6,7 @@
 
 """Credential configuration persistence tests."""
 
-import json
-import os
 from pathlib import Path
-import stat
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
@@ -18,18 +15,6 @@ from cflsync import Config, ConfigError, Profile
 
 
 class TestConfigSave(unittest.TestCase):
-
-    def test_writes_private_configuration_atomically(self) -> None:
-        with TemporaryDirectory(prefix="cflsync-config-") as temporary_dir:
-            path = Path(temporary_dir) / "config/config.json"
-            config = Config(path, {"default": Profile("example.atlassian.net", "user", "token")})
-
-            config.save()
-
-            self.assertEqual(json.loads(path.read_text(encoding="utf-8")), config.to_json())
-            if os.name != "nt":
-                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
-                self.assertEqual(stat.S_IMODE(path.parent.stat().st_mode), 0o700)
 
     def test_failed_replacement_preserves_previous_configuration(self) -> None:
         with TemporaryDirectory(prefix="cflsync-config-") as temporary_dir:

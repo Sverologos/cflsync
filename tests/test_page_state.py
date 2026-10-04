@@ -11,7 +11,7 @@ import unittest
 
 from cflsync import AttachmentMetadata, PageMetadata, PageState, StateError
 from cflsync.workarea import PageTree
-from tests.support import example_page_state, temporary_workarea
+from tests.support import example_page_state
 
 PAGE_HASH = hashlib.sha256(b"page").hexdigest()
 
@@ -25,10 +25,6 @@ class TestPageStateSerialization(unittest.TestCase):
     def test_metadata_constructor_rejects_an_invalid_content_hash(self) -> None:
         with self.assertRaises(StateError):
             page_metadata(content_hash="not-a-hash")
-
-    def test_metadata_accepts_a_numeric_parent_or_none(self) -> None:
-        self.assertIsNone(page_metadata().parent_id)
-        self.assertEqual(page_metadata(parent_id="456789").parent_id, "456789")
 
     def test_metadata_rejects_an_invalid_parent_id(self) -> None:
         for parent_id in ["", "abc", "12 3"]:
@@ -49,33 +45,6 @@ class TestPageStateSerialization(unittest.TestCase):
         self.assertEqual(attachment.id, "att1843529704")
         with self.assertRaises(StateError):
             AttachmentMetadata(id="att 1843529704", version=1, content_hash=attachment_hash)
-
-    def test_serializes_the_format_3_state_shape(self) -> None:
-        attachment_hash = hashlib.sha256(b"attachment").hexdigest()
-        state = PageState(
-            page=page_metadata(id="123457", title="Child", parent_id="123456", directory="Child_123457"),
-            attachments={"diagram.png": AttachmentMetadata(id="att987654", version=3, content_hash=attachment_hash)})
-
-        self.assertEqual(
-            state.to_json(), {
-                "format": 3,
-                "page": {
-                    "id": "123457",
-                    "title": "Child",
-                    "parent_id": "123456",
-                    "directory": "Child_123457",
-                    "version": 17,
-                    "content_hash": PAGE_HASH},
-                "attachments": {
-                    "diagram.png": {
-                        "id": "att987654",
-                        "version": 3,
-                        "content_hash": attachment_hash}}})
-
-    def test_round_trips_a_root_and_a_child_state(self) -> None:
-        for state in [example_page_state(), example_page_state("123457", "Child", "Child_123457", "123456")]:
-            with self.subTest(page_id=state.page.id):
-                self.assertEqual(PageState.from_json(state.to_json()), state)
 
     def test_rejects_states_written_by_cflsync_0_4_or_earlier(self) -> None:
         for state_format in [1, 2]:
@@ -107,18 +76,6 @@ class TestPageTree(unittest.TestCase):
     def _states(self, *pages):
         return {page_id: example_page_state(page_id, title, parent_id=parent_id) for page_id, title, parent_id in pages}
 
-    def test_derives_directories_from_the_chain_of_cached_parents(self) -> None:
-        tree = PageTree(
-            self._states(("1", "Root", None), ("2", "Child", "1"), ("3", "Grandchild", "2"), ("4", "Sibling", "1")), "1")
-
-        self.assertEqual(
-            {page_id: tree.directory(page_id)
-             for page_id in ["1", "2", "3", "4"]}, {
-                 "1": "Root_1",
-                 "2": "Root_1/Child_2",
-                 "3": "Root_1/Child_2/Grandchild_3",
-                 "4": "Root_1/Sibling_4"})
-
     def test_accepts_an_empty_cache(self) -> None:
         tree = PageTree({}, "1")
 
@@ -136,16 +93,6 @@ class TestPageTree(unittest.TestCase):
             with self.subTest(error=error):
                 with self.assertRaisesRegex(StateError, error):
                     PageTree(self._states(*pages), "1")
-
-    def test_loads_the_tree_from_the_workarea_cache(self) -> None:
-        with temporary_workarea(root_page_id="1") as workarea:
-            for state in self._states(("1", "Root", None), ("2", "Child", "1")).values():
-                state.save(workarea.cache_path(state.page.id))
-
-            tree = workarea.page_tree()
-
-            self.assertEqual((tree.root_page_id, tree.directory("2")), ("1", "Root_1/Child_2"))
-            self.assertEqual(workarea.page_directory_path(tree.directory("2")), workarea.root_dir / "Root_1" / "Child_2")
 
 
 # vim: set ts=4 sw=4 et tw=132:

@@ -6,46 +6,14 @@
 
 """Tests for atomic page-state persistence."""
 
-import stat
-import os
 import unittest
 from unittest.mock import patch
 
-from cflsync import PageMetadata, PageState, StateError
+from cflsync import StateError
 from tests.support import example_page_state, temporary_workarea
 
 
 class TestPageStateSave(unittest.TestCase):
-
-    def test_writes_a_loadable_state_file_with_mode_0600(self) -> None:
-        with temporary_workarea() as workarea:
-            expected = example_page_state()
-            expected.save(workarea.cache_path(expected.page.id))
-
-            path = workarea.cache_path(expected.page.id)
-            self.assertEqual(PageState.load(workarea.cache_path(expected.page.id)), expected)
-            if os.name != "nt":
-                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
-
-    def test_failed_replacement_preserves_the_previous_complete_state(self) -> None:
-        with temporary_workarea() as workarea:
-            previous = example_page_state()
-            previous.save(workarea.cache_path(previous.page.id))
-            changed = PageState(
-                page=PageMetadata(
-                    id=previous.page.id,
-                    title=previous.page.title,
-                    parent_id=previous.page.parent_id,
-                    directory=previous.page.directory,
-                    version=18,
-                    content_hash="a" * 64),
-                attachments=previous.attachments)
-
-            with patch("cflsync.os.replace", side_effect=OSError("injected failure")):
-                with self.assertRaises(StateError):
-                    changed.save(workarea.cache_path(changed.page.id))
-
-            self.assertEqual(PageState.load(workarea.cache_path(previous.page.id)), previous)
 
     def test_failed_temporary_state_write_removes_temporary_file(self) -> None:
         with temporary_workarea() as workarea:

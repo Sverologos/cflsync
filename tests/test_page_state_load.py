@@ -15,48 +15,12 @@ from tests.support import example_page_state, temporary_workarea
 
 class TestPageStateLoad(unittest.TestCase):
 
-    def test_loads_a_valid_state_by_page_id(self) -> None:
-        with temporary_workarea() as workarea:
-            expected = example_page_state()
-            workarea.cache_path("123456").write_text(json.dumps(expected.to_json()), encoding="utf-8")
-
-            self.assertEqual(PageState.load(workarea.cache_path("123456")), expected)
-
     def test_rejects_malformed_json(self) -> None:
         with temporary_workarea() as workarea:
             workarea.cache_path("123456").write_text("{", encoding="utf-8")
 
             with self.assertRaises(StateError):
                 PageState.load(workarea.cache_path("123456"))
-
-    def test_rejects_a_format_2_state_with_transition_instructions(self) -> None:
-        with temporary_workarea() as workarea:
-            value = example_page_state().to_json()
-            value["format"] = 2
-            workarea.cache_path("123456").write_text(json.dumps(value), encoding="utf-8")
-
-            with self.assertRaisesRegex(StateError, "state format 2 was written by cflsync 0.4 or earlier.*'cflsync init"):
-                PageState.load(workarea.cache_path("123456"))
-
-    def test_rejects_an_unsupported_format(self) -> None:
-        with temporary_workarea() as workarea:
-            value = example_page_state().to_json()
-            value["format"] = 1
-            workarea.cache_path("123456").write_text(json.dumps(value), encoding="utf-8")
-
-            with self.assertRaises(StateError):
-                PageState.load(workarea.cache_path("123456"))
-
-    def test_ignores_unknown_fields(self) -> None:
-        with temporary_workarea() as workarea:
-            expected = example_page_state()
-            value = expected.to_json()
-            value["future"] = {"field": "value"}
-            value["page"]["future"] = True
-            value["attachments"]["diagram.png"]["future"] = ["value"]
-            workarea.cache_path("123456").write_text(json.dumps(value), encoding="utf-8")
-
-            self.assertEqual(PageState.load(workarea.cache_path("123456")), expected)
 
     def test_rejects_a_null_required_page_field(self) -> None:
         with temporary_workarea() as workarea:

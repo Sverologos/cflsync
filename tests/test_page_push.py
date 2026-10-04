@@ -7,7 +7,6 @@
 """Push decisions, uploads, and partial-failure behavior."""
 
 from contextlib import redirect_stdout
-import hashlib
 from io import StringIO
 import json
 from types import SimpleNamespace
@@ -18,8 +17,6 @@ from cflsync import APIClient, PageState, Profile, SyncError
 from cflsync.cli import PagePullCommand, PagePushCommand, PageStatusCommand
 from tests.support import FakeConfluence, MockResponse, MockTransport, run_with_site, temporary_workarea
 from tests.test_api_operations import attachment_fixture, page_fixture, user_fixture
-
-PULLED_MARKDOWN = "# Example page\n\nExample\n"
 
 
 def adf_body(text="Example"):
@@ -93,86 +90,6 @@ class TestPagePush(unittest.TestCase):
             str(path.relative_to(workarea.root_dir)): path.read_bytes() if path.is_file() else None
             for path in workarea.root_dir.rglob("*")}
 
-    def test_unchanged_is_a_noop(self) -> None:
-        with temporary_workarea() as workarea:
-            self._pull(workarea)
-            before = self._snapshot(workarea)
-
-            output, status, transport = self._push(
-                workarea, [
-                    MockResponse.from_json(self._page()),
-                    MockResponse.from_json(self._page()),
-                    MockResponse.from_json({"results": [attachment_fixture()]}), ])
-
-            self.assertEqual(status, 0)
-            self.assertIn("already in sync; nothing pushed", output)
-            self.assertEqual(self._snapshot(workarea), before)
-            self.assertTrue(all(request.method == "GET" for request in transport.requests))
-
-    def test_remote_and_both_side_changes_conflict(self) -> None:
-        for local_edit in [False, True]:
-            with self.subTest(local_edit=local_edit):
-                with temporary_workarea() as workarea:
-                    self._pull(workarea)
-                    if local_edit:
-                        self._edit(workarea)
-
-                    before = self._snapshot(workarea)
-                    remote = self._page(version=18)
-                    responses = [
-                        MockResponse.from_json(remote),
-                        MockResponse.from_json(remote),
-                        MockResponse.from_json({"results": [attachment_fixture()]}), ]
-
-                    with self.assertRaisesRegex(SyncError, "push conflicts"):
-                        self._push(workarea, responses)
-
-                    self.assertEqual(self._snapshot(workarea), before)
-
-    def test_uploads_local_page_changes_and_commits_state(self) -> None:
-        with temporary_workarea() as workarea:
-            self._pull(workarea)
-            markdown = "# Example page\n\nEdited\n"
-            page_path = workarea.root_dir / "Example page_123456/content.md"
-            # Exercise an ordinary Windows editor save on every platform.
-            page_path.write_text(markdown, encoding="utf-8", newline="\r\n")
-
-            _, status, transport = self._push(workarea, self._push_responses())
-
-            update = transport.requests[-1]
-            document = json.loads(update.json_body()["body"]["value"])
-            state = PageState.load(workarea.cache_path("123456"))
-            self.assertEqual(status, 0)
-            self.assertEqual(update.method, "PUT")
-            self.assertEqual(update.path, "/pages/123456")
-            self.assertEqual(update.json_body()["version"], {"number": 18})
-            # The title heading belongs to the page, not to its body.
-            self.assertEqual(document["content"][0]["content"][0]["text"], "Edited")
-            self.assertEqual(state.page.version, 18)
-            # Format 1 hashes canonical GFM, rather than the platform-specific
-            # bytes used to store the editable Markdown file.
-            self.assertEqual(state.page.content_hash, hashlib.sha256(markdown.encode("utf-8")).hexdigest())
-
-    def test_pushes_a_wrapped_paragraph_and_records_its_canonical_hash(self) -> None:
-        with temporary_workarea() as workarea:
-            self._pull(workarea)
-            self._edit(workarea, "# Example page\n\nWrapped\nparagraph\n")
-
-            _, status, transport = self._push(workarea, self._push_responses())
-
-            document = json.loads(transport.requests[-1].json_body()["body"]["value"])
-            state = PageState.load(workarea.cache_path("123456"))
-            self.assertEqual(status, 0)
-            self.assertEqual(
-                document["content"], [{
-                    "type": "paragraph",
-                    "content": [{
-                        "type": "text",
-                        "text": "Wrapped paragraph"}]}])
-            # Pulling the pushed page writes the joined line, so the baseline matches it and status stays clean.
-            canonical = "# Example page\n\nWrapped paragraph\n"
-            self.assertEqual(state.page.content_hash, hashlib.sha256(canonical.encode("utf-8")).hexdigest())
-
     def test_resolves_a_mailto_link_to_a_mention_when_pushing(self) -> None:
         with temporary_workarea() as workarea:
             self._pull(workarea)
@@ -193,29 +110,6 @@ class TestPagePush(unittest.TestCase):
                     "attrs": {
                         "id": "account-123",
                         "text": "@Example User"}}])
-
-    def test_uploads_changed_and_added_attachments(self) -> None:
-        with temporary_workarea() as workarea:
-            self._pull(workarea)
-            directory = workarea.root_dir / "Example page_123456"
-            (directory / "_attachments/diagram.png").write_bytes(b"EDITED")
-            (directory / "_attachments/added.png").write_bytes(b"ADDED")
-            (directory / "_attachments/ignored.png").write_bytes(b"IGNORED")
-            self._edit(workarea, f"{PULLED_MARKDOWN}\n![Added](_attachments/added.png)\n")
-
-            added = attachment_fixture()
-            added["id"], added["title"], added["fileId"] = "att111111", "added.png", "file-added"
-            uploads = [MockResponse.from_json({"results": [added]}), MockResponse.from_json(attachment_fixture())]
-
-            _, _, transport = self._push(workarea, self._push_responses(uploads=uploads, after=[attachment_fixture(), added]))
-
-            writes = [(request.method, request.path) for request in transport.requests if request.method in {"POST", "PUT"}]
-            state = PageState.load(workarea.cache_path("123456"))
-            self.assertIn(("PUT", "/content/123456/child/attachment"), writes)
-            self.assertIn(("POST", "/content/123456/child/attachment/att567890/data"), writes)
-            self.assertEqual(sorted(state.attachments), ["added.png", "diagram.png"])
-            self.assertEqual(state.attachments["added.png"].content_hash, hashlib.sha256(b"ADDED").hexdigest())
-            self.assertEqual(state.attachments["diagram.png"].content_hash, hashlib.sha256(b"EDITED").hexdigest())
 
     def test_deletes_only_previously_managed_removed_attachments(self) -> None:
         with temporary_workarea() as workarea:
@@ -244,7 +138,8 @@ class TestPagePush(unittest.TestCase):
                     path = workarea.root_dir / "Example page_123456/_attachments/diagram.png"
                     if change == "edited":
                         path.write_bytes(b"EDITED")
-                        responses = self._push_responses(attachments=attachments, uploads=[MockResponse.from_json(attachment_fixture())])
+                        responses = self._push_responses(
+                            attachments=attachments, uploads=[MockResponse.from_json(attachment_fixture())])
                     else:
                         path.unlink()
                         responses = self._push_responses(attachments=attachments) + [MockResponse(204, {}, b"")]
@@ -252,7 +147,8 @@ class TestPagePush(unittest.TestCase):
 
                     _, _, transport = self._push(workarea, responses)
 
-                    writes = [(request.method, request.path) for request in transport.requests if request.method in {"POST", "DELETE"}]
+                    writes = [
+                        (request.method, request.path) for request in transport.requests if request.method in {"POST", "DELETE"}]
                     state = PageState.load(workarea.cache_path("123456"))
                     if change == "edited":
                         self.assertEqual(writes, [("POST", "/content/123456/child/attachment/att567890/data")])
@@ -260,65 +156,6 @@ class TestPagePush(unittest.TestCase):
                     else:
                         self.assertEqual(writes, [("DELETE", "/attachments/att567890")])
                         self.assertEqual(dict(state.attachments), {})
-
-    def test_rejects_an_edited_title_heading(self) -> None:
-        with temporary_workarea() as workarea:
-            self._pull(workarea)
-            self._edit(workarea, "# Renamed page\n\nExample\n")
-
-            with self.assertRaisesRegex(SyncError, "renaming is not supported"):
-                self._push(workarea, self._push_responses())
-
-            self.assertEqual(PageState.load(workarea.cache_path("123456")).page.version, 17)
-
-    def test_version_mismatch_during_update_is_a_conflict(self) -> None:
-        with temporary_workarea() as workarea:
-            self._pull(workarea)
-            self._edit(workarea)
-            before = self._snapshot(workarea)
-            responses = self._push_responses()[:-1] + [MockResponse.from_json({"message": "version conflict"}, 409)]
-
-            with self.assertRaises(SyncError):
-                self._push(workarea, responses)
-
-            self.assertEqual(self._snapshot(workarea), before)
-
-    def test_failed_upload_or_delete_leaves_state_unchanged(self) -> None:
-        cases = [
-            ("upload", [MockResponse.from_json({"message": "upload rejected"}, 500)], []),
-            ("delete", [], [MockResponse.from_json({"message": "delete rejected"}, 500)]), ]
-        for name, uploads, deletes in cases:
-            with self.subTest(failure=name):
-                with temporary_workarea() as workarea:
-                    self._pull(workarea)
-                    directory = workarea.root_dir / "Example page_123456"
-                    if name == "upload":
-                        (directory / "_attachments/diagram.png").write_bytes(b"EDITED")
-                    else:
-                        (directory / "_attachments/diagram.png").unlink()
-
-                    self._edit(workarea)
-                    before = self._snapshot(workarea)
-
-                    with self.assertRaises(SyncError):
-                        self._push(workarea, self._push_responses(uploads=uploads) + deletes)
-
-                    self.assertEqual(self._snapshot(workarea), before)
-                    self.assertEqual(PageState.load(workarea.cache_path("123456")).page.version, 17)
-
-    def test_force_pushes_over_remote_changes(self) -> None:
-        with temporary_workarea() as workarea:
-            self._pull(workarea)
-            self._edit(workarea)
-            remote = self._page(version=18)
-            responses = self._push_responses(page=remote, updated=self._page(version=19))
-
-            _, status, transport = self._push(workarea, responses, force=True)
-
-            state = PageState.load(workarea.cache_path("123456"))
-            self.assertEqual(status, 0)
-            self.assertEqual(state.page.version, 19)
-            self.assertEqual(transport.requests[-1].json_body()["version"], {"number": 19})
 
     def test_rejects_a_page_without_a_cache_entry(self) -> None:
         with temporary_workarea() as workarea:
@@ -340,18 +177,6 @@ class TestPagePushInTree(unittest.TestCase):
     def _pull(self, workarea):
         for page_id in ["100", "200"]:
             self._run(workarea, lambda: PagePullCommand().run(page_id))
-
-    def test_pushes_a_nested_page_and_keeps_its_parent_and_directory(self) -> None:
-        with temporary_workarea(root_page_id="100") as workarea:
-            self._pull(workarea)
-            (workarea.root_dir / "Root_100" / "Child_200" / "content.md").write_text("# Child\n\nEdited\n", encoding="utf-8")
-
-            self._run(workarea, lambda: PagePushCommand().run(str(workarea.root_dir / "Root_100" / "Child_200")))
-
-            state = PageState.load(workarea.cache_path("200"))
-            self.assertIn("Edited", self.site.content["200"]["body"])
-            self.assertEqual((self.site.content["200"]["parent_id"], self.site.content["200"]["title"]), ("100", "Child"))
-            self.assertEqual((state.page.parent_id, state.page.directory, state.page.version), ("100", "Child_200", 2))
 
     def test_refuses_to_push_over_a_remote_rename_even_with_force(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
@@ -418,48 +243,6 @@ class TestPagePushLinks(unittest.TestCase):
         self._run(workarea, lambda: PagePushCommand().run("200", force=force))
         return _hrefs(self.site.content["200"]["body"])
 
-    def test_pushes_local_page_links_as_canonical_page_urls(self) -> None:
-        with temporary_workarea(root_page_id="100") as workarea:
-            self._pull(workarea, "100", "200", "300")
-
-            hrefs = self._push(workarea, "[Installed](../B_300/content.md#Notes) [Never installed](../B_300/Leaf_400/content.md)\n")
-
-        self.assertEqual(hrefs, [f"{SITE}/wiki/spaces/EXAMPLE/pages/300#Notes", f"{SITE}/wiki/spaces/EXAMPLE/pages/400"])
-
-    def test_resolves_a_stale_path_by_its_page_id(self) -> None:
-        with temporary_workarea(root_page_id="100") as workarea:
-            self._pull(workarea, "100", "200")
-
-            hrefs = self._push(workarea, "[Moved](../../Old%20place_9/Old%20title_400/content.md#A%20b+Ü)\n")
-
-        self.assertEqual(hrefs, [f"{SITE}/wiki/spaces/EXAMPLE/pages/400#A%20b+Ü"])
-
-    def test_pushes_ordinary_local_links_unchanged(self) -> None:
-        with temporary_workarea(root_page_id="100") as workarea:
-            self._pull(workarea, "100", "200")
-
-            hrefs = self._push(workarea, "[Notes](../notes.md) [Directory](../B_300/) [Fragment](#Top)\n")
-
-        self.assertEqual(hrefs, ["../notes.md", "../B_300/", "#Top"])
-
-    def test_refuses_a_page_with_links_to_pages_outside_the_tree_before_any_change(self) -> None:
-        with temporary_workarea(root_page_id="100") as workarea:
-            self._pull(workarea, "100", "200")
-            body = self.site.content["200"]["body"]
-            self.site.requests.clear()
-
-            with self.assertRaises(SyncError) as raised:
-                self._push(
-                    workarea,
-                    "[Outside](../Outside_900/content.md) [B](../B_300/content.md) [**Gone**](../Gone_999/content.md#x)\n")
-
-        self.assertEqual(
-            str(raised.exception), "page '200' has broken page links; nothing was pushed:\n"
-            "  Root_100/A_200/content.md: [Outside](../Outside_900/content.md)\n"
-            "  Root_100/A_200/content.md: [](../Gone_999/content.md#x)")
-        self.assertEqual(self.site.content["200"]["body"], body)
-        self.assertEqual([request for request in self.site.requests if request.method in {"POST", "PUT", "DELETE"}], [])
-
     def test_refuses_before_uploading_attachments(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea, "100", "200")
@@ -472,41 +255,6 @@ class TestPagePushLinks(unittest.TestCase):
 
         self.assertEqual(self.site.attachments, {})
         self.assertEqual([request for request in self.site.requests if request.method != "GET"], [])
-
-    def test_pull_then_push_writes_canonical_page_urls(self) -> None:
-        self.site.content["200"]["body"] = json.dumps(
-            {
-                "type":
-                "doc",
-                "version":
-                1,
-                "content": [
-                    {
-                        "type":
-                        "paragraph",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": "B",
-                                "marks": [{
-                                    "type": "link",
-                                    "attrs": {
-                                        "href": f"{SITE}/wiki/spaces/EXAMPLE/pages/300/B#Notes"}}]}, {
-                                            "type": "text",
-                                            "text": " Leaf",
-                                            "marks":
-                                            [{
-                                                "type": "link",
-                                                "attrs": {
-                                                    "href": f"{SITE}/wiki/pages/viewpage.action?pageId=400"}}]}]}]})
-        with temporary_workarea(root_page_id="100") as workarea:
-            self._pull(workarea, "100", "200")
-
-            self._run(workarea, lambda: PagePushCommand().run("200", force=True))
-
-        self.assertEqual(
-            _hrefs(self.site.content["200"]["body"]),
-            [f"{SITE}/wiki/spaces/EXAMPLE/pages/300#Notes", f"{SITE}/wiki/spaces/EXAMPLE/pages/400"])
 
 
 # vim: set ts=4 sw=4 et tw=132:

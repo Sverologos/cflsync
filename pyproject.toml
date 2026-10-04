@@ -25,6 +25,7 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
+    "coverage>=7.16",
     "yapf>=0.43",
 ]
 
@@ -40,6 +41,14 @@ split_before_closing_bracket = false
 disable_ending_comma_heuristic = true
 dedent_closing_brackets = false
 indent_closing_brackets = false
+
+[tool.coverage.run]
+source = ["cflsync"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true
 
 [tool.zuban]
 python_executable = ".venv/bin/python"

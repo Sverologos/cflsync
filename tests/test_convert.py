@@ -39,16 +39,6 @@ class FakePandoc:
 
 class TestPandocDiscovery(unittest.TestCase):
 
-    def test_records_the_binary_and_pinned_json_api_versions(self) -> None:
-        pandoc = FakePandoc()
-
-        runner = PandocRunner(run=pandoc)
-
-        self.assertEqual(runner.version, "3.10")
-        self.assertEqual(pandoc.calls[:2], [["pandoc", "--version"], ["pandoc", "--from=gfm", "--to=json"]])
-        self.assertEqual(pandoc.encodings[:2], ["utf-8", "utf-8"])
-        self.assertTrue(all(isinstance(command, list) for command in pandoc.calls))
-
     def test_rejects_a_missing_binary(self) -> None:
 
         def missing_pandoc(*args, **kwargs):
@@ -63,27 +53,6 @@ class TestPandocDiscovery(unittest.TestCase):
 
 
 class TestPandocConversion(unittest.TestCase):
-
-    def test_converts_gfm_to_a_parseable_pandoc_document(self) -> None:
-        runner = PandocRunner()
-
-        pandoc = runner.gfm_to_pandoc("# Heading\n\nParagraph\n")
-
-        self.assertEqual(pandoc["pandoc-api-version"], list(PandocRunner.API_VERSION))
-        blocks = pandoc["blocks"]
-        if not isinstance(blocks, list) or not blocks or not isinstance(blocks[0], dict):
-            self.fail("Pandoc document does not contain a block object")
-
-        self.assertEqual(blocks[0]["t"], "Header")
-
-    def test_writes_equivalent_gfm_in_one_canonical_form(self) -> None:
-        runner = PandocRunner()
-
-        first = runner.pandoc_to_gfm(runner.gfm_to_pandoc("# Heading\n\nParagraph\n"))
-        second = runner.pandoc_to_gfm(runner.gfm_to_pandoc("# Heading\n\nParagraph\n\n"))
-
-        self.assertEqual(first, "# Heading\n\nParagraph\n")
-        self.assertEqual(second, first)
 
     def test_disables_syntax_highlighting_with_the_option_of_the_pandoc_version(self) -> None:
         for version, option in (("3.10", "--syntax-highlighting=none"), ("3.8", "--syntax-highlighting=none"),

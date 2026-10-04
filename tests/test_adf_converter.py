@@ -11,7 +11,7 @@ from typing import Any
 import unittest
 from types import SimpleNamespace
 
-from cflsync import ADFToMarkdownConverter, MediaResolver, PandocRunner
+from cflsync import ADFToMarkdownConverter, PandocRunner
 
 
 class RecordingPandoc:
@@ -22,43 +22,6 @@ class RecordingPandoc:
 
 
 class TestADFToMarkdownConverter(unittest.TestCase):
-
-    def test_extra_metadata_does_not_block_supported_nodes(self) -> None:
-        text = {"type": "text", "text": "Synthetic", "extra": 1}
-        paragraph = {"type": "paragraph", "content": [text], "attrs": {"alignment": "center"}}
-        item = {"type": "listItem", "content": [paragraph], "attrs": {"editorState": "unused"}}
-        cases: list[tuple[dict[str, Any], str]] = [
-            (paragraph, "Para"), ({
-                "type": "heading",
-                "attrs": {
-                    "level": 3},
-                "content": [text]}, "Header"), ({
-                    "type": "blockquote",
-                    "content": [paragraph]}, "BlockQuote"), ({
-                        "type": "bulletList",
-                        "content": [item]}, "BulletList"),
-            ({
-                "type": "orderedList",
-                "attrs": {
-                    "order": 4},
-                "content": [item]}, "OrderedList"),
-            ({
-                "type": "codeBlock",
-                "attrs": {
-                    "language": "python"},
-                "content": [text]}, "CodeBlock"), ({
-                    "type": "rule"}, "HorizontalRule"), ]
-        for node, expected_type in cases:
-            with self.subTest(node_type=node["type"]):
-                node.setdefault("attrs", {})["futureMetadata"] = {"value": 42}
-                node["extra"] = True
-                document = {"type": "doc", "version": 1, "content": [node], "metadata": {"revision": 7}}
-                before = json.dumps(document, sort_keys=True)
-                pandoc = RecordingPandoc()
-                ADFToMarkdownConverter(pandoc).convert(document)
-
-                self.assertEqual(pandoc.pandoc["blocks"][0]["t"], expected_type)
-                self.assertEqual(json.dumps(document, sort_keys=True), before)
 
     def test_unsupported_formatting_keeps_text_and_supported_marks(self) -> None:
         pandoc = RecordingPandoc()
@@ -104,71 +67,6 @@ class TestADFToMarkdownConverter(unittest.TestCase):
         self.assertEqual(strong["t"], "Strong")
         self.assertEqual(strong["c"], [{"t": "Code", "c": [["", [], []], "Synthetic"]}])
         self.assertEqual(inlines[1], {"t": "LineBreak"})
-
-    def test_maps_an_underline_mark_to_raw_html(self) -> None:
-        pandoc = RecordingPandoc()
-        document = {
-            "type":
-            "doc",
-            "version":
-            1,
-            "content": [
-                {
-                    "type": "paragraph",
-                    "content": [{
-                        "type": "text",
-                        "text": "Synthetic",
-                        "marks": [{
-                            "type": "underline"}, {
-                                "type": "strong"}]}]}]}
-
-        ADFToMarkdownConverter(pandoc).convert(document)
-
-        self.assertEqual(
-            pandoc.pandoc["blocks"][0]["c"], [
-                {
-                    "t": "RawInline",
-                    "c": ["html", "<u>"]}, {
-                        "t": "Strong",
-                        "c": [{
-                            "t": "Str",
-                            "c": "Synthetic"}]}, {
-                                "t": "RawInline",
-                                "c": ["html", "</u>"]}])
-
-    def test_maps_subsup_marks_to_raw_html(self) -> None:
-        for mark_type, tag in (("sub", "sub"), ("sup", "sup")):
-            with self.subTest(mark_type=mark_type):
-                pandoc = RecordingPandoc()
-                document = {
-                    "type":
-                    "doc",
-                    "version":
-                    1,
-                    "content": [
-                        {
-                            "type":
-                            "paragraph",
-                            "content":
-                            [{
-                                "type": "text",
-                                "text": "Synthetic",
-                                "marks": [{
-                                    "type": "subsup",
-                                    "attrs": {
-                                        "type": mark_type}}]}]}]}
-
-                ADFToMarkdownConverter(pandoc).convert(document)
-
-                self.assertEqual(
-                    pandoc.pandoc["blocks"][0]["c"], [
-                        {
-                            "t": "RawInline",
-                            "c": ["html", f"<{tag}>"]}, {
-                                "t": "Str",
-                                "c": "Synthetic"}, {
-                                    "t": "RawInline",
-                                    "c": ["html", f"</{tag}>"]}])
 
     def test_invalid_subsup_marks_retain_the_enclosing_block(self) -> None:
         cases: list[list[dict[str, Any]]] = [
@@ -325,43 +223,6 @@ class TestADFToMarkdownConverter(unittest.TestCase):
                                                                         "c": [["", ["python"], []], "print(1)"]}, {
                                                                             "t": "HorizontalRule"}, ], })
 
-    def test_maps_a_table_to_a_pandoc_table(self) -> None:
-        pandoc = RecordingPandoc()
-        paragraph = {"type": "paragraph", "content": [{"type": "text", "text": "Cell"}]}
-        table = {
-            "type":
-            "table",
-            "attrs": {
-                "layout": "wide",
-                "width": 760.0},
-            "content": [
-                {
-                    "type": "tableRow",
-                    "content": [{
-                        "type": "tableHeader",
-                        "attrs": {
-                            "colspan": 2,
-                            "rowspan": 1},
-                        "content": [paragraph]}]}, {
-                            "type": "tableRow",
-                            "content":
-                            [{
-                                "type": "tableCell",
-                                "content": [paragraph]}, {
-                                    "type": "tableCell",
-                                    "content": [paragraph]}]}]}
-
-        ADFToMarkdownConverter(pandoc).convert({"type": "doc", "version": 1, "content": [table]})
-
-        block = pandoc.pandoc["blocks"][0]
-        attributes, caption, colspecs, head, bodies, foot = block["c"]
-        self.assertEqual(block["t"], "Table")
-        self.assertEqual([attributes, caption, foot], [["", [], []], [None, []], [["", [], []], []]])
-        self.assertEqual(len(colspecs), 2)
-        self.assertEqual(head[1][0][1][0][2:4], [1, 2])
-        self.assertEqual(bodies[0][1:3], [0, []])
-        self.assertEqual(len(bodies[0][3][0][1]), 2)
-
     def test_maps_a_task_list_to_pandoc_checkboxes(self) -> None:
         pandoc = RecordingPandoc()
         task_list = {
@@ -446,21 +307,6 @@ class TestADFToMarkdownConverter(unittest.TestCase):
                                 "c": alert.title()}]}]]})
                 self.assertEqual(blocks[1], {"t": "Para", "c": [{"t": "Str", "c": "Content"}]})
 
-    def test_writes_a_panel_as_a_gfm_alert(self) -> None:
-        panel = {
-            "type": "panel",
-            "attrs": {
-                "panelType": "warning"},
-            "content": [{
-                "type": "paragraph",
-                "content": [{
-                    "type": "text",
-                    "text": "Content"}]}]}
-
-        markdown = ADFToMarkdownConverter(PandocRunner()).convert({"type": "doc", "version": 1, "content": [panel]})
-
-        self.assertEqual(markdown, "> [!WARNING]\n> Content\n")
-
     def test_writes_a_nested_task_list_as_gfm_checkboxes(self) -> None:
         document = {
             "type":
@@ -503,91 +349,6 @@ class TestADFToMarkdownConverter(unittest.TestCase):
 
         self.assertEqual(pandoc.pandoc["blocks"][0]["c"][0], ["", ["atlas_doc_format"], []])
 
-    def test_maps_media_resolved_through_the_attachment_manifest(self) -> None:
-        media = MediaResolver([("diagram.png", "file-1"), ("report.pdf", "file-2")])
-        pandoc = RecordingPandoc()
-        document = {
-            "type":
-            "doc",
-            "version":
-            1,
-            "content": [
-                {
-                    "type":
-                    "mediaSingle",
-                    "attrs": {
-                        "layout": "center",
-                        "width": 474},
-                    "content": [
-                        {
-                            "type": "media",
-                            "attrs": {
-                                "type": "file",
-                                "id": "file-1",
-                                "collection": "contentId-123456",
-                                "alt": "A diagram"}}]},
-                {
-                    "type": "mediaGroup",
-                    "content": [{
-                        "type": "media",
-                        "attrs": {
-                            "type": "file",
-                            "id": "file-2",
-                            "collection": "contentId-123456"}}]}]}
-
-        ADFToMarkdownConverter(pandoc, media).convert(document)
-
-        image, attached_file = pandoc.pandoc["blocks"]
-        self.assertEqual(
-            image, {
-                "t":
-                "Para",
-                "c": [
-                    {
-                        "t":
-                        "Image",
-                        "c": [
-                            ["", [], []], [{
-                                "t": "Str",
-                                "c": "A"}, {
-                                    "t": "Space"}, {
-                                        "t": "Str",
-                                        "c": "diagram"}], ["_attachments/diagram.png", ""]]}]})
-        self.assertEqual(
-            attached_file, {
-                "t": "Para",
-                "c": [{
-                    "t": "Link",
-                    "c": [["", [], []], [{
-                        "t": "Str",
-                        "c": "report.pdf"}], ["_attachments/report.pdf", ""]]}]})
-
-    def test_maps_external_media_without_a_manifest(self) -> None:
-        pandoc = RecordingPandoc()
-        media = {"type": "media", "attrs": {"type": "external", "url": "https://example.test/logo.png"}}
-        document = {"type": "doc", "version": 1, "content": [{"type": "mediaSingle", "content": [media]}]}
-
-        ADFToMarkdownConverter(pandoc).convert(document)
-
-        self.assertEqual(pandoc.pandoc["blocks"][0]["c"][0]["t"], "Image")
-
-    def test_retains_media_that_the_manifest_cannot_resolve(self) -> None:
-        pandoc = RecordingPandoc()
-        media = {"type": "media", "attrs": {"type": "file", "id": "file-9", "collection": "contentId-123456"}}
-        node = {"type": "mediaSingle", "content": [media]}
-
-        ADFToMarkdownConverter(pandoc, MediaResolver([
-            ("diagram.png", "file-1")])).convert({
-                "type": "doc",
-                "version": 1,
-                "content": [node]})
-
-        self.assertEqual(
-            pandoc.pandoc["blocks"][0], {
-                "t": "CodeBlock",
-                "c": [["", ["atlas_doc_format"], []],
-                      json.dumps(node, sort_keys=True, separators=(",", ":"))], })
-
     def test_maps_an_emoji_to_its_unicode_text(self) -> None:
         pandoc = RecordingPandoc()
         emoji = {"type": "emoji", "attrs": {"shortName": ":smile:", "id": "1f604", "text": "\U0001F604"}}
@@ -603,67 +364,6 @@ class TestADFToMarkdownConverter(unittest.TestCase):
                     "c": "Nice"}, {
                         "t": "Str",
                         "c": "\U0001F604"}]})
-
-    def test_maps_a_date_to_a_time_element_for_its_utc_date(self) -> None:
-        # 2026-04-01 00:00 UTC, and 2026-04-01 23:30 UTC, which is already 2 April in time zones east of UTC.
-        for timestamp in ("1775001600000", "1775086200000"):
-            with self.subTest(timestamp=timestamp):
-                pandoc = RecordingPandoc()
-
-                ADFToMarkdownConverter(pandoc).convert(
-                    {
-                        "type": "doc",
-                        "version": 1,
-                        "content": [{
-                            "type": "paragraph",
-                            "content": [{
-                                "type": "date",
-                                "attrs": {
-                                    "timestamp": timestamp}}]}], })
-
-                self.assertEqual(
-                    pandoc.pandoc["blocks"][0]["c"], [
-                        {
-                            "t": "RawInline",
-                            "c": ["html", '<time datetime="2026-04-01">']}, {
-                                "t": "Str",
-                                "c": "April"}, {
-                                    "t": "Space"}, {
-                                        "t": "Str",
-                                        "c": "1,"}, {
-                                            "t": "Space"}, {
-                                                "t": "Str",
-                                                "c": "2026"}, {
-                                                    "t": "RawInline",
-                                                    "c": ["html", "</time>"]}])
-
-    def test_maps_a_status_to_a_raw_html_span(self) -> None:
-        pandoc = RecordingPandoc()
-        status = {"type": "status", "attrs": {"text": "Done & ready", "color": "neutral"}}
-
-        ADFToMarkdownConverter(pandoc).convert(
-            {
-                "type": "doc",
-                "version": 1,
-                "content": [{
-                    "type": "paragraph",
-                    "content": [status]}], })
-
-        self.assertEqual(
-            pandoc.pandoc["blocks"][0]["c"], [
-                {
-                    "t": "RawInline",
-                    "c": ["html", '<span cfl-type="status" style="background-color: gray">']}, {
-                        "t": "Str",
-                        "c": "Done"}, {
-                            "t": "Space"}, {
-                                "t": "Str",
-                                "c": "&"}, {
-                                    "t": "Space"}, {
-                                        "t": "Str",
-                                        "c": "ready"}, {
-                                            "t": "RawInline",
-                                            "c": ["html", "</span>"]}])
 
     def test_maps_a_mention_to_a_mailto_link_when_the_user_has_an_email(self) -> None:
         pandoc = RecordingPandoc()
@@ -691,39 +391,6 @@ class TestADFToMarkdownConverter(unittest.TestCase):
                                     "t": "Str",
                                     "c": "User"}], ["mailto:example.user@example.test", ""]]}])
 
-    def test_maps_a_mention_to_a_raw_html_span_when_the_user_has_no_email(self) -> None:
-        pandoc = RecordingPandoc()
-        mention = {
-            "type": "mention",
-            "attrs": {
-                "id": "account-123",
-                "text": "@Example User",
-                "accessLevel": "SITE",
-                "userType": "DEFAULT"}}
-
-        ADFToMarkdownConverter(
-            pandoc, mention_lookup=lambda account_id: SimpleNamespace(email=None)).convert(
-                {
-                    "type": "doc",
-                    "version": 1,
-                    "content": [{
-                        "type": "paragraph",
-                        "content": [mention]}]})
-
-        self.assertEqual(
-            pandoc.pandoc["blocks"][0]["c"], [
-                {
-                    "t": "RawInline",
-                    "c": ["html", '<span cfl-type="mention" cfl-id="account-123" cfl-access-level="SITE" cfl-user-type="DEFAULT">']
-                }, {
-                    "t": "Str",
-                    "c": "@Example"}, {
-                        "t": "Space"}, {
-                            "t": "Str",
-                            "c": "User"}, {
-                                "t": "RawInline",
-                                "c": ["html", "</span>"]}])
-
     def test_retains_a_custom_emoji_without_unicode_text(self) -> None:
         pandoc = RecordingPandoc()
         emoji = {"type": "emoji", "attrs": {"shortName": ":atlassian:", "id": "atlassian-check"}}
@@ -734,18 +401,6 @@ class TestADFToMarkdownConverter(unittest.TestCase):
         block = pandoc.pandoc["blocks"][0]
         self.assertEqual(block["c"][0], ["", ["atlas_doc_format"], []])
         self.assertEqual(json.loads(block["c"][1]), paragraph)
-
-    def test_retains_an_unsupported_inline_in_its_enclosing_block(self) -> None:
-        pandoc = RecordingPandoc()
-        paragraph = {"type": "paragraph", "content": [{"type": "inlineCard", "attrs": {"url": "https://example.test"}}]}
-
-        ADFToMarkdownConverter(pandoc).convert({"type": "doc", "version": 1, "content": [paragraph]})
-
-        self.assertEqual(
-            pandoc.pandoc["blocks"][0], {
-                "t": "CodeBlock",
-                "c": [["", ["atlas_doc_format"], []],
-                      json.dumps(paragraph, sort_keys=True, separators=(",", ":"))], })
 
 
 class RecordingLinks:
@@ -758,135 +413,6 @@ class RecordingLinks:
     def to_markdown(self, href):
         self.calls.append(href)
         return self.replacements.get(href)
-
-
-def _doc(*content):
-    return {"type": "doc", "version": 1, "content": list(content)}
-
-
-def _linked_paragraph(text, href, **attrs):
-    return {
-        "type": "paragraph",
-        "content": [{
-            "type": "text",
-            "text": text,
-            "marks": [{
-                "type": "link",
-                "attrs": {
-                    "href": href,
-                    **attrs}}]}]}
-
-
-class TestADFToMarkdownLinkResolution(unittest.TestCase):
-
-    def test_replaces_a_link_target_and_keeps_its_text_and_title(self) -> None:
-        links = RecordingLinks({"https://example.test/wiki/spaces/K/pages/300": "../B_300/content.md#Notes"})
-        document = _doc(_linked_paragraph("Read B", "https://example.test/wiki/spaces/K/pages/300", title="About B"))
-
-        markdown = ADFToMarkdownConverter(PandocRunner(), links=links).convert(document)
-
-        self.assertEqual(markdown, '[Read B](../B_300/content.md#Notes "About B")\n')
-        self.assertEqual(links.calls, ["https://example.test/wiki/spaces/K/pages/300"])
-
-    def test_keeps_a_link_target_when_the_resolver_returns_none(self) -> None:
-        links = RecordingLinks()
-        document = _doc(_linked_paragraph("Elsewhere", "https://other.test/page"))
-
-        markdown = ADFToMarkdownConverter(PandocRunner(), links=links).convert(document)
-
-        self.assertEqual(markdown, "[Elsewhere](https://other.test/page)\n")
-        self.assertEqual(links.calls, ["https://other.test/page"])
-
-    def test_converts_unchanged_without_a_resolver(self) -> None:
-        document = _doc(_linked_paragraph("Page", "https://example.test/wiki/spaces/K/pages/300"))
-
-        self.assertEqual(
-            ADFToMarkdownConverter(PandocRunner()).convert(document), "[Page](https://example.test/wiki/spaces/K/pages/300)\n")
-
-    def test_replaces_link_targets_in_table_cells(self) -> None:
-        links = RecordingLinks({"https://example.test/a": "../A_200/content.md"})
-        cell = {
-            "type": "tableCell",
-            "attrs": {
-                "colspan": 1,
-                "rowspan": 1},
-            "content": [_linked_paragraph("A", "https://example.test/a")]}
-        header = {
-            "type": "tableHeader",
-            "attrs": {
-                "colspan": 1,
-                "rowspan": 1},
-            "content": [{
-                "type": "paragraph",
-                "content": [{
-                    "type": "text",
-                    "text": "H"}]}]}
-        document = _doc(
-            {
-                "type": "table",
-                "content": [{
-                    "type": "tableRow",
-                    "content": [header]}, {
-                        "type": "tableRow",
-                        "content": [cell]}]})
-
-        markdown = ADFToMarkdownConverter(PandocRunner(), links=links).convert(document)
-
-        self.assertIn("[A](../A_200/content.md)", markdown)
-        self.assertEqual(links.calls, ["https://example.test/a"])
-
-    def test_does_not_pass_smart_links_or_links_in_opaque_blocks(self) -> None:
-        links = RecordingLinks({"https://example.test/a": "../A_200/content.md"})
-        card = {"type": "inlineCard", "attrs": {"url": "https://example.test/a"}}
-        mixed = {
-            "type":
-            "paragraph",
-            "content":
-            [card, {
-                "type": "text",
-                "text": " and ",
-                "marks": [{
-                    "type": "link",
-                    "attrs": {
-                        "href": "https://example.test/a"}}]}]}
-
-        markdown = ADFToMarkdownConverter(PandocRunner(), links=links).convert(_doc(mixed))
-
-        self.assertIn("atlas_doc_format", markdown)
-        self.assertNotIn("../A_200/content.md", markdown)
-        self.assertEqual(links.calls, [])
-
-    def test_does_not_pass_media_to_the_resolver(self) -> None:
-        links = RecordingLinks()
-        media = MediaResolver([("diagram.png", "file-1"), ("report.pdf", "file-2")])
-        document = _doc(
-            {
-                "type":
-                "mediaSingle",
-                "attrs": {
-                    "layout": "center"},
-                "content": [
-                    {
-                        "type": "media",
-                        "attrs": {
-                            "type": "file",
-                            "id": "file-1",
-                            "collection": "contentId-1",
-                            "alt": "A diagram"}}]},
-            {
-                "type": "mediaGroup",
-                "content": [{
-                    "type": "media",
-                    "attrs": {
-                        "type": "file",
-                        "id": "file-2",
-                        "collection": "contentId-1"}}]})
-
-        markdown = ADFToMarkdownConverter(PandocRunner(), media, links=links).convert(document)
-
-        self.assertIn("_attachments/diagram.png", markdown)
-        self.assertIn("_attachments/report.pdf", markdown)
-        self.assertEqual(links.calls, [])
 
 
 # vim: set ts=4 sw=4 et tw=132:

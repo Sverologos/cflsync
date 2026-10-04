@@ -48,9 +48,7 @@ DELIMITED_MARKS = (("strong", "Strong"), ("em", "Emph"), ("strike", "Strikeout")
 BLOCK_SEPARATOR = "<!-- -->"
 HTML_COMMENT = re.compile(r"\s*<!--(?:(?!-->).)*-->\s*", re.DOTALL)
 
-
-MONTHS = (
-    "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+MONTHS = ("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
 # A date is written as twg writes it: the calendar date of its UTC timestamp, with that date in words as text.
 TIME_OPENING = re.compile(r'<time datetime="(\d{4}-\d{2}-\d{2})">')
 
@@ -72,7 +70,8 @@ def _date_timestamp(value):
     """Return the ADF timestamp of a ``YYYY-MM-DD`` date, its UTC midnight as twg reads it, or ``None``."""
     try:
         calendar_date = date.fromisoformat(value)
-        return str(int(datetime(calendar_date.year, calendar_date.month, calendar_date.day, tzinfo=timezone.utc).timestamp() * 1000))
+        return str(
+            int(datetime(calendar_date.year, calendar_date.month, calendar_date.day, tzinfo=timezone.utc).timestamp() * 1000))
     except (OverflowError, ValueError):
         return None
 
@@ -609,8 +608,9 @@ class ADFToMarkdownConverter:
                     if end - index > length:
                         best, length = mark_type, end - index
 
-            run = [(tuple(mark for mark in run_marks if mark != best), run_inlines)
-                   for run_marks, run_inlines in items[index:index + length]]
+            run = [
+                (tuple(mark for mark in run_marks if mark != best), run_inlines)
+                for run_marks, run_inlines in items[index:index + length]]
             # A delimiter next to whitespace cannot open or close emphasis. Pandoc moves ASCII spaces out of the
             # delimiters itself; other whitespace, such as a non-breaking space, is moved out here, without the mark.
             leading, inner, trailing = self._split_edge_whitespace(self._wrap_delimited_runs(run))

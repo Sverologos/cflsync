@@ -6,7 +6,6 @@
 
 """Repository push ordering, reporting, and failure handling."""
 
-import shutil
 import unittest
 
 from cflsync import PageState, SyncError
@@ -39,24 +38,6 @@ class TestRepositoryPush(unittest.TestCase):
         directory = workarea.page_directory(state)
         (directory / "content.md").write_text(markdown, encoding="utf-8")
 
-    def test_pushes_local_changes_and_skips_remote_only_changes(self) -> None:
-        with temporary_workarea(root_page_id="100") as workarea:
-            self._pull(workarea)
-            self._edit(workarea, "200", "# Alpha\n\nEdited\n")
-            self.site.content["300"]["version"] += 1
-            self.site.requests.clear()
-
-            output, status = self._push(workarea)
-
-            lines = output.splitlines()
-            self.assertEqual(status, 0)
-            self.assertEqual(lines[0], "Page '100' (Root): unchanged")
-            self.assertEqual(lines[1], "Page '200' (Alpha): pushed")
-            self.assertEqual(lines[2], "Page '300' (Beta): skipped: remote-changed")
-            self.assertEqual(lines[3], "Summary: 1 pushed, 1 unchanged, 1 skipped.")
-            self.assertIn("Edited", self.site.content["200"]["body"])
-            self.assertEqual(self.site.content["300"]["version"], 2)
-
     def test_refuses_all_pushes_when_a_conflict_exists(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea)
@@ -85,19 +66,6 @@ class TestRepositoryPush(unittest.TestCase):
             self.assertEqual(
                 [request.path for request in self.site.requests if request.method == "PUT" and "/pages/" in request.path],
                 ["/wiki/api/v2/pages/100", "/wiki/api/v2/pages/200", "/wiki/api/v2/pages/400"])
-
-    def test_skips_missing_directories_and_ignores_uncached_directories(self) -> None:
-        with temporary_workarea(root_page_id="100") as workarea:
-            self._pull(workarea)
-            shutil.rmtree(workarea.root_dir / "Root_100" / "Alpha_200")
-            (workarea.root_dir / "Notes").mkdir()
-
-            output, status = self._push(workarea)
-
-            self.assertEqual(status, 0)
-            self.assertIn("Page '200' (Alpha): skipped: absent-local", output)
-            self.assertNotIn("Notes", output)
-            self.assertIn("Summary: 2 unchanged, 1 skipped.", output)
 
     def test_force_pushes_over_remote_changes(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:

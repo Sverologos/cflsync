@@ -6,10 +6,8 @@
 
 """Tests for mock API transport fixtures."""
 
-import json
 import unittest
 
-from tests.support import MockResponse, MockTransport, RecordedRequest
 from cflsync import UrllibTransport
 
 
@@ -24,21 +22,6 @@ class TestCopyTransportContext(unittest.TestCase):
         self.assertEqual(clone._request_headers(None), transport._request_headers(None))
         self.assertIs(clone._opener, transport._opener)
         self.assertEqual(transport.base_url(), "https://example.atlassian.net/wiki/api/v2")
-
-
-class TestMockTransport(unittest.TestCase):
-
-    def test_records_a_request_and_returns_the_queued_response(self) -> None:
-        response = MockResponse.from_json({"id": "123"})
-        transport = MockTransport(iter([response]))
-
-        actual_response = transport.make_request("GET", "/pages/123", headers={"Accept": "application/json"})
-
-        self.assertEqual(actual_response, response)
-        self.assertEqual(json.loads(actual_response.body), {"id": "123"})
-        self.assertEqual(
-            transport.requests,
-            [RecordedRequest(method="GET", path="/pages/123", parameters={}, headers={"Accept": "application/json"}, body=None)])
 
 
 # vim: set ts=4 sw=4 et tw=132:

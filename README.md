@@ -323,6 +323,7 @@ Required tooling:
 - [uv](https://docs.astral.sh/uv/) manages the development environment and runs project commands.
 - [YAPF](https://github.com/google/yapf/) formats Python code through uv's `dev` dependency group.
 - [Zuban](https://docs.zubanls.com/) performs static type checking.
+- [Coverage.py](https://coverage.readthedocs.io/) measures test coverage through uv's `dev` dependency group.
 
 YAPF is configured to align closely with PEP-8 style. Apply formatting before
 committing changes:
@@ -361,6 +362,17 @@ The automated suite uses only local filesystem fixtures and recorded HTTP
 transports. Importing the `tests` package blocks address resolution and socket
 connections, so an accidental live request fails instead of reaching a real
 site.
+
+Measure line and branch coverage of the `cflsync` package while running the
+suite, then report it per module with the missed lines:
+
+```console
+uv run --group dev coverage run -m unittest discover -s tests
+uv run --group dev coverage report
+```
+
+`uv run --group dev coverage html` writes a browsable report to `htmlcov/`.
+Coverage data (`.coverage`) and `htmlcov/` are ignored by Git.
 
 ## License
 

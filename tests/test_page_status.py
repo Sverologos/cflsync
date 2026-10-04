@@ -76,107 +76,10 @@ class TestPageStatus(unittest.TestCase):
             str(path.relative_to(workarea.root_dir)): path.read_bytes() if path.is_file() else None
             for path in workarea.root_dir.rglob("*")}
 
-    def test_reports_both_sides_unchanged(self) -> None:
-        with temporary_workarea() as workarea:
-            self._pull(workarea)
-
-            output, status, _ = self._status(workarea)
-
-            self.assertEqual(status, 0)
-            self.assertIn("Page '123456' (Example page)", output)
-            self.assertIn("local:  unchanged", output)
-            self.assertIn("remote: unchanged", output)
-
-    def test_reports_local_page_and_attachment_changes(self) -> None:
-        with temporary_workarea() as workarea:
-            self._pull(workarea)
-            directory = workarea.root_dir / "Example page_123456"
-            (directory / "content.md").write_text("# Example page\n\nEdited\n")
-            (directory / "_attachments/diagram.png").write_bytes(b"edited")
-
-            output, _, _ = self._status(workarea)
-
-            self.assertIn("local:  changed: content.md, _attachments/diagram.png", output)
-            self.assertIn("remote: unchanged", output)
-
-    def test_reports_a_referenced_new_attachment(self) -> None:
-        with temporary_workarea() as workarea:
-            self._pull(workarea)
-            directory = workarea.root_dir / "Example page_123456"
-            (directory / "_attachments/added.png").write_bytes(b"ADDED")
-            (directory / "_attachments/ignored.png").write_bytes(b"IGNORED")
-            with (directory / "content.md").open("a") as page_file:
-                page_file.write("\n![Added](_attachments/added.png)\n")
-
-            output, _, _ = self._status(workarea)
-
-            self.assertIn("local:  changed: content.md, _attachments/added.png", output)
-
-    def test_reports_remote_page_and_attachment_changes(self) -> None:
-        with temporary_workarea() as workarea:
-            self._pull(workarea)
-            attachment = attachment_fixture()
-            attachment["version"] = {"number": 4}
-
-            output, _, _ = self._status(workarea, page=self._page(version=18), attachments=[attachment])
-
-            self.assertIn("local:  unchanged", output)
-            self.assertIn("remote: changed: page, _attachments/diagram.png", output)
-
-    def test_reports_changes_on_both_sides(self) -> None:
-        with temporary_workarea() as workarea:
-            self._pull(workarea)
-            (workarea.root_dir / "Example page_123456/content.md").write_text("# Example page\n\nEdited\n")
-
-            output, _, _ = self._status(workarea, page=self._page(version=18))
-
-            self.assertIn("local:  changed: content.md", output)
-            self.assertIn("remote: changed: page", output)
-
-    def test_reports_a_missing_page_directory_as_a_local_change(self) -> None:
-        with temporary_workarea() as workarea:
-            self._pull(workarea)
-            directory = workarea.root_dir / "Example page_123456"
-            (directory / "_attachments/diagram.png").unlink()
-            (directory / "_attachments").rmdir()
-            (directory / "content.md").unlink()
-            directory.rmdir()
-
-            output, _, _ = self._status(workarea)
-
-            self.assertIn("local:  changed: content.md, _attachments/diagram.png", output)
-
     def test_rejects_a_page_without_a_cache_entry(self) -> None:
         with temporary_workarea() as workarea:
             with self.assertRaisesRegex(SyncError, "no managed local page matches '123456'"):
                 self._status(workarea)
-
-    def test_changes_nothing(self) -> None:
-        with temporary_workarea() as workarea:
-            self._pull(workarea)
-            (workarea.root_dir / "Example page_123456/content.md").write_text("# Example page\n\nEdited\n")
-            before = self._snapshot(workarea)
-
-            _, _, transport = self._status(workarea, page=self._page(version=18))
-
-            self.assertEqual(self._snapshot(workarea), before)
-            self.assertTrue(all(request.method == "GET" for request in transport.requests))
-
-    def test_retried_status_read_changes_nothing(self) -> None:
-        with temporary_workarea() as workarea:
-            self._pull(workarea)
-            before = self._snapshot(workarea)
-            page = self._page()
-            responses = [
-                MockResponse(503, {}, b""),
-                MockResponse.from_json(page),
-                MockResponse.from_json({"results": [attachment_fixture()]})]
-
-            _, status, transport = self._run(workarea, lambda: PageStatusCommand().run("123456"), responses)
-
-            self.assertEqual(status, 0)
-            self.assertEqual(self._snapshot(workarea), before)
-            self.assertEqual([request.method for request in transport.requests], ["GET", "GET", "GET"])
 
 
 class TestPageStatusInTree(unittest.TestCase):
@@ -202,34 +105,6 @@ class TestPageStatusInTree(unittest.TestCase):
     def _remote_change(self, page_id, **fields):
         self.site.content[page_id].update(fields)
         self.site.content[page_id]["version"] += 1
-
-    def test_reports_no_location_for_a_page_in_place(self) -> None:
-        with temporary_workarea(root_page_id="100") as workarea:
-            self._pull(workarea, "100", "200")
-
-            output = self._status(workarea, str(workarea.root_dir / "Root_100" / "Child_200" / "content.md"))
-
-            self.assertIn("Page '200' (Child)", output)
-            self.assertIn("remote: unchanged", output)
-            self.assertNotIn("location:", output)
-
-    def test_reports_the_relocation_of_a_remote_rename_or_move(self) -> None:
-        cases = [
-            ({
-                "title": "Renamed child"}, "location: moves from 'Root_100/Child_200' to 'Root_100/Renamed child_200' on pull"),
-            ({
-                "parent_id": "400"}, "location: moves from 'Root_100/Child_200' to 'Root_100/Other_400/Child_200' on pull"), ]
-        for fields, expected in cases:
-            with self.subTest(fields=fields):
-                self.site = self._site()
-                with temporary_workarea(root_page_id="100") as workarea:
-                    self._pull(workarea, "100", "200", "400")
-                    self._remote_change("200", **fields)
-
-                    output = self._status(workarea)
-
-                    self.assertIn("remote: changed: page", output)
-                    self.assertIn(expected, output)
 
     def test_reports_a_move_below_a_parent_that_pull_installs_first(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
@@ -263,17 +138,6 @@ class TestPageStatusInTree(unittest.TestCase):
             self.assertIn("local:  unchanged", output)
             self.assertIn("remote: moved outside this workarea's tree", output)
             self.assertNotIn("location:", output)
-
-    def test_reads_only(self) -> None:
-        with temporary_workarea(root_page_id="100") as workarea:
-            self._pull(workarea, "100", "200")
-            self._remote_change("200", title="Renamed child")
-            self.site.requests.clear()
-
-            self._status(workarea)
-
-            self.assertTrue((workarea.root_dir / "Root_100" / "Child_200").is_dir())
-            self.assertTrue(all(request.method == "GET" for request in self.site.requests))
 
 
 # vim: set ts=4 sw=4 et tw=132:

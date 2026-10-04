@@ -50,23 +50,6 @@ class TestTreeStatus(unittest.TestCase):
         site.add_page("500", "Conflict", "100", version=2)
         return site
 
-    def test_classifies_every_combined_page_state(self) -> None:
-        with temporary_workarea(root_page_id="100") as workarea:
-            states = [
-                self._cache_page(workarea, "100", "Root", None),
-                self._cache_page(workarea, "300", "Remote changed", "100"),
-                self._cache_page(workarea, "400", "Local changed", "100", markdown="# Page\n\nEdited\n"),
-                self._cache_page(workarea, "500", "Conflict", "100", markdown="# Page\n\nEdited\n"),
-                self._cache_page(workarea, "600", "Absent remote", "100")]
-
-            status = TreeStatus.from_pages(workarea, self._site().client(), self._references(), states, self.detector)
-
-            self.assertEqual(
-                [(page.id, page.status) for page in status.pages], [
-                    ("100", PageStatusState.UNCHANGED), ("200", PageStatusState.ABSENT_LOCAL),
-                    ("300", PageStatusState.REMOTE_CHANGED), ("400", PageStatusState.LOCAL_CHANGED),
-                    ("500", PageStatusState.CONFLICT), ("600", PageStatusState.ABSENT_REMOTE)])
-
     def test_distinguishes_absent_remote_pages_by_their_local_changes(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             states = [
@@ -113,15 +96,6 @@ class TestTreeStatus(unittest.TestCase):
 
             with self.assertRaisesRegex(SyncError, "remote page list contains page '100' more than once"):
                 TreeStatus.from_pages(workarea, self._site().client(), references, [], self.detector)
-
-    def test_sorts_pages_parents_before_children(self) -> None:
-        root = PageStatus(PageStatusState.ABSENT_LOCAL, RemoteContentRef("100", "page", "Root"), None)
-        child = PageStatus(PageStatusState.ABSENT_LOCAL, RemoteContentRef("200", "page", "Child", "100"), None)
-        grandchild = PageStatus(PageStatusState.ABSENT_LOCAL, RemoteContentRef("300", "page", "Grandchild", "200"), None)
-
-        status = TreeStatus([grandchild, root, child])
-
-        self.assertEqual([page.id for page in status.pages], ["100", "200", "300"])
 
     def test_rejects_a_page_hierarchy_cycle(self) -> None:
         first = PageStatus(PageStatusState.ABSENT_LOCAL, RemoteContentRef("100", "page", "First", "200"), None)

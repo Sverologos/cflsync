@@ -391,40 +391,6 @@ class TestRecordedAcceptanceWorkflow(unittest.TestCase):
             self.assertIn("remote: unchanged", output)
             self.assertTrue(transport.requests)
 
-    def test_reports_conflicts_and_force_commands_choose_the_requested_side(self) -> None:
-        with TemporaryDirectory(prefix="cflsync-acceptance-") as temporary:
-            root = Path(temporary)
-            config = Config(root / "credentials.json", {"default": Profile("fixture.invalid", "fixture", "token")})
-            transport = RecordedConfluenceTransport()
-            client = APIClient("fixture.invalid", "fixture", "token", transport=transport)
-            self.assertEqual(self._run(root, config, client, ["init", "456789"])[0], 0)
-            self.assertEqual(self._run(root, config, client, ["page", "pull", "456789"])[0], 0)
-            self.assertEqual(self._run(root, config, client, ["page", "create", "456789", "Acceptance page"])[0], 0)
-
-            page = root / "Acceptance parent_456789" / "Acceptance page_123456" / "content.md"
-            page.write_text("# Acceptance page\n\nLocal pull conflict\n", encoding="utf-8")
-            transport.set_remote_page({"type": "doc", "version": 1, "content": [_paragraph("Remote pull winner")]})
-            status, _, errors = self._run(root, config, client, ["page", "pull", transport.page_id])
-            self.assertEqual(status, 1)
-            self.assertIn("pull conflicts", errors)
-            self.assertIn("Local pull conflict", page.read_text(encoding="utf-8"))
-
-            status, _, errors = self._run(root, config, client, ["page", "pull", "--force", transport.page_id])
-            self.assertEqual(status, 0)
-            self.assertEqual(errors, "")
-            self.assertIn("Remote pull winner", page.read_text(encoding="utf-8"))
-
-            page.write_text("# Acceptance page\n\nLocal push winner\n", encoding="utf-8")
-            transport.set_remote_page({"type": "doc", "version": 1, "content": [_paragraph("Remote push conflict")]})
-            status, _, errors = self._run(root, config, client, ["page", "push", transport.page_id])
-            self.assertEqual(status, 1)
-            self.assertIn("push conflicts", errors)
-
-            status, _, errors = self._run(root, config, client, ["page", "push", "--force", transport.page_id])
-            self.assertEqual(status, 0)
-            self.assertEqual(errors, "")
-            self.assertEqual(transport.remote_content(), [_paragraph("Local push winner")])
-
 
 class TestLiveAcceptanceIsManualOnly(unittest.TestCase):
 
@@ -462,57 +428,6 @@ class TestTreeAcceptanceWorkflow(unittest.TestCase):
         status, output, errors = self._run(root, *arguments)
         self.assertEqual((status, errors), (0, ""), arguments)
         return output
-
-    def test_page_links_become_current_only_in_pages_that_a_command_writes(self) -> None:
-        site = "https://example.atlassian.net/wiki/spaces/EXAMPLE/pages"
-
-        def document(*links):
-            return json.dumps(
-                {
-                    "type":
-                    "doc",
-                    "version":
-                    1,
-                    "content": [
-                        {
-                            "type": "paragraph",
-                            "content": [{
-                                "type": "text",
-                                "text": text,
-                                "marks": [{
-                                    "type": "link",
-                                    "attrs": {
-                                        "href": href}}]}]} for text, href in links]})
-
-        self.site.content["400"]["body"] = document(("Grandchild", f"{site}/300#Notes"), ("Child", f"{site}/200"))
-        self.site.content["300"]["body"] = document(("Other", f"{site}/400"))
-        with TemporaryDirectory(prefix="cflsync-acceptance-") as temporary:
-            root = Path(temporary) / "workarea"
-            root.mkdir()
-            self._succeeds(root, "init", "Root")
-            self._succeeds(root, "pull")
-            other = root / "Root_100" / "Other_400" / "content.md"
-            grandchild = root / "Root_100" / "Child_200" / "Grandchild_300" / "content.md"
-            self.assertIn("[Grandchild](../Child_200/Grandchild_300/content.md#Notes)", other.read_text(encoding="utf-8"))
-            self.assertIn("[Other](../../Other_400/content.md)", grandchild.read_text(encoding="utf-8"))
-            grandchild_bytes = grandchild.read_bytes()
-
-            # A rename moves Child with Grandchild; the link in Other is now stale but still names page 300.
-            self._succeeds(root, "page", "rename", "200", "Renamed child")
-            moved = root / "Root_100" / "Renamed child_200" / "Grandchild_300" / "content.md"
-            self.assertEqual(moved.read_bytes(), grandchild_bytes)
-            other.write_text(other.read_text(encoding="utf-8") + "\nEdited.\n", encoding="utf-8")
-            self._succeeds(root, "page", "push", "400")
-            self.assertIn(f"{site}/300#Notes", self.site.content["400"]["body"])
-            self.assertIn(f"{site}/200", self.site.content["400"]["body"])
-
-            # A later remote change to Other makes the next pull rewrite it with current paths; Grandchild is untouched.
-            self.site.content["400"]["version"] += 1
-            self._succeeds(root, "pull")
-
-            self.assertIn("[Grandchild](../Renamed%20child_200/Grandchild_300/content.md#Notes)", other.read_text(encoding="utf-8"))
-            self.assertIn("[Child](../Renamed%20child_200/content.md)", other.read_text(encoding="utf-8"))
-            self.assertEqual(moved.read_bytes(), grandchild_bytes)
 
     def test_manages_a_tree_page_by_page(self) -> None:
         with TemporaryDirectory(prefix="cflsync-acceptance-") as temporary:

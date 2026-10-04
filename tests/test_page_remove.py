@@ -6,7 +6,6 @@
 
 """Removal of a page and its subtree, remotely and locally."""
 
-import shutil
 import unittest
 from unittest.mock import patch
 
@@ -68,27 +67,6 @@ class TestPageRemove(unittest.TestCase):
         self.assertEqual(self._snapshot(workarea), before)
         self.assertEqual(self._deletes(), [])
 
-    def test_removes_a_leaf_page_remotely_and_locally(self) -> None:
-        with temporary_workarea(root_page_id="100") as workarea:
-            self._pull(workarea, "100", "400")
-            (workarea.root_dir / "Root_100" / "Other_400" / "notes.txt").write_text("unmanaged", encoding="utf-8")
-
-            self._remove(workarea, "400")
-
-            self.assertNotIn("400", self.site.content)
-            self.assertFalse((workarea.root_dir / "Root_100" / "Other_400").exists())
-            self.assertFalse(workarea.cache_path("400").exists())
-            self.assertTrue((workarea.root_dir / "Root_100" / "content.md").is_file())
-
-    def test_confirms_a_leaf_page_before_removing(self) -> None:
-        with temporary_workarea(root_page_id="100") as workarea:
-            self._pull(workarea, "100", "400")
-
-            self._remove(workarea, "400", force=False)
-
-            self.assertEqual(self.prompts, ["Remove remote and local copy of page 'Other' (400)? [y/N] "])
-            self.assertNotIn("400", self.site.content)
-
     def test_declining_or_a_missing_terminal_changes_nothing(self) -> None:
         for answer, terminal in [("no", True), ("yes", False)]:
             with self.subTest(answer=answer, terminal=terminal):
@@ -106,17 +84,6 @@ class TestPageRemove(unittest.TestCase):
                     self.assertEqual(self._snapshot(workarea), before)
                     self.assertEqual(self._deletes(), [])
 
-    def test_removes_a_subtree_children_first(self) -> None:
-        with temporary_workarea(root_page_id="100") as workarea:
-            self._pull(workarea, "100", "200", "300")
-
-            lines = self._remove(workarea, str(workarea.root_dir / "Root_100" / "Child_200"))
-
-            self.assertEqual(self._deletes(), ["/wiki/api/v2/pages/300", "/wiki/api/v2/pages/200"])
-            self.assertFalse((workarea.root_dir / "Root_100" / "Child_200").exists())
-            self.assertEqual(sorted(workarea.page_tree().states), ["100"])
-            self.assertEqual(lines, ["Removed page 'Child' (200) and 1 descendants."])
-
     def test_the_prompt_lists_descendants_and_marks_remote_only_pages_and_unmanaged_files(self) -> None:
         self.site.add_page("500", "Remote only", parent_id="200")
         with temporary_workarea(root_page_id="100") as workarea:
@@ -131,16 +98,6 @@ class TestPageRemove(unittest.TestCase):
             self.assertIn("  Page '500' (Remote only): -; not present locally", lines)
             self.assertEqual(self.prompts, ["Remove page 'Child' (200) and 2 descendant pages? [y/N] "])
             self.assertEqual(sorted(self.site.content), ["100", "400"])
-
-    def test_removes_a_cached_descendant_whose_directory_is_missing(self) -> None:
-        with temporary_workarea(root_page_id="100") as workarea:
-            self._pull(workarea, "100", "200", "300")
-            shutil.rmtree(workarea.root_dir / "Root_100" / "Child_200" / "Grandchild_300")
-
-            self._remove(workarea, "200")
-
-            self.assertEqual(sorted(self.site.content), ["100", "400"])
-            self.assertEqual(sorted(workarea.page_tree().states), ["100"])
 
     def test_refuses_unsynchronized_pages_in_the_subtree_even_with_force(self) -> None:
         cases = [

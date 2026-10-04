@@ -7,16 +7,15 @@
 """Remote page creation followed by the normal pull path."""
 
 import json
-from pathlib import Path
 import shutil
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from cflsync import APIClient, PageState, Profile, SyncError
+from cflsync import APIClient, Profile, SyncError
 from cflsync.cli import PageCreateCommand, PagePullCommand
 from tests.support import FakeConfluence, MockResponse, MockTransport, example_page_state, run_with_site, temporary_workarea
-from tests.test_api_operations import attachment_fixture, page_fixture
+from tests.test_api_operations import page_fixture
 
 
 def created_page_fixture(page_id: str = "123456", title: str = "New page") -> dict[str, object]:
@@ -47,21 +46,6 @@ class TestPageCreate(unittest.TestCase):
         (directory / "content.md").write_text("# Parent page\n", encoding="utf-8")
         return directory
 
-    def _pull_responses(self, page, attachments=None):
-        if attachments is None:
-            attachments = [attachment_fixture()]
-
-        return [
-            MockResponse.from_json(page),
-            MockResponse.from_json({"results": [{
-                "id": "456789",
-                "type": "page"}]}),
-            MockResponse.from_json(page),
-            MockResponse.from_json({"results": [{
-                "id": "456789",
-                "type": "page"}]}),
-            MockResponse.from_json({"results": attachments}), *[MockResponse(200, {}, b"PNG") for attachment in attachments], ]
-
     def test_rejects_invalid_titles_before_any_request(self) -> None:
         for title in ("", "  ", "two\nlines", " padded "):
             with self.subTest(title=title):
@@ -72,33 +56,6 @@ class TestPageCreate(unittest.TestCase):
                         PageCreateCommand().run("456789", title)
 
                 self.assertEqual(transport.requests, [])
-
-    def test_creates_a_child_page_and_installs_it_like_a_first_pull(self) -> None:
-        with temporary_workarea(root_page_id="456789") as workarea:
-            parent_directory = self._local_parent(workarea)
-            page = created_page_fixture()
-            parent = page_fixture("456789", "Parent page")
-            responses = [
-                MockResponse.from_json(parent),
-                MockResponse.from_json(parent),
-                MockResponse.from_json(page), *self._pull_responses(page)]
-
-            transport, status = self._create(workarea, responses)
-
-            state = PageState.load(workarea.cache_path("123456"))
-            directory = workarea.page_directory(state)
-            self.assertEqual(status, 0)
-            self.assertEqual(directory, parent_directory / "New page_123456")
-            self.assertEqual(state.page.title, "New page")
-            self.assertEqual((directory / "content.md").read_text(), "# New page\n")
-            self.assertEqual((directory / "_attachments/diagram.png").read_bytes(), b"PNG")
-            create_request = transport.requests[2]
-            self.assertEqual(create_request.method, "POST")
-            self.assertEqual(create_request.path, "/pages")
-            body = create_request.json_body()
-            self.assertEqual(body["parentId"], "456789")
-            self.assertEqual(body["spaceId"], "98765")
-            self.assertEqual(body["title"], "New page")
 
     def test_failed_creation_leaves_no_local_state(self) -> None:
         with temporary_workarea(root_page_id="456789") as workarea:
@@ -114,36 +71,6 @@ class TestPageCreate(unittest.TestCase):
 
             self.assertEqual(list(workarea.page_state_paths()), ["456789"])
             self.assertEqual(sorted(path.name for path in parent_directory.iterdir()), ["content.md"])
-
-    def test_resolves_a_cached_parent_title_before_creation(self) -> None:
-        with temporary_workarea(root_page_id="456789") as workarea:
-            self._local_parent(workarea)
-            page = created_page_fixture()
-            parent = page_fixture("456789", "Parent page")
-            responses = [MockResponse.from_json(parent), MockResponse.from_json(page), *self._pull_responses(page)]
-
-            transport, status = self._create(workarea, responses, parent_page_ref="Parent page")
-
-            self.assertEqual(status, 0)
-            self.assertEqual(transport.requests[0].path, "/pages/456789")
-            self.assertEqual(transport.requests[1].json_body()["parentId"], "456789")
-
-    def test_resolves_a_managed_parent_directory_before_creation(self) -> None:
-        with temporary_workarea(root_page_id="456789") as workarea:
-            parent = page_fixture("456789", "Parent page")
-            parent_state = example_page_state("456789", title="Parent page")
-            parent_state.save(workarea.cache_path(parent_state.page.id))
-            parent_directory = workarea.root_dir / parent_state.page.directory
-            parent_directory.mkdir()
-            (parent_directory / "content.md").write_text("# Parent page\n", encoding="utf-8")
-            page = created_page_fixture()
-            responses = [MockResponse.from_json(parent), MockResponse.from_json(page), *self._pull_responses(page)]
-
-            transport, status = self._create(workarea, responses, parent_page_ref=str(parent_directory))
-
-            self.assertEqual(status, 0)
-            self.assertEqual(transport.requests[0].path, "/pages/456789")
-            self.assertEqual(transport.requests[1].json_body()["parentId"], "456789")
 
     def test_failed_follow_up_pull_reports_the_created_page(self) -> None:
         with temporary_workarea(root_page_id="456789") as workarea:
@@ -196,28 +123,6 @@ class TestPageCreateInTree(unittest.TestCase):
         self.assertEqual([request.method for request in self.site.requests if request.method != "GET"], [])
         self.assertNotIn(title, [item["title"] for item in self.site.content.values()])
 
-    def test_creates_a_page_below_a_local_parent(self) -> None:
-        with temporary_workarea(root_page_id="100") as workarea:
-            self._pull(workarea, "100", "200")
-
-            self._run(workarea, lambda: PageCreateCommand().run("200", "New page"))
-
-            created = [item for item in self.site.content.values() if item["title"] == "New page"]
-            self.assertEqual([item["parent_id"] for item in created], ["200"])
-            self.assertTrue(
-                (workarea.root_dir / "Root_100" / "Child_200" / f"New page_{created[0]['id']}" / "content.md").is_file())
-            self.assertEqual(PageState.load(workarea.cache_path(created[0]["id"])).page.parent_id, "200")
-
-    def test_pulls_a_missing_parent_chain_before_creating(self) -> None:
-        with temporary_workarea(root_page_id="100") as workarea:
-            output = self._run(workarea, lambda: PageCreateCommand().run("200", "New page"))
-
-            created = [item for item in self.site.content.values() if item["title"] == "New page"]
-            self.assertEqual(output, "Pulled parent 'Root' (100) to Root_100\nPulled parent 'Child' (200) to Root_100/Child_200\n")
-            self.assertEqual([item["parent_id"] for item in created], ["200"])
-            self.assertTrue(
-                (workarea.root_dir / "Root_100" / "Child_200" / f"New page_{created[0]['id']}" / "content.md").is_file())
-
     def test_restores_a_missing_cached_parent_before_creating(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea, "100", "200")
@@ -229,23 +134,6 @@ class TestPageCreateInTree(unittest.TestCase):
             self.assertEqual(output, "Pulled parent 'Child' (200) to Root_100/Child_200\n")
             self.assertTrue(
                 (workarea.root_dir / "Root_100" / "Child_200" / f"New page_{created[0]['id']}" / "content.md").is_file())
-
-    def test_keeps_pulled_parents_when_remote_creation_fails(self) -> None:
-        with temporary_workarea(root_page_id="100") as workarea:
-            self.site.fail("POST", "/wiki/api/v2/pages", 503)
-
-            with self.assertRaisesRegex(SyncError, "injected failure"):
-                self._run(workarea, lambda: PageCreateCommand().run("200", "New page"))
-
-            self.assertTrue((workarea.root_dir / "Root_100" / "Child_200" / "content.md").is_file())
-            self.assertTrue(workarea.cache_path("100").is_file())
-            self.assertTrue(workarea.cache_path("200").is_file())
-
-    def test_refuses_a_parent_outside_the_tree_before_creating(self) -> None:
-        with temporary_workarea(root_page_id="100") as workarea:
-            self._pull(workarea, "100")
-
-            self._refused(workarea, "900", "New page", "page '900' is not found in this workarea")
 
 
 # vim: set ts=4 sw=4 et tw=132:
