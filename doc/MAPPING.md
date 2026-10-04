@@ -161,9 +161,20 @@ as a backslash before the line end, which reads back as a literal backslash
 when nothing follows. Trailing hard breaks, and spaces after them, are
 therefore dropped, as Markdown drops trailing whitespace; a paragraph that
 holds only hard breaks becomes empty. Hard breaks inside a block are kept.
-Whitespace at the start or end of `strong`, `em`, or `strike` text, such as
-a non-breaking space, is written outside the delimiters and converts back
-without that mark, since a delimiter next to whitespace cannot open or close.
+ADF splits text into a node wherever its marks change, also for marks that
+are not converted, such as `textColor`. Neighbouring text nodes that share
+`strong`, `em`, or `strike` are therefore written inside one pair of
+delimiters, `**a (*b*)**` rather than `**a (****b****)**`, which Markdown
+reads differently; where marks overlap, the mark covering the longest run
+becomes the outer one, and a single node keeps `strong` outside `em` outside
+`strike`. Text with a link, underline, or subscript/superscript mark keeps its
+delimiters inside that mark's syntax, which already separates them from its
+neighbours. Two marks that cross, such as `strong` over `a b` and `em` over
+`b c`, have no Markdown form without touching delimiters and do not convert
+back intact.
+Whitespace at the start or end of such a run, such as a non-breaking space, is
+written outside the delimiters and converts back without that mark, since a
+delimiter next to whitespace cannot open or close.
 ADF combines `code` with `link` only, which
 maps to code inside a link (`` [`x`](URL) ``); `Code` inside any other
 formatting is rejected on reverse conversion. Supported text marks are emitted in a

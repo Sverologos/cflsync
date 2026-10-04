@@ -42,6 +42,8 @@ RAW_MARKS = {
         "attrs": {
             "type": "sup"}}, "superscript"), }
 TYPED_RAW_MARKS = {"Underline": "<u>", "Subscript": "<sub>", "Superscript": "<sup>"}
+# The marks written as Markdown delimiters, with their Pandoc nodes, outermost first when they cover the same text.
+DELIMITED_MARKS = (("strong", "Strong"), ("em", "Emph"), ("strike", "Strikeout"))
 # An empty HTML comment between two blocks keeps Markdown from reading them as one; any comment-only block is ignored.
 BLOCK_SEPARATOR = "<!-- -->"
 HTML_COMMENT = re.compile(r"\s*<!--(?:(?!-->).)*-->\s*", re.DOTALL)
@@ -536,16 +538,20 @@ class ADFToMarkdownConverter:
         if not isinstance(content, list):
             return None
 
-        inlines = []
+        # Each inline becomes the delimited marks it carries (strong, em, strike) and its inlines without them, so that
+        # runs of neighbouring text sharing a delimited mark get one pair of delimiters.
+        items = []
         for child in content:
             if not isinstance(child, Mapping):
                 return None
 
-            converted = self._convert_inline(child)
-            if converted is None:
+            item = self._convert_inline_item(child)
+            if item is None:
                 return None
 
-            inlines.extend(converted)
+            items.append(item)
+
+        inlines = self._wrap_delimited_runs(items)
 
         # Markdown has no hard break at the end of a block: a trailing backslash would read back as text. Such breaks are
         # dropped, as Markdown drops trailing whitespace.
@@ -553,6 +559,68 @@ class ADFToMarkdownConverter:
             inlines.pop()
 
         return inlines
+
+    def _convert_inline_item(self, node):
+        """Return the delimited marks of an inline node and its inlines without them, or ``None``.
+
+        Only text without an outer mark (link, underline, subsup) separates its delimited marks: an outer mark's own
+        syntax already separates neighbouring delimiters, so such text keeps its delimiters inside, as other inlines do.
+        """
+        if node.get("type") != "text":
+            converted = self._convert_inline(node)
+            return None if converted is None else ((), converted)
+
+        values = self._mark_values(node.get("marks", []))
+        inlines = self._text_inlines(node.get("text"))
+        if values is None or inlines is None:
+            return None
+
+        delimited = tuple(mark_type for mark_type, _ in DELIMITED_MARKS if mark_type in values)
+        if not delimited or values.keys() & {"link", "underline", "subsup"}:
+            converted = self._convert_marks(inlines, list(values.values()))
+            return None if converted is None else ((), converted)
+
+        converted = self._convert_marks(inlines, [mark for mark_type, mark in values.items() if mark_type not in delimited])
+        return None if converted is None else (delimited, converted)
+
+    def _wrap_delimited_runs(self, items):
+        """Wrap runs of inlines that share a delimited mark in one Pandoc node per run.
+
+        Wrapping each ADF text node separately would put delimiters of neighbouring nodes next to each other, as in
+        ``**a****b**``, which Markdown reads differently. At each position, the mark whose run extends furthest becomes
+        the outer node, so a single node keeps strong outside em outside strike.
+        """
+        result = []
+        index = 0
+        while index < len(items):
+            marks, inlines = items[index]
+            if not marks:
+                result.extend(inlines)
+                index += 1
+                continue
+
+            best, length = None, 0
+            for mark_type, _ in DELIMITED_MARKS:
+                if mark_type in marks:
+                    end = index
+                    while end < len(items) and mark_type in items[end][0]:
+                        end += 1
+
+                    if end - index > length:
+                        best, length = mark_type, end - index
+
+            run = [(tuple(mark for mark in run_marks if mark != best), run_inlines)
+                   for run_marks, run_inlines in items[index:index + length]]
+            # A delimiter next to whitespace cannot open or close emphasis. Pandoc moves ASCII spaces out of the
+            # delimiters itself; other whitespace, such as a non-breaking space, is moved out here, without the mark.
+            leading, inner, trailing = self._split_edge_whitespace(self._wrap_delimited_runs(run))
+            result.extend(leading)
+            if inner:
+                result.append({"t": dict(DELIMITED_MARKS)[best], "c": inner})
+            result.extend(trailing)
+            index += length
+
+        return result
 
     def _convert_inline(self, node):
         node_type = node.get("type")
@@ -708,12 +776,16 @@ class ADFToMarkdownConverter:
         return [inline]
 
     def _convert_text(self, node):
-        text = node.get("text")
-        if not isinstance(text, str) or "\n" in text or "\r" in text or "\t" in text:
+        inlines = self._text_inlines(node.get("text"))
+        if inlines is None:
             return None
 
         marks = node.get("marks", [])
-        if not isinstance(marks, list):
+        return None if self._mark_values(marks) is None else self._convert_marks(inlines, marks)
+
+    @staticmethod
+    def _text_inlines(text):
+        if not isinstance(text, str) or "\n" in text or "\r" in text or "\t" in text:
             return None
 
         inlines = []
@@ -724,9 +796,14 @@ class ADFToMarkdownConverter:
             if part:
                 inlines.append({"t": "Str", "c": part})
 
-        return self._convert_marks(inlines, marks)
+        return inlines
 
-    def _convert_marks(self, inlines, marks):
+    @staticmethod
+    def _mark_values(marks):
+        """Return the supported marks by type, or ``None`` for invalid or repeated marks; other marks are dropped."""
+        if not isinstance(marks, list):
+            return None
+
         values = {}
         for mark in marks:
             if not isinstance(mark, Mapping) or not isinstance(mark.get("type"), str):
@@ -741,6 +818,13 @@ class ADFToMarkdownConverter:
 
             values[mark_type] = mark
 
+        return values
+
+    def _convert_marks(self, inlines, marks):
+        values = self._mark_values(marks)
+        if values is None:
+            return None
+
         result = inlines
         if "code" in values:
             if "subsup" in values:
@@ -750,17 +834,9 @@ class ADFToMarkdownConverter:
             if result is None:
                 return None
 
-        delimited = [
-            pandoc_type for mark_type, pandoc_type in (("strike", "Strikeout"), ("em", "Emph"), ("strong", "Strong"))
-            if mark_type in values]
+        delimited = tuple(mark_type for mark_type, _ in DELIMITED_MARKS if mark_type in values)
         if delimited:
-            # A delimiter next to whitespace cannot open or close emphasis. Pandoc moves ASCII spaces out of the
-            # delimiters itself; other whitespace, such as a non-breaking space, is moved out here, without the mark.
-            leading, result, trailing = self._split_edge_whitespace(result)
-            for pandoc_type in delimited if result else []:
-                result = [{"t": pandoc_type, "c": result}]
-
-            result = [*leading, *result, *trailing]
+            result = self._wrap_delimited_runs([(delimited, result)])
 
         if "underline" in values:
             result = [{"t": "RawInline", "c": ["html", "<u>"]}, *result, {"t": "RawInline", "c": ["html", "</u>"]}, ]

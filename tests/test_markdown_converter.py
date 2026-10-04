@@ -1583,6 +1583,62 @@ class TestMarkdownToADFMarkEdgeWhitespace(unittest.TestCase):
             document[0]["content"][-1]["content"][0]["content"][0], _paragraph(_text("a", EM), _text(NBSP), _text("x", CODE)))
 
 
+class TestMarkdownToADFDelimitedRuns(unittest.TestCase):
+    """Neighbouring text that shares strong, em, or strike is written inside one pair of delimiters."""
+
+    TEXT_COLOR = {"type": "textColor", "attrs": {"color": "#36b37e"}}
+
+    def setUp(self) -> None:
+        self.pandoc = PandocRunner()
+
+    def _round_trip(self, content):
+        markdown = ADFToMarkdownConverter(self.pandoc).convert({"type": "doc", "version": 1, "content": [_paragraph(*content)]})
+        return markdown, MarkdownToADFConverter(self.pandoc).convert(markdown)["content"]
+
+    def test_writes_one_pair_of_delimiters_across_a_dropped_mark(self) -> None:
+        for mark, delimiter in ((STRONG, "**"), (EM, "*"), (STRIKE, "~~")):
+            with self.subTest(mark=mark["type"]):
+                markdown, document = self._round_trip([_text("a (", mark), _text("b", mark, self.TEXT_COLOR), _text(")", mark)])
+
+                self.assertEqual(markdown, f"{delimiter}a (b){delimiter}\n")
+                self.assertEqual(document, [_paragraph(_text("a (b)", mark))])
+
+    def test_nests_the_differing_mark_inside_the_shared_one(self) -> None:
+        cases = {
+            "em around strong": (EM, STRONG, "*a (**b**)*\n"),
+            "strong around em": (STRONG, EM, "**a (*b*)**\n"),
+            "strong around strike": (STRONG, STRIKE, "**a (~~b~~)**\n"),
+            "strike around strong": (STRIKE, STRONG, "~~a (**b**)~~\n"), }
+        for name, (shared, inner, expected) in cases.items():
+            with self.subTest(case=name):
+                content = [_text("a (", shared), _text("b", shared, inner), _text(")", shared)]
+
+                markdown, document = self._round_trip(content)
+
+                self.assertEqual(markdown, expected)
+                self.assertEqual(_mark_sets(document[0]["content"]), _mark_sets(content))
+
+    def test_keeps_whitespace_between_nodes_inside_the_run(self) -> None:
+        markdown, document = self._round_trip([_text("a ", STRONG), _text("b", STRONG, self.TEXT_COLOR)])
+
+        self.assertEqual(markdown, "**a b**\n")
+        self.assertEqual(document, [_paragraph(_text("a b", STRONG))])
+
+    def test_keeps_the_nesting_of_a_single_node_and_of_nodes_with_outer_marks(self) -> None:
+        link = {"type": "link", "attrs": {"href": "https://a.test/", "title": ""}}
+
+        single, _ = self._round_trip([_text("x", STRONG, EM, STRIKE)])
+        linked, document = self._round_trip([_text("a (", STRONG), _text("b", STRONG, link), _text(")", STRONG)])
+
+        self.assertEqual(single, "***~~x~~***\n")
+        self.assertEqual(linked, "**a (**[**b**](https://a.test/)**)**\n")
+        self.assertEqual(_mark_sets(document[0]["content"]), [("a (", ["strong"]), ("b", ["link", "strong"]), (")", ["strong"])])
+
+
+def _mark_sets(content):
+    return [(node["text"], sorted(mark["type"] for mark in node.get("marks", []))) for node in content]
+
+
 HARD_BREAK = {"type": "hardBreak"}
 
 
