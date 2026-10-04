@@ -9,11 +9,13 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import subprocess
 from collections.abc import Mapping
 from datetime import date, datetime, timezone
 from html import escape, unescape
+from html.parser import HTMLParser
 from urllib.parse import unquote
 
 from .errors import SyncError
@@ -32,6 +34,9 @@ PANEL_ATTRIBUTES = {
     "panelColor": "data-color",
     "panelIconId": "data-icon-id",
     "panelIconText": "data-icon-text"}
+IMAGE_LAYOUTS = {"center", "wrap-left", "wrap-right", "wide", "full-width", "align-start", "align-end"}
+FIGURE_ATTRIBUTES = {"data-type", "data-layout", "data-width", "data-width-type", "data-local-id"}
+CAPTION_INLINE_TYPES = {"text", "hardBreak", "mention", "emoji", "date", "placeholder", "inlineCard", "status"}
 RAW_MARKS = {
     "<u>": ("</u>", {
         "type": "underline"}, "underline"),
@@ -48,10 +53,13 @@ TYPED_RAW_MARKS = {"Underline": "<u>", "Subscript": "<sub>", "Superscript": "<su
 DELIMITED_MARKS = (("strong", "Strong"), ("em", "Emph"), ("strike", "Strikeout"))
 # An empty HTML comment between two blocks keeps Markdown from reading them as one; any comment-only block is ignored.
 BLOCK_SEPARATOR = "<!-- -->"
-# Layouts and panels written in twg's HTML form are tag lines around Markdown; a layout section has a generic section type.
+# HTML containers are tag lines around Markdown; a layout section has a generic section type.
 LAYOUT_SECTION_TYPE = "layout-section"
 LAYOUT_BREAKOUT_MODES = {"wide", "full-width"}
-BLOCK_TAG = re.compile(r"<(section|div)((?:\s+[\w-]+=\"[^\"<>]*\")*)\s*>|</(section|div)>")
+BLOCK_TAG = re.compile(
+    r"<(section|div|details|summary|figure|figcaption)((?:\s+[\w-]+=\"[^\"<>]*\")*)\s*>|</(section|div|details|summary|figure|figcaption)>"
+)
+SUMMARY = re.compile(r"<summary>([^<>]*)</summary>", re.DOTALL)
 TAG_ATTRIBUTE = re.compile(r'\s+([\w-]+)="([^"<>]*)"')
 # An inline card is written in twg's form, a link-like <a> pair around its URL; its text is ignored on push.
 CARD_OPENING = re.compile(r'<a((?:\s+[\w-]+="[^"<>]*")*)\s*>')
@@ -64,18 +72,23 @@ TIME_OPENING = re.compile(r'<time datetime="(\d{4}-\d{2}-\d{2})">')
 
 
 class _BlockTag:
-    """One tag line of the HTML form of layouts and panels: a ``<section>`` or ``<div>`` opening tag, or its closing tag."""
+    """One HTML container tag line, or a complete plain-text ``<summary>`` line."""
 
-    def __init__(self, kind, opening, attributes, text):
+    def __init__(self, kind, opening, attributes, text, title=None):
         self.kind = kind
         self.opening = opening
         self.attributes = attributes
         self.text = text
+        self.title = title
         self.block = {"t": "RawBlock", "c": ["html", text]}
 
     @classmethod
     def parse(cls, text):
         """Return the tag that *text* consists of, or ``None``."""
+        summary = SUMMARY.fullmatch(text)
+        if summary is not None:
+            return cls("summary", True, {}, text, unescape(summary.group(1)))
+
         match = BLOCK_TAG.fullmatch(text)
         if match is None:
             return None
@@ -119,6 +132,84 @@ def _layout_width(text):
         return None
 
     return width if 0 < width <= 100 else None
+
+
+def _image_dimension(value, maximum=None):
+    """Return a positive finite pixel or percentage dimension, or ``None`` for an invalid value."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        number = float(value)
+    except (ValueError, OverflowError):
+        return None
+    if not math.isfinite(number) or number <= 0 or (maximum is not None and number > maximum):
+        return None
+    return value if type(value) is int else int(number) if number.is_integer() else number
+
+
+def _media_single_attributes(attrs):
+    """Validate supported ADF figure attributes and supply the default centre layout."""
+    if not isinstance(attrs, Mapping) or set(attrs) - {"layout", "width", "widthType", "localId"}:
+        return None
+    layout = attrs.get("layout", "center")
+    width_type = attrs.get("widthType")
+    if not isinstance(layout, str) or layout not in IMAGE_LAYOUTS:
+        return None
+    if "widthType" in attrs and (not isinstance(width_type, str) or width_type not in {"pixel", "percentage"}):
+        return None
+    result: dict[str, object] = {"layout": layout}
+    if "width" in attrs:
+        width = attrs["width"]
+        if type(width) not in {int, float} or _image_dimension(width, None if width_type == "pixel" else 100) is None:
+            return None
+        result["width"] = width
+    if width_type is not None:
+        result["widthType"] = width_type
+    return result
+
+
+class _MediaHTMLValidator(HTMLParser):
+    """Reject image and caption attributes that the HTML reader would otherwise discard."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.figures = []
+        self.in_caption = False
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "figure":
+            if self.figures:
+                raise ConversionError("figures cannot be nested")
+            if any(name not in FIGURE_ATTRIBUTES for name, _ in attrs):
+                raise ConversionError("figure has unsupported attributes")
+            self.figures.append(0)
+        elif tag == "figcaption":
+            if not self.figures:
+                raise ConversionError("figcaption must be inside a figure")
+            self.figures[-1] += 1
+            if self.figures[-1] > 1:
+                raise ConversionError("a figure can have only one figcaption")
+            if any(name != "data-local-id" for name, _ in attrs):
+                raise ConversionError("figcaption has unsupported attributes")
+            self.in_caption = True
+        elif tag == "img":
+            if self.figures and self.figures[-1] and not self.in_caption:
+                raise ConversionError("figure image must precede its figcaption")
+            unsupported = {name for name, _ in attrs} - {"src", "alt", "title", "width", "height", "data-local-id"}
+            if unsupported:
+                raise ConversionError(f"image has unsupported attribute '{sorted(unsupported)[0]}'")
+
+    def handle_endtag(self, tag):
+        if tag == "figcaption":
+            if not self.in_caption:
+                raise ConversionError("figcaption has a closing tag without an opening tag")
+            self.in_caption = False
+        elif tag == "figure":
+            if not self.figures:
+                raise ConversionError("figure has a closing tag without an opening tag")
+            if self.in_caption:
+                raise ConversionError("figcaption is not closed with </figcaption>")
+            self.figures.pop()
 
 
 def _date_html(timestamp):
@@ -244,6 +335,9 @@ class ADFToMarkdownConverter:
 
         if node_type == "panel":
             return self._convert_panel(node)
+
+        if node_type in ("expand", "nestedExpand"):
+            return self._convert_expand(node)
 
         if node_type == "bulletList":
             return self._convert_bullet_list(node)
@@ -376,6 +470,50 @@ class ADFToMarkdownConverter:
         tag = [f'data-type="panel-{panel_type}"']
         tag.extend(f'{name}="{escape(attrs[key])}"' for key, name in PANEL_ATTRIBUTES.items() if key in present)
         return [{"t": "RawBlock", "c": ["html", f"<div {' '.join(tag)}>"]}, *blocks, {"t": "RawBlock", "c": ["html", "</div>"]}]
+
+    def _convert_expand(self, node):
+        """Write an expand as twg's ``<details>`` and plain-text ``<summary>`` around Markdown blocks.
+
+        Breakout is kept on expands; unsupported attributes or marks keep the whole node opaque.
+        """
+        attrs = node.get("attrs", {})
+        marks = node.get("marks", [])
+        content = self._convert_block_content(node)
+        if not isinstance(attrs, Mapping) or set(attrs) - {"title", "localId"} or content is None or not content:
+            return self._convert_opaque(node)
+
+        title = attrs.get("title", "")
+        if not isinstance(title, str) or not isinstance(marks, list):
+            return self._convert_opaque(node)
+
+        tag = ['data-type="nested-expand"'] if node["type"] == "nestedExpand" else []
+        if marks:
+            breakout = marks[0] if len(marks) == 1 and isinstance(marks[0], Mapping) else {}
+            values = breakout.get("attrs")
+            if (node["type"] == "nestedExpand" or breakout.get("type") != "breakout" or set(breakout) - {"type", "attrs"}
+                    or not isinstance(values, Mapping) or set(values) - {"mode", "width"} or not isinstance(values.get("mode"), str)
+                    or values["mode"] not in LAYOUT_BREAKOUT_MODES):
+                return self._convert_opaque(node)
+
+            tag.append(f'data-breakout="{values["mode"]}"')
+            width = values.get("width")
+            if width is not None:
+                if type(width) not in {int, float} or not math.isfinite(width) or width <= 0:
+                    return self._convert_opaque(node)
+
+                tag.append(f'data-breakout-width="{width}"')
+
+        # Keep line breaks and tabs inside a single summary tag line, without interpreting Markdown in the title.
+        title = escape(title).replace("\n", "&#10;").replace("\r", "&#13;").replace("\t", "&#9;")
+        opening = "<details" + (" " + " ".join(tag) if tag else "") + ">"
+        return [
+            {
+                "t": "RawBlock",
+                "c": ["html", opening]}, {
+                    "t": "RawBlock",
+                    "c": ["html", f"<summary>{title}</summary>"]}, *self._convert_blocks(content), {
+                        "t": "RawBlock",
+                        "c": ["html", "</details>"]}]
 
     def _convert_bullet_list(self, node):
         items = self._convert_list_items(node)
@@ -553,15 +691,67 @@ class ADFToMarkdownConverter:
 
     def _convert_media_single(self, node):
         content = self._convert_block_content(node)
-        if content is None or len(content) != 1:
+        attrs = _media_single_attributes(node.get("attrs", {}))
+        if content is None or len(content) not in {1, 2} or attrs is None or node.get("marks"):
             return self._convert_opaque(node)
 
         # A single image is an image whatever its file name: ADF media carry no media type to tell otherwise.
-        inline = self._convert_media(content[0], as_image=True)
+        inline: dict | None = self._convert_media(content[0], as_image=True)
         if inline is None:
             return self._convert_opaque(node)
 
-        return {"t": "Para", "c": [inline]}
+        dimensions = []
+        media_attrs = content[0].get("attrs", {})
+        for name in ("width", "height"):
+            dimension = media_attrs.get(name)
+            if name in media_attrs:
+                if type(dimension) not in {int, float} or _image_dimension(dimension) is None:
+                    return self._convert_opaque(node)
+                dimensions.append([name, str(dimension)])
+        image: dict = {"t": "Para", "c": [inline]}
+        if dimensions:
+            # Pandoc's GFM writer rounds fractional pixel dimensions. Write the img directly to retain them.
+            url = inline["c"][2][0]
+            alt = self._media_label(url, media_attrs.get("alt"))
+            sizes = " ".join(f'{name}="{value}"' for name, value in dimensions)
+            image = {
+                "t": "RawBlock",
+                "c": ["html", f'<img src="{escape(url, quote=True)}" {sizes} alt="{escape(alt, quote=True)}" />']}
+        caption = None
+        if len(content) == 2:
+            child = content[1]
+            if (not isinstance(child, Mapping) or child.get("type") != "caption" or child.get("marks")
+                    or not isinstance(child.get("attrs", {}), Mapping) or set(child.get("attrs", {})) - {"localId"}
+                    or not isinstance(child.get("content", []), list)
+                    or any(not isinstance(part, Mapping) or part.get("type") not in CAPTION_INLINE_TYPES
+                           for part in child.get("content", []))):
+                return self._convert_opaque(node)
+            caption = self._convert_inlines(child)
+            if caption is None:
+                return self._convert_opaque(node)
+
+        if caption is None and not dimensions and attrs == {"layout": "center"}:
+            return image
+        if caption is None and not dimensions and attrs == {"layout": "center", "widthType": "percentage"}:
+            return image
+
+        tag = ['data-type="media-single"']
+        for key, name in (("layout", "data-layout"), ("width", "data-width"), ("widthType", "data-width-type")):
+            if key in attrs and (key != "layout" or attrs[key] != "center"):
+                tag.append(f'{name}="{attrs[key]}"')
+        blocks = [{"t": "RawBlock", "c": ["html", f"<figure {' '.join(tag)}>"]}, image]
+        if caption is not None:
+            blocks.extend(
+                [
+                    {
+                        "t": "RawBlock",
+                        "c": ["html", "<figcaption>"]}, {
+                            "t": "Para",
+                            "c": caption}, {
+                                "t": "RawBlock",
+                                "c": ["html", "</figcaption>"]}])
+        blocks.append({"t": "RawBlock", "c": ["html", "</figure>"]})
+        return blocks
 
     def _convert_media_group(self, node):
         content = self._convert_block_content(node)
@@ -614,13 +804,17 @@ class ADFToMarkdownConverter:
         except SyncError:
             return None
 
-    def _convert_media_target(self, url, alt, as_image=False):
+    @staticmethod
+    def _media_label(url, alt):
         # Without alt text, the label is the file name; attachment paths are percent-encoded, their labels are not.
         name = url.rsplit("/", 1)[-1]
         if url.startswith("_attachments/"):
             name = unquote(name)
 
-        text = alt if isinstance(alt, str) and alt else name
+        return alt if isinstance(alt, str) and alt else name
+
+    def _convert_media_target(self, url, alt, as_image=False):
+        text = self._media_label(url, alt)
         inlines = self._convert_text({"type": "text", "text": text})
         if inlines is None:
             return None
@@ -1205,7 +1399,7 @@ class MarkdownToADFConverter:
                 content.append(node)
                 continue
 
-            # The blocks up to the next layout, which a layout tag inside a panel does not start.
+            # A layout tag inside another container does not start a top-level layout.
             blocks = []
             depth = 0
             while index < len(tokens):
@@ -1214,7 +1408,7 @@ class MarkdownToADFConverter:
                     if token.is_layout and depth == 0:
                         break
 
-                    if token.kind == "div":
+                    if token.kind in {"div", "details", "figure"}:
                         depth += 1 if token.opening else -1
 
                     token = token.block
@@ -1228,7 +1422,7 @@ class MarkdownToADFConverter:
 
     @staticmethod
     def _block_tokens(pandoc_blocks):
-        """Return the blocks with every raw block made only of ``<section>`` and ``<div>`` tags split into one tag per line.
+        """Split raw blocks made only of supported container tags and summaries into one token per line.
 
         Written with blank lines, each tag is a raw block of its own; without them, Markdown joins neighbouring tag lines
         into one raw block.
@@ -1343,10 +1537,11 @@ class MarkdownToADFConverter:
                 if token.kind == "section" or token.is_column:
                     raise ConversionError(nested_layout)
 
-                if not token.opening and depth == 0:
-                    break
+                if token.kind == "div":
+                    if not token.opening and depth == 0:
+                        break
 
-                depth += 1 if token.opening else -1
+                    depth += 1 if token.opening else -1
                 token = token.block
 
             blocks.append(token)
@@ -1368,13 +1563,111 @@ class MarkdownToADFConverter:
         attrs.update((key, attributes[name]) for key, name in PANEL_ATTRIBUTES.items() if name in attributes)
         return attrs
 
-    def _convert_blocks(self, pandoc_blocks):
+    def _convert_expand(self, tokens, index, in_table=False):
+        """Convert a details container, including the two Pandoc spellings of its summary."""
+        attributes = tokens[index].attributes
+        unsupported = set(attributes) - {"data-type", "data-local-id", "data-breakout", "data-breakout-width"}
+        if unsupported:
+            raise ConversionError(f"expand has unsupported attribute '{sorted(unsupported)[0]}'")
+
+        kind = attributes.get("data-type")
+        if kind not in {None, "nested-expand"}:
+            raise ConversionError(f"expand has an invalid data-type '{kind}'")
+
+        nested = in_table or kind == "nested-expand"
+        marks = []
+        mode, width = attributes.get("data-breakout"), attributes.get("data-breakout-width")
+        if mode is not None:
+            if nested or mode not in LAYOUT_BREAKOUT_MODES:
+                raise ConversionError("expand has an invalid data-breakout")
+
+            breakout: dict[str, object] = {"mode": mode}
+            if width is not None:
+                try:
+                    number = float(width)
+                except ValueError:
+                    number = 0
+                if not math.isfinite(number) or number <= 0:
+                    raise ConversionError("expand has an invalid data-breakout-width")
+
+                breakout["width"] = int(number) if number.is_integer() else number
+            marks.append({"type": "breakout", "attrs": breakout})
+        elif width is not None:
+            raise ConversionError("expand has a data-breakout-width without data-breakout")
+
+        title, index = self._expand_title(tokens, index + 1)
+        blocks = []
+        depth = 0
+        while True:
+            if index == len(tokens):
+                raise ConversionError("expand is not closed with </details>")
+
+            token = tokens[index]
+            index += 1
+            if isinstance(token, _BlockTag):
+                if token.kind == "section" or token.is_column:
+                    raise ConversionError("a layout is allowed only at the top level of a page, not inside another block")
+
+                if token.kind == "details":
+                    if not token.opening and depth == 0:
+                        break
+                    depth += 1 if token.opening else -1
+                token = token.block
+
+            blocks.append(token)
+
+        node = {
+            "type": "nestedExpand" if nested else "expand",
+            "attrs": {
+                "title": title},
+            "content": self._convert_blocks(blocks) or [{
+                "type": "paragraph",
+                "content": []}]}
+        if marks:
+            node["marks"] = marks
+        return node, index
+
+    def _expand_title(self, tokens, index):
+        """Read a full raw summary, or the raw tags around plain text that the HTML reader produces."""
+        token = tokens[index] if index < len(tokens) else None
+        if not isinstance(token, _BlockTag) or token.kind != "summary" or not token.opening or token.attributes:
+            raise ConversionError("expand needs a plain-text <summary> before its body")
+
+        if token.title is not None:
+            return token.title, index + 1
+
+        text = []
+        index += 1
+        while index < len(tokens):
+            token = tokens[index]
+            if isinstance(token, _BlockTag) and token.kind == "summary" and not token.opening:
+                return "".join(text), index + 1
+
+            if not isinstance(token, Mapping) or token.get("t") not in {"Plain", "Para"}:
+                raise ConversionError("expand summary must contain only plain text and end with </summary>")
+
+            text.append(self._plain_text(token.get("c", [])))
+            index += 1
+
+        raise ConversionError("expand summary is not closed with </summary>")
+
+    def _convert_blocks(self, pandoc_blocks, in_table=False):
         tokens = self._block_tokens(pandoc_blocks)
         blocks: list[Mapping[str, object]] = []
         index = 0
         while index < len(tokens):
             token = tokens[index]
             if isinstance(token, _BlockTag):
+                if token.kind == "figure" and token.opening:
+                    figure, index = self._convert_figure(tokens, index)
+                    blocks.append(figure)
+                    continue
+
+                if token.kind == "details" and token.opening:
+                    expand, index = self._convert_expand(tokens, index, in_table=in_table)
+                    blocks.append(expand)
+                    continue
+
                 if token.is_panel:
                     panel, index = self._convert_html_panel(tokens, index)
                     blocks.append(panel)
@@ -1392,6 +1685,101 @@ class MarkdownToADFConverter:
             blocks.append(self._convert_block(token))
 
         return blocks
+
+    @staticmethod
+    def _figure_attrs(attributes):
+        if set(attributes) - FIGURE_ATTRIBUTES:
+            raise ConversionError("figure has unsupported attributes")
+        if attributes.get("data-type") != "media-single":
+            raise ConversionError("figure needs data-type=\"media-single\"")
+        attrs = {"layout": attributes.get("data-layout", "center")}
+        if "data-width-type" in attributes:
+            attrs["widthType"] = attributes["data-width-type"]
+        if "data-width" in attributes:
+            width = _image_dimension(attributes["data-width"])
+            if width is None:
+                raise ConversionError("figure has an invalid data-width")
+            attrs["width"] = width
+        validated = _media_single_attributes(attrs)
+        if validated is None:
+            raise ConversionError("figure has an invalid layout, width or width type")
+        return validated
+
+    def _figure_image(self, blocks):
+        """Require exactly one image, including the raw img form used for pixel dimensions."""
+        if len(blocks) == 1 and blocks[0].get("t") == "RawBlock":
+            value = blocks[0].get("c")
+            if isinstance(value, list) and len(value) == 2 and value[0] == "html" and value[1].lstrip().startswith("<img"):
+                blocks = self._html_blocks(value[1])
+        if len(blocks) != 1 or blocks[0].get("t") not in {"Plain", "Para"}:
+            raise ConversionError("figure must contain exactly one image before its caption")
+        inlines = blocks[0].get("c")
+        if (not isinstance(inlines, list) or len(inlines) != 1 or not isinstance(inlines[0], Mapping)
+                or inlines[0].get("t") != "Image"):
+            raise ConversionError("figure must contain exactly one image before its caption")
+        return self._convert_image(inlines[0])
+
+    def _figure_caption(self, blocks):
+        blocks = [block for block in blocks if not self._is_comment(block)]
+        if len(blocks) > 1 or (blocks and blocks[0].get("t") not in {"Plain", "Para"}):
+            raise ConversionError("figcaption must contain a single paragraph of inline content")
+        content = self._convert_inlines(blocks[0]) if blocks else []
+        if any(inline.get("type") not in CAPTION_INLINE_TYPES for inline in content):
+            raise ConversionError("figcaption has unsupported inline content")
+        return {"type": "caption", "content": content}
+
+    def _convert_figure(self, tokens, index):
+        attrs = self._figure_attrs(tokens[index].attributes)
+        body, caption = [], None
+        index += 1
+        while index < len(tokens):
+            token = tokens[index]
+            index += 1
+            if isinstance(token, _BlockTag):
+                if token.kind == "figure" and not token.opening:
+                    content = [self._figure_image(body)]
+                    if caption is not None:
+                        content.append(self._figure_caption(caption))
+                    return {"type": "mediaSingle", "attrs": attrs, "content": content}, index
+                if token.kind == "figcaption" and token.opening and caption is None:
+                    if set(token.attributes) - {"data-local-id"}:
+                        raise ConversionError("figcaption has unsupported attributes")
+                    caption_blocks = []
+                    while index < len(tokens):
+                        token = tokens[index]
+                        index += 1
+                        if isinstance(token, _BlockTag):
+                            if token.kind == "figcaption" and not token.opening:
+                                break
+                            raise ConversionError("figcaption must end with </figcaption> and contain only inline content")
+                        caption_blocks.append(token)
+                    else:
+                        raise ConversionError("figcaption is not closed with </figcaption>")
+                    caption = caption_blocks
+                    continue
+                raise ConversionError("figure has an unexpected container tag")
+            if caption is not None:
+                raise ConversionError("figure has content after its figcaption")
+            if not self._is_comment(token):
+                body.append(token)
+        raise ConversionError("figure is not closed with </figure>")
+
+    def _convert_native_figure(self, block):
+        """Read the native Figure emitted by Pandoc's HTML reader for a table cell."""
+        value = block.get("c")
+        if not self._has_fields(block, {"t", "c"}) or not isinstance(value, list) or len(value) != 3:
+            raise ConversionError("Pandoc figure has invalid content")
+        attributes, caption, body = value
+        if not isinstance(attributes, list) or len(attributes) != 3 or attributes[:2] != ["", []]:
+            raise ConversionError("Pandoc figure has unsupported attributes")
+        aliases = {"layout": "data-layout", "width-type": "data-width-type", "local-id": "data-local-id"}
+        attrs = self._figure_attrs({aliases.get(name, name): text for name, text in attributes[2]})
+        if not isinstance(caption, list) or len(caption) != 2 or caption[0] is not None:
+            raise ConversionError("Pandoc figure has an unsupported short caption")
+        content: list[Mapping[str, object]] = [self._figure_image(body)]
+        if caption[1]:
+            content.append(self._figure_caption(caption[1]))
+        return {"type": "mediaSingle", "attrs": attrs, "content": content}
 
     @staticmethod
     def _is_comment(pandoc_block):
@@ -1434,6 +1822,9 @@ class MarkdownToADFConverter:
 
         if node_type == "Div":
             return self._convert_div(pandoc_block)
+
+        if node_type == "Figure":
+            return self._convert_native_figure(pandoc_block)
 
         if node_type == "BulletList":
             return self._convert_bullet_list(pandoc_block)
@@ -1836,20 +2227,35 @@ class MarkdownToADFConverter:
         if type(rowspan) is not int or type(colspan) is not int or rowspan < 1 or colspan < 1:
             raise ConversionError("Pandoc table cell has invalid spans")
 
-        content = self._convert_blocks(blocks)
+        content = self._convert_blocks(blocks, in_table=True)
         if not content:
             content = [{"type": "paragraph"}]
 
         return {"type": cell_type, "attrs": {"colspan": colspan, "rowspan": rowspan}, "content": content}
 
     def _convert_raw_block(self, pandoc_block):
-        """Recover an HTML table, which is how GFM represents a table Pandoc cannot pipe."""
+        """Recover a table, compact expand, image or figure from a single raw GFM block."""
         if not self._has_fields(pandoc_block, {"t", "c"}):
             raise ConversionError("Pandoc raw block has unsupported fields")
 
         value = pandoc_block.get("c")
         if not isinstance(value, list) or len(value) != 2 or value[0] != "html" or not isinstance(value[1], str):
             raise ConversionError("raw content other than an HTML table cannot be represented in ADF")
+
+        raw = value[1].strip()
+        if (re.match(r"<figure(?:\s|>)", raw) and raw[raw.find(">") + 1:].strip() and _BlockTag.parse(raw) is None) or re.match(
+                r"<img(?:\s|>)", raw):
+            content = self._convert_blocks(self._html_blocks(value[1]))
+            if len(content) != 1 or content[0].get("type") != "mediaSingle":
+                raise ConversionError("raw HTML must contain exactly one image or figure")
+            return content[0]
+
+        if re.match(r"<details(?:\s|>)", raw) and raw[raw.find(">") + 1:].strip() and _BlockTag.parse(raw) is None:
+            # A compact HTML expand is one raw GFM block, like an HTML table.
+            content = self._convert_blocks(self._html_blocks(value[1]))
+            if len(content) != 1 or content[0].get("type") not in {"expand", "nestedExpand"}:
+                raise ConversionError("raw HTML must contain exactly one expand")
+            return content[0]
 
         if not value[1].lstrip().startswith("<table"):
             tag = _BlockTag.parse(value[1].strip().split("\n")[0].strip())
@@ -1859,11 +2265,50 @@ class MarkdownToADFConverter:
             raise ConversionError("raw content other than an HTML table cannot be represented in ADF")
 
         # Raw HTML in cells stays raw, as in the rest of the document, rather than being dropped by the HTML reader.
-        blocks = self._pandoc_runner.html_to_pandoc(value[1], keep_raw=True).get("blocks")
+        blocks = self._html_blocks(value[1])
         if not isinstance(blocks, list) or len(blocks) != 1 or not isinstance(blocks[0], Mapping):
             raise ConversionError("raw HTML must contain exactly one table")
 
         return self._convert_table(blocks[0])
+
+    def _html_blocks(self, html):
+        """Validate HTML media and read blocks while preserving empty captions and plain-text summary titles.
+
+        A summary represents an ADF attribute, not body text. Protect it from the HTML reader's whitespace collapsing
+        with a temporary text token, then restore the original title in the parsed AST.
+        """
+        validator = _MediaHTMLValidator()
+        validator.feed(html)
+        validator.close()
+        if validator.figures:
+            raise ConversionError("figure is not closed with </figure>")
+        # Pandoc otherwise makes an empty caption indistinguishable from an absent caption.
+        html = re.sub(r"(<figcaption(?:\s[^<>]*)?>)\s*(</figcaption>)", r"\1<!-- -->\2", html)
+        prefix = "cflsync-summary-"
+        while prefix in html:
+            prefix += "x"
+        titles = {}
+
+        def protect(match):
+            token = f"{prefix}{len(titles)}"
+            titles[token] = unescape(match.group(1))
+            return f"<summary>{token}</summary>"
+
+        protected = SUMMARY.sub(protect, html)
+        document = self._pandoc_runner.html_to_pandoc(protected, keep_raw=True)
+
+        def restore(value):
+            if isinstance(value, dict):
+                if value.get("t") == "Str" and value.get("c") in titles:
+                    value["c"] = titles[value["c"]]
+                for child in value.values():
+                    restore(child)
+            elif isinstance(value, list):
+                for child in value:
+                    restore(child)
+
+        restore(document)
+        return document.get("blocks")
 
     def _convert_media_block(self, pandoc_block):
         value = pandoc_block.get("c")
@@ -2160,8 +2605,21 @@ class MarkdownToADFConverter:
             raise ConversionError("Pandoc image has invalid content")
 
         attributes, description, target = value
-        if attributes != ["", [], []] or not isinstance(description, list) or not isinstance(target, list) or len(target) != 2:
+        if (not isinstance(attributes, list) or len(attributes) != 3 or attributes[:2] != ["", []]
+                or not isinstance(attributes[2], list) or not isinstance(description, list) or not isinstance(target, list)
+                or len(target) != 2):
             raise ConversionError("Pandoc image has unsupported attributes")
+
+        dimensions = {}
+        for name, text in attributes[2]:
+            if name in {"local-id", "data-local-id"}:
+                continue
+            if name not in {"width", "height"}:
+                raise ConversionError(f"image has unsupported attribute '{name}'")
+            dimension = _image_dimension(text)
+            if dimension is None:
+                raise ConversionError(f"image has an invalid {name}")
+            dimensions[name] = dimension
 
         url, title = target
         if not isinstance(url, str) or not url or not isinstance(title, str):
@@ -2175,6 +2633,8 @@ class MarkdownToADFConverter:
         alt = self._plain_text(description)
         if alt:
             attrs["alt"] = alt
+
+        attrs.update(dimensions)
 
         return attrs
 

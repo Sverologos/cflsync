@@ -66,5 +66,14 @@ class TestPageChangeDetector(unittest.TestCase):
             self.assertEqual(self.inspector.remote_status(None, [], state), PageChangeStatus.ABSENT)
             self.assertEqual(self.inspector.remote_status(remote_page(), [remote_attachment()], None), PageChangeStatus.CHANGED)
 
+    def test_discovers_html_image_targets_without_managing_code_examples_or_invalid_paths(self) -> None:
+        markdown = '<figure data-type="media-single">\n\n' \
+            '<img src="_attachments/new%20image.png" width="640" />\n\n</figure>\n\n' \
+            '<table><tr><td><img src="_attachments/a&amp;b.png" /></td></tr></table>\n\n' \
+            '<!-- <img src="_attachments/comment.png" /> -->\n\n' \
+            '```html\n<img src="_attachments/example.png" />\n```\n\n' \
+            '<img src="_attachments/../escape.png" />\n'
+        self.assertEqual(self.inspector.referenced_attachments(markdown), ["new image.png", "new%20image.png", "a&b.png"])
+
 
 # vim: set ts=4 sw=4 et tw=132:

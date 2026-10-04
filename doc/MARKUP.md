@@ -52,7 +52,9 @@ headings in the page body.
 | Horizontal rules | `---` |
 | Tables | Pipe tables with a header row, for example `| Name | Value |` |
 | Attachments | `![](_attachments/image.png)` for images and `[](_attachments/file.pdf)` for downloadable files |
+| Image figures | `<figure data-type="media-single" …>` around an image, with optional `<figcaption>`; see [Images](#images) |
 | Layouts | An HTML `<section>` with one `<div data-type="column">` per column around Markdown; see [Layouts](#layouts) |
+| Expands | `<details>` with a plain-text `<summary>` title and Markdown body; see [Expands](#expands) |
 
 Nest list items with indentation. Images or files in `_attachments/` are
 uploaded and maintained with the page. Links outside `_attachments/` remain
@@ -70,6 +72,47 @@ File links such as `[Report](_attachments/report.pdf)` become inline Confluence
 file references using that page's attachment manifest. After page copy, these
 references resolve to the copied files; ordinary source download URLs remain
 unchanged.
+
+## Images
+
+An image without size, layout, or caption settings uses ordinary Markdown.
+Pull preserves extra settings in a figure, using twg's attribute names:
+
+```markdown
+<figure data-type="media-single" data-layout="wrap-right" data-width="400" data-width-type="pixel">
+
+<img src="_attachments/example.png" width="800" height="600" alt="Example" />
+
+<figcaption>
+
+An editable **caption** with [a link](https://example.test).
+
+</figcaption>
+
+</figure>
+```
+
+`data-width` controls the displayed width; `data-width-type` is `pixel` or
+`percentage`, defaulting to percentage when omitted. Widths must be positive
+finite numbers, and percentages cannot exceed 100. The `<img>` width and
+height preserve the separate intrinsic pixel dimensions. An image without
+intrinsic dimensions stays `![alt](path)` inside the figure.
+
+`data-layout` accepts `center` (the default), `wrap-left`, `wrap-right`,
+`wide`, `full-width`, `align-start`, and `align-end`. Keep blank lines between
+tags and Markdown content. The caption is one paragraph of ordinary inline
+content, including formatting, links, dates, mentions, statuses, and hard
+breaks; an empty `<figcaption>` preserves an empty caption. Images can use
+managed `_attachments/` paths or external URLs, including filenames without
+an image suffix. Figures also work inside lists, layouts, expands, and HTML
+table cells. Compact HTML figures are accepted on push.
+New local files referenced by `<img>` become managed attachments on push,
+including images in HTML table cells.
+
+Figures with unsupported attributes, marks, dimensions, or caption content
+remain opaque on pull; old opaque image fences still restore their original
+ADF on push. Image borders and the dimensions of inline images remain
+round-trip limitations.
 
 ## Tables
 
@@ -152,6 +195,35 @@ change their widths, to change the layout. `data-breakout` (`wide` or
 may be left out. Layouts can only be placed at the top level of a page, not
 inside a list, quote, panel, or table, and cannot be nested. Content between
 the columns of a section, outside any column, is rejected on push.
+
+## Expands
+
+An expand is written as HTML tags around Markdown. The `<summary>` is its
+visible title; the remaining content is the body shown when expanded:
+
+```markdown
+<details data-breakout="wide" data-breakout-width="1800">
+
+<summary>Additional details</summary>
+
+Text with **formatting**, lists, code, and tables.
+
+</details>
+```
+
+Keep the tags on separate lines and a blank line before and after each.
+The title is plain text, not Markdown; escape `&`, `<`, and `>` as `&amp;`,
+`&lt;`, and `&gt;`. Empty titles are allowed. An empty body becomes an empty
+paragraph on push.
+
+A nested expand uses `<details data-type="nested-expand">`, with the same
+summary and body structure. Use this form inside a table cell or another
+expand. Ordinary `<details>` directly inside a table cell also becomes a
+nested expand on push, as in twg. The optional `data-breakout` (`wide` or
+`full-width`) and positive numeric `data-breakout-width` apply to ordinary
+expands; nested expands cannot carry them. Layout sections cannot be placed
+inside expands. Previously pulled `atlas_doc_format` expand blocks remain
+accepted on push.
 
 ## How Markdown reads text
 
@@ -256,6 +328,6 @@ Markdown authoring format.
 
 ## Round-trip limitations
 
-Some content is converted but loses presentation detail: image size and
-layout, and advanced table formatting. Check the remote
+Some content is converted but loses presentation detail: image borders,
+inline image dimensions, and advanced table formatting. Check the remote
 page after pushing changes to pages that use these features.

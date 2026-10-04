@@ -6,6 +6,7 @@
 
 """Tests for Markdown to ADF conversion."""
 
+import json
 import unittest
 from types import SimpleNamespace
 
@@ -1520,6 +1521,349 @@ class TestInlineCards(unittest.TestCase):
             with self.subTest(case=name):
                 with self.assertRaisesRegex(ConversionError, message):
                     self._adf(markdown)
+
+
+def _expand(title, *content, nested=False, breakout=None):
+    node = {"type": "nestedExpand" if nested else "expand", "attrs": {"title": title}, "content": list(content)}
+    if breakout is not None:
+        node["marks"] = [{"type": "breakout", "attrs": breakout}]
+    return node
+
+
+class TestExpands(unittest.TestCase):
+    """Expands use twg's details and summary tags around editable Markdown bodies."""
+
+    def setUp(self) -> None:
+        self.pandoc = PandocRunner()
+
+    def _markdown(self, content):
+        return ADFToMarkdownConverter(self.pandoc).convert({"type": "doc", "version": 1, "content": content})
+
+    def _adf(self, markdown):
+        return MarkdownToADFConverter(self.pandoc).convert(markdown)["content"]
+
+    def test_round_trips_title_breakout_and_markdown_body(self) -> None:
+        expand = _expand(
+            ' A & "<b>" **literal** ',
+            _paragraph(_text("bold", {"type": "strong"})),
+            _bullet_list("a", "b"),
+            breakout={
+                "mode": "wide",
+                "width": 1800})
+        content = [_paragraph(_text("before")), expand, _paragraph(_text("after"))]
+
+        markdown = self._markdown(content)
+
+        self.assertEqual(
+            markdown, 'before\n\n<details data-breakout="wide" data-breakout-width="1800">\n\n'
+            '<summary> A &amp; &quot;&lt;b&gt;&quot; **literal** </summary>\n\n'
+            '**bold**\n\n- a\n- b\n\n</details>\n\nafter\n')
+        self.assertEqual(self._adf(markdown), content)
+
+    def test_round_trips_nested_expands_in_tables_and_columns(self) -> None:
+        nested = _expand(" a\t b\n<&> ", _paragraph(_text("x")), nested=True)
+        table = {
+            "type":
+            "table",
+            "content": [
+                {
+                    "type": "tableRow",
+                    "content": [_cell("tableHeader", [_paragraph(_text("h"))])]}, {
+                        "type": "tableRow",
+                        "content": [_cell("tableCell", [nested, _paragraph(_text("z"))])]}]}
+        expand = _expand("outer", table, _expand("inner", _bullet_list("i"), nested=True))
+        cases = [[expand], [_layout(_column(100.0, expand))], [table]]
+        for content in cases:
+            with self.subTest(content=content):
+                markdown = self._markdown(content)
+                self.assertIn('<details data-type="nested-expand">', markdown)
+                self.assertEqual(self._adf(markdown), content)
+
+    def test_keeps_panel_and_expand_container_boundaries_separate(self) -> None:
+        expand = _expand("t", _paragraph(_text("x")), _panel("custom", _paragraph(_text("y")), panelColor="#F4F5F7"))
+        cases = [
+            [_panel("custom", expand, _paragraph(_text("after")), panelColor="#F4F5F7")],
+            [{
+                "type": "blockquote",
+                "content": [expand, _paragraph(_text("after"))]}],
+            [{
+                "type": "bulletList",
+                "content": [_list_item(_paragraph(_text("before")), expand)]}]]
+        for content in cases:
+            with self.subTest(content=content):
+                self.assertEqual(self._adf(self._markdown(content)), content)
+
+    def test_keeps_code_and_opaque_content_inside_expands(self) -> None:
+        expand = _expand(
+            "t", {
+                "type": "codeBlock",
+                "attrs": {
+                    "language": "html"},
+                "content": [_text("</details>\n<summary>code</summary>")]}, {
+                    "type": "extension",
+                    "attrs": {
+                        "extensionKey": "toc",
+                        "extensionType": "macro"}}, _paragraph(_text("after")))
+        self.assertEqual(self._adf(self._markdown([expand])), [expand])
+
+    def test_reads_twg_local_ids_empty_titles_and_adjacent_tag_lines(self) -> None:
+        markdown = '<details data-local-id="e">\n<summary></summary>\n\nx\n\n</details>\n'
+        self.assertEqual(self._adf(markdown), [_expand("", _paragraph(_text("x")))])
+        for breakout in ({"mode": "full-width"}, {"mode": "wide", "width": 960.5}):
+            content = [_expand("t", EMPTY_PARAGRAPH, breakout=breakout)]
+            with self.subTest(breakout=breakout):
+                self.assertEqual(self._adf(self._markdown(content)), content)
+
+    def test_reads_compact_html_and_preserves_title_whitespace(self) -> None:
+        self.assertEqual(
+            self._adf('<details><summary> a  &amp; b </summary><p>x</p></details>\n'),
+            [_expand(" a  & b ", _paragraph(_text("x")))])
+
+    def test_reads_ordinary_details_in_a_cell_as_nested_expand(self) -> None:
+        markdown = '<table><tr><td><details><summary>T</summary><p>x</p></details></td></tr></table>\n'
+        self.assertEqual(
+            self._adf(markdown)[0]["content"][0]["content"][0]["content"], [_expand("T", _paragraph(_text("x")), nested=True)])
+
+    def test_repairs_an_empty_body_with_a_paragraph(self) -> None:
+        self.assertEqual(self._adf('<details>\n\n<summary>T</summary>\n\n</details>\n'), [_expand("T", EMPTY_PARAGRAPH)])
+
+    def test_keeps_unsupported_expands_opaque_and_reads_old_fences(self) -> None:
+        valid = _expand("t", _paragraph(_text("x")))
+        cases = [
+            {
+                **valid, "attrs": {
+                    "title": "t",
+                    "unknown": True}}, {
+                        **valid, "attrs": {
+                            "title": 1}}, {
+                                **valid, "marks": [{
+                                    "type": "other"}]},
+            _expand("t", EMPTY_PARAGRAPH, nested=True, breakout={"mode": "wide"}),
+            _expand("t", EMPTY_PARAGRAPH, breakout={
+                "mode": "wide",
+                "width": float("inf")}),
+            _expand("t", EMPTY_PARAGRAPH, breakout={
+                "mode": "wide",
+                "width": True}),
+            _expand("t", EMPTY_PARAGRAPH, breakout={"mode": "other"}),
+            _expand("t", EMPTY_PARAGRAPH, breakout={"mode": ["wide"]}),
+            _expand("t")]
+        for content in cases:
+            with self.subTest(content=content):
+                markdown = self._markdown([content])
+                self.assertIn("``` atlas_doc_format", markdown)
+                self.assertEqual(self._adf(markdown), [content])
+        self.assertEqual(self._adf("```atlas_doc_format\n" + json.dumps(valid) + "\n```\n"), [valid])
+
+    def test_rejects_malformed_expands(self) -> None:
+        start = '<details>\n\n<summary>T</summary>\n\n'
+        cases = {
+            "unclosed": (start + "x\n", "not closed with </details>"),
+            "no summary": ('<details>\n\nx\n\n</details>\n', "needs a plain-text <summary>"),
+            "unknown type": (start.replace('<details>', '<details data-type="other">') + '</details>\n', "invalid data-type"),
+            "unknown attribute": (start.replace('<details>', '<details open="true">') + '</details>\n', "unsupported attribute"),
+            "bad mode": (start.replace('<details>', '<details data-breakout="other">') + '</details>\n', "invalid data-breakout"),
+            "width alone":
+            (start.replace('<details>', '<details data-breakout-width="1">') + '</details>\n', "without data-breakout"),
+            "nested breakout": (
+                start.replace('<details>', '<details data-type="nested-expand" data-breakout="wide">') + '</details>\n',
+                "invalid data-breakout"),
+            "summary attributes":
+            (start.replace('<summary>', '<summary class="x">') + '</details>\n', "needs a plain-text <summary>"),
+            "formatted summary": ('<details><summary><b>T</b></summary><p>x</p></details>\n', "only plain text"),
+            "unclosed summary": ('<details>\n\n<summary>\n\nx\n', "summary is not closed"),
+            "layout inside":
+            (start + '<section data-type="layout-section">\n\n</section>\n\n</details>\n', "only at the top level"),
+            "second summary": (start + '<summary>other</summary>\n\n</details>\n', "raw content"),
+            "orphan summary": ('<summary>T</summary>\n', "raw content"),
+            "orphan end": ('</details>\n', "raw content")}
+        cases["unknown details tag"] = ('<detailsx>\n', "raw content")
+        cases["unsupported opening syntax"] = ("<details data-type='nested-expand'>\n", "raw content")
+        for width in ("0", "-1", "nan", "inf", "x"):
+            cases[f"bad width {width}"] = (
+                start.replace('<details>', f'<details data-breakout="wide" data-breakout-width="{width}">') + '</details>\n',
+                "invalid data-breakout-width")
+        for name, (markdown, message) in cases.items():
+            with self.subTest(case=name):
+                with self.assertRaisesRegex(ConversionError, message):
+                    self._adf(markdown)
+
+
+class TestImageFigures(unittest.TestCase):
+    """Image figures preserve display geometry, intrinsic dimensions and editable captions."""
+
+    def setUp(self) -> None:
+        self.pandoc = PandocRunner()
+        self.media = MediaResolver([("f.png", "file-1"), ("no-suffix", "file-2")])
+
+    def _markdown(self, content):
+        return ADFToMarkdownConverter(self.pandoc, self.media).convert({"type": "doc", "version": 1, "content": content})
+
+    def _adf(self, markdown):
+        return MarkdownToADFConverter(self.pandoc, self.media, "contentId-1").convert(markdown)["content"]
+
+    def _figure(self, attrs=None, dimensions=None, caption=None, external=False):
+        media_attrs = {
+            "type": "external",
+            "url": "https://example.test/f.png"} if external else {
+                "type": "file",
+                "id": "file-1",
+                "collection": "contentId-1"}
+        media_attrs.update({"alt": 'a & "b"', **(dimensions or {})})
+        content = [{"type": "media", "attrs": media_attrs}]
+        if caption is not None:
+            content.append({"type": "caption", "content": caption})
+        return {"type": "mediaSingle", "attrs": {"layout": "center", **(attrs or {})}, "content": content}
+
+    def test_default_image_keeps_markdown_form(self) -> None:
+        figure = self._figure()
+        markdown = self._markdown([figure])
+        self.assertNotIn("<figure", markdown)
+        self.assertIn("![", markdown)
+        self.assertEqual(self._adf(markdown), [figure])
+
+    def test_round_trips_all_layouts_and_width_units(self) -> None:
+        for layout in ("center", "wrap-left", "wrap-right", "wide", "full-width", "align-start", "align-end"):
+            for width_type, width in (("percentage", 80.5), ("pixel", 640.5), (None, 75)):
+                attrs = {"layout": layout, "width": width}
+                if width_type:
+                    attrs["widthType"] = width_type
+                figure = self._figure(attrs, {"width": 1024, "height": 768.5})
+                with self.subTest(layout=layout, unit=width_type):
+                    markdown = self._markdown([figure])
+                    self.assertIn('<figure data-type="media-single"', markdown)
+                    self.assertIn('width="1024" height="768.5"', markdown)
+                    self.assertEqual(self._adf(markdown), [figure])
+
+    def test_caption_is_editable_markdown_with_inline_formatting(self) -> None:
+        caption = [
+            _text("bold", {"type": "strong"}),
+            _text(" and "),
+            _text("link", {
+                "type": "link",
+                "attrs": {
+                    "href": "https://example.test",
+                    "title": ""}}), {
+                        "type": "hardBreak"}, {
+                            "type": "date",
+                            "attrs": {
+                                "timestamp": "1767225600000"}},
+            _text(" "), STATUS]
+        figure = self._figure(caption=caption)
+        markdown = self._markdown([figure])
+        self.assertIn("<figcaption>\n\n**bold**", markdown)
+        self.assertEqual(self._adf(markdown), [figure])
+        edited = markdown.replace("**bold**", "**edited**")
+        self.assertEqual(self._adf(edited)[0]["content"][1]["content"][0], _text("edited", {"type": "strong"}))
+
+    def test_round_trips_external_and_extensionless_images(self) -> None:
+        external = self._figure({"widthType": "pixel", "width": 400}, {"height": 200}, [_text("caption")], external=True)
+        local = self._figure({"layout": "wrap-right"})
+        local["content"][0]["attrs"]["id"] = "file-2"
+        self.assertEqual(self._adf(self._markdown([external, local])), [external, local])
+
+    def test_figures_in_containers_and_html_table_cells(self) -> None:
+        for caption in (None, [], [_text("a "), _text("bold", {"type": "strong"}), _text(" caption")]):
+            figure = self._figure({"layout": "wrap-left", "width": 50}, {"width": 640, "height": 480}, caption)
+            table = {
+                "type":
+                "table",
+                "content": [
+                    {
+                        "type": "tableRow",
+                        "content": [_cell("tableHeader", [_paragraph(_text("h"))])]}, {
+                            "type": "tableRow",
+                            "content": [_cell("tableCell", [figure, _paragraph(_text("after"))])]}]}
+            cases = [
+                [figure], [table], [_expand("t", figure)], [_layout(_column(100, figure))],
+                [{
+                    "type": "bulletList",
+                    "content": [_list_item(_paragraph(_text("item")), figure)]}], [{
+                        "type": "blockquote",
+                        "content": [figure]}]]
+            for content in cases:
+                with self.subTest(caption=caption, container=content[0]["type"]):
+                    self.assertEqual(self._adf(self._markdown(content)), content)
+
+    def test_reads_compact_html_and_raw_img(self) -> None:
+        markdown = '<figure data-type="media-single" data-width="70" data-layout="wide">' \
+            '<img src="_attachments/f.png" alt="a &amp; &quot;b&quot;" width="640" />' \
+            '<figcaption><strong>caption</strong></figcaption></figure>\n'
+        self.assertEqual(
+            self._adf(markdown),
+            [self._figure({
+                "width": 70,
+                "layout": "wide"}, {"width": 640}, [_text("caption", {"type": "strong"})])])
+        self.assertEqual(
+            self._adf('<img src="_attachments/f.png" alt="a &amp; &quot;b&quot;" height="480" />\n'),
+            [self._figure(dimensions={"height": 480})])
+
+    def test_accepts_local_ids_and_edits_to_geometry_and_attachment_paths(self) -> None:
+        figure = self._figure({"widthType": "pixel", "width": 400}, {"width": 800}, [_text("caption")])
+        markdown = self._markdown([figure]).replace('<figure ', '<figure data-local-id="figure-id" ')
+        markdown = markdown.replace('<img ', '<img data-local-id="media-id" ')
+        markdown = markdown.replace('<figcaption>', '<figcaption data-local-id="caption-id">')
+        self.assertEqual(self._adf(markdown), [figure])
+        edited = markdown.replace('data-width="400"', 'data-width="600"').replace('_attachments/f.png', '_attachments/no-suffix')
+        changed = self._figure({"widthType": "pixel", "width": 600}, {"width": 800}, [_text("caption")])
+        changed["content"][0]["attrs"]["id"] = "file-2"
+        self.assertEqual(self._adf(edited), [changed])
+        self.assertEqual(
+            self._adf('<table><tr><td>' + edited.replace('\n\n', '\n') +
+                      '</td></tr></table>')[0]["content"][0]["content"][0]["content"], [changed])
+
+    def test_unsupported_figures_stay_opaque_and_old_fences_still_read(self) -> None:
+        cases = [
+            self._figure({"unknown": "x"}),
+            self._figure({"layout": "unknown"}),
+            self._figure({"widthType": "other"}),
+            self._figure({"widthType": None}),
+            self._figure({"width": None}),
+            self._figure({"width": 101}),
+            self._figure({"width": True}),
+            self._figure(dimensions={"height": 0}),
+            self._figure(dimensions={"height": None}),
+            self._figure(dimensions={"width": "640"}),
+            self._figure(caption=[_paragraph(_text("block"))]),
+            self._figure(caption=[{
+                "type": "inlineExtension",
+                "attrs": {
+                    "extensionKey": "anchor"}}])]
+        marked = self._figure()
+        marked["marks"] = [{"type": "other"}]
+        cases.append(marked)
+        for figure in cases:
+            with self.subTest(figure=figure):
+                markdown = self._markdown([figure])
+                self.assertIn("``` atlas_doc_format", markdown)
+                self.assertEqual(self._adf(markdown), [figure])
+        valid = self._figure(caption=[_text("caption")])
+        self.assertEqual(self._adf("```atlas_doc_format\n" + json.dumps(valid) + "\n```\n"), [valid])
+
+    def test_rejects_malformed_figures_and_discarded_html_attributes(self) -> None:
+        start = '<figure data-type="media-single">\n\n'
+        image = '![a](_attachments/f.png)\n\n'
+        end = '</figure>\n'
+        cases = [
+            start + image, start + end, start + image + image + end, start + 'text\n\n' + image + end,
+            start + image + '<figcaption>\n\nx\n\n' + end, start + image + '<figcaption>\n\nx\n\ny\n\n</figcaption>\n\n' + end,
+            start + image + '<figcaption>\n\nx\n\n</figcaption>\n\nx\n\n' + end, start + start + image + end + end]
+        for attr in ('data-layout="other"', 'data-width="0"', 'data-width="nan"', 'data-width="101"', 'data-width-type="em"',
+                     'class="x"'):
+            cases.append(start.replace('data-type="media-single"', 'data-type="media-single" ' + attr) + image + end)
+        for attr in ('style="width: 5px"', 'width="10%"', 'height="-1"', 'width="inf"'):
+            cases.append(start + '<img src="_attachments/f.png" ' + attr + ' />\n\n' + end)
+        compact = '<figure data-type="media-single"><img src="_attachments/f.png" />'
+        for caption in ('<figcaption class="x">x</figcaption>', '<figcaption></figcaption><figcaption></figcaption>',
+                        '<figcaption><img src="_attachments/f.png" /></figcaption>', '<figcaption>x',
+                        '<figcaption>x</figcaption><img src="_attachments/f.png" />'):
+            cases.append(compact + caption + '</figure>\n')
+        for markdown in cases:
+            with self.subTest(markdown=markdown):
+                with self.assertRaises(ConversionError):
+                    self._adf(markdown)
+                with self.assertRaises(ConversionError):
+                    self._adf('<table><tr><td>' + markdown + '</td></tr></table>\n')
 
 
 # vim: set ts=4 sw=4 et tw=132:

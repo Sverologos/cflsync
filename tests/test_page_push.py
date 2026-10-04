@@ -178,6 +178,42 @@ class TestPagePushInTree(unittest.TestCase):
         for page_id in ["100", "200"]:
             self._run(workarea, lambda: PagePullCommand().run(page_id))
 
+    def test_uploads_new_images_referenced_by_figures_and_html_table_cells(self) -> None:
+        figure = '<figure data-type="media-single" data-width="400" data-width-type="pixel">\n' \
+            '<img src="_attachments/new%20%26%20image.png" width="800" height="600" alt="New" />\n' \
+            '<figcaption>Caption</figcaption>\n</figure>\n'
+        for markup in (figure, '<table><tr><td>' + figure + '</td></tr></table>\n'):
+            with self.subTest(markup=markup), temporary_workarea(root_page_id="100") as workarea:
+                self.site = FakeConfluence()
+                self.site.add_page("100", "Root")
+                self.site.add_page("200", "Child", parent_id="100")
+                self._pull(workarea)
+                directory = workarea.root_dir / "Root_100" / "Child_200"
+                (directory / "_attachments" / "new & image.png").write_bytes(b"NEW IMAGE")
+                (directory / "content.md").write_text('# Child\n\n' + markup, encoding="utf-8")
+
+                self._run(workarea, lambda: PagePushCommand().run("200"))
+
+                attachment = next(iter(self.site.attachments.values()))
+                self.assertEqual(attachment["filename"], "new & image.png")
+                self.assertEqual(attachment["body"], b"NEW IMAGE")
+                document = json.loads(self.site.content["200"]["body"])
+                image = document["content"][0]
+                if image["type"] == "table":
+                    image = image["content"][0]["content"][0]["content"][0]
+                self.assertEqual(image["attrs"], {"layout": "center", "width": 400, "widthType": "pixel"})
+                self.assertEqual(
+                    image["content"][0]["attrs"], {
+                        "type": "file",
+                        "id": attachment["file_id"],
+                        "collection": "contentId-200",
+                        "alt": "New",
+                        "width": 800,
+                        "height": 600})
+                self.assertEqual(image["content"][1], {"type": "caption", "content": [{"type": "text", "text": "Caption"}]})
+                state = PageState.load(workarea.cache_path("200"))
+                self.assertIn("new & image.png", state.attachments)
+
     def test_refuses_to_push_over_a_remote_rename_even_with_force(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea)

@@ -76,6 +76,7 @@ import shutil
 from collections.abc import Callable, Iterator, Mapping
 from enum import StrEnum
 from graphlib import CycleError, TopologicalSorter
+from html.parser import HTMLParser
 
 from .api import APIError, RemoteContentRef
 from .convert import ADFToMarkdownConverter, MarkdownToADFConverter, PandocRunner
@@ -1020,8 +1021,21 @@ def _pages_by_id(pages, description: str, page_id=lambda page: page.id):
     return result
 
 
+class _HTMLLinkTargets(HTMLParser):
+    """Collect links and images from raw HTML, including image figures and table cells."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.targets: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        name = "src" if tag == "img" else "href" if tag == "a" else None
+        if name is not None:
+            self.targets.extend(value for key, value in attrs if key == name and value is not None)
+
+
 def _link_targets(value: object) -> Iterator[str]:
-    """Yield the target of every Pandoc link and image in *value*."""
+    """Yield targets of Pandoc links and images, including those in raw HTML."""
     if isinstance(value, Mapping):
         if value.get("t") in {"Image", "Link"}:
             content = value.get("c")
@@ -1029,6 +1043,14 @@ def _link_targets(value: object) -> Iterator[str]:
                 target = content[2][0]
                 if isinstance(target, str):
                     yield target
+
+        elif value.get("t") in {"RawBlock", "RawInline"}:
+            content = value.get("c")
+            if isinstance(content, list) and len(content) == 2 and content[0] == "html" and isinstance(content[1], str):
+                parser = _HTMLLinkTargets()
+                parser.feed(content[1])
+                parser.close()
+                yield from parser.targets
 
         value = list(value.values())
 

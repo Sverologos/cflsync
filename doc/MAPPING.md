@@ -24,7 +24,8 @@ JSON in a Pandoc code block, which Pandoc writes as a fenced GFM block.
 
 - Every emitted ADF document has `type: "doc"` and `version: 1`.
 - Supported node handlers consume only the fields needed for conversion.
-  Extra fields and attributes do not alone cause opaque fallback.
+  Extra fields and attributes do not alone cause opaque fallback, except
+  where a handler explicitly validates its supported attribute set below.
 - Required values and content shapes remain validated. Unsupported node types
   and structures retain their original JSON, including metadata.
 - Ignored attributes and formatting are not recovered by reverse conversion;
@@ -76,6 +77,7 @@ rename` rewrites the generated heading separately from body conversion.
 | `heading` with `attrs.level` 1–6 | `Header max(2, level)` | `heading` with `attrs.level` |
 | `blockquote` | `BlockQuote` | `blockquote` |
 | `panel` | GFM alert `Div`, or raw HTML `<div data-type="panel-TYPE">` tag blocks around its blocks | `panel` with the same type and attributes |
+| `expand` and `nestedExpand` | Raw HTML `<details>` and `<summary>` blocks around Markdown body blocks | `expand` or `nestedExpand` with its title and breakout mark |
 | `bulletList` and `listItem` | `BulletList` | `bulletList` and `listItem` |
 | `orderedList` and `listItem` | `OrderedList` | `orderedList` and `listItem` |
 | `taskList` and `taskItem` | `BulletList` beginning each item with `☐` or `☒` | `taskList` and `taskItem` |
@@ -193,6 +195,28 @@ panel without blocks becomes a panel holding an empty paragraph.
 Only the Pandoc alert `Div` shape emitted by GFM alert syntax is recognized as
 an alert panel on reverse conversion; ordinary blockquotes remain blockquotes.
 
+Expands use twg's `<details>` container with a plain-text `<summary>` title,
+written on separate tag lines with blank lines around the Markdown body.
+`nestedExpand` adds `data-type="nested-expand"` to `<details>`. The title is
+HTML-escaped, including line breaks and tabs as numeric entities; Markdown
+delimiters in the title remain literal. Empty titles are allowed. Ordinary
+expands preserve a `breakout` mark as `data-breakout` (`wide` or `full-width`)
+and optional positive finite numeric `data-breakout-width`. Nested expands
+with marks, nodes with unknown attributes or marks, invalid titles, and nodes
+without a body remain opaque. `localId` is dropped; `data-local-id` is accepted
+and ignored on push.
+
+The reverse converter groups the raw details tags and reads either a complete
+summary block from GFM or the separate summary tags and plain text returned
+by the HTML-table reader. Summary text is protected before HTML parsing so
+its whitespace and entities round-trip exactly. Compact HTML expands are also
+accepted. Ordinary details directly in a table cell become `nestedExpand`, as
+in twg; an explicit nested-expand type is preserved elsewhere. Missing or
+formatted summaries, extra summaries, unknown attributes or types, invalid
+breakout values, unclosed containers, and layouts inside expands are rejected.
+An empty body receives an empty paragraph. Existing opaque expand fences
+remain accepted. Unsupported descendants stay opaque within the readable body.
+
 Task lists map directly to GFM task lists: `TODO` becomes `- [ ]` and `DONE`
 becomes `- [x]`. Pandoc represents these markers as leading `☐` and `☒` inline
 nodes in a `BulletList`. A nested task list remains nested under its preceding
@@ -277,8 +301,8 @@ single paragraph and all spans are 1, and an HTML `<table>` otherwise. The
 reverse direction reads a pipe table directly; an HTML table arrives as a raw
 block and is parsed back into a Pandoc `Table` by a second Pandoc invocation,
 after which both representations share one mapping. Only raw blocks that are
-HTML tables, layout tags, or panel tags are accepted; other raw content has no ADF
-equivalent. Pandoc's
+HTML tables, layout tags, panel tags, or expand tags are accepted; other raw
+content has no ADF equivalent. Pandoc's
 HTML writer adds the text-presentation selector U+FE0E after `↔` and `↩` that
 lack one, so these characters in an HTML-table cell are pushed with it; the
 change happens once, and is accepted.
@@ -310,12 +334,13 @@ invalid; a leading row of `tableHeader` cells becomes the table head, and a
 table without one is written with an empty header row, which becomes a real
 empty header row when pushed back.
 
-These table features do not survive conversion: header cells outside the first
-row, hard breaks inside a cell, table `layout`, `width`, and `localId`, cell
+These table features do not survive conversion: header cells outside an
+all-header first row, trailing hard breaks in a cell, table `layout`, `width`,
+and `localId`, cell
 `colwidth` and `background`, `isNumberColumnEnabled`, and column alignment,
 which has no ADF counterpart in either direction.
 
-`mediaSingle` and `mediaGroup` map to a Pandoc paragraph of `Image` or `Link`
+Plain `mediaSingle` and `mediaGroup` map to a Pandoc paragraph of `Image` or `Link`
 inlines when the page attachment manifest resolves the ADF media identifier to
 a managed local `_attachments/<filename>` path. A `mediaSingle` always becomes
 an `Image`, whatever its file name, such as `GetClipboardImage.ashx?Id=…`; in
@@ -327,8 +352,38 @@ path segment of an external URL. External media uses its own URL and needs no
 manifest. The reverse
 mapping uses the manifest to reconstruct images as ADF media; file links become
 `mediaInline` references, so their original block container is not retained.
-Media that the manifest cannot resolve stays opaque. Layout, width, and height
-attributes are dropped.
+Media that the manifest cannot resolve stays opaque.
+
+A `mediaSingle` with a caption, intrinsic dimensions, or non-default layout or
+display width uses raw `<figure data-type="media-single">` tag blocks around
+the image. `data-layout` retains `center`, `wrap-left`, `wrap-right`, `wide`,
+`full-width`, `align-start`, or `align-end`; omitted layout defaults to
+`center`. `data-width` retains the positive finite display width, and
+`data-width-type` its `pixel` or `percentage` unit. An omitted unit means
+percentage (at most 100); omission is retained when a width is present.
+An explicitly default `percentage` unit without width may be omitted for a
+plain image. Intrinsic media `width` and `height` use positive finite pixel
+dimensions on an HTML `<img>` with the same editable attachment path or
+external URL. This tag is written directly because Pandoc's GFM writer rounds
+fractional pixel dimensions.
+
+A second `caption` child becomes `<figcaption>` tag blocks around a Pandoc
+paragraph of ordinary inline content. Caption formatting follows the existing
+inline mapping; empty captions are retained. GFM reads these as raw tag blocks
+and an image paragraph or raw `<img>`; the HTML-table reader instead produces
+a native `Figure`, which is also handled on push. A temporary comment protects
+empty captions during HTML parsing. Exactly one image must precede at most
+one caption, containing a single paragraph of inline content. Unsupported
+figure or caption attributes, marks, and dimensions keep the whole image
+opaque on pull; malformed or unsupported HTML is rejected on push. `localId`
+is omitted, and `data-local-id` is accepted on figures, images, and captions.
+Old opaque image fences still restore their original ADF. Media border marks
+and dimensions in `mediaGroup` and `mediaInline` remain outside this mapping.
+Attachment discovery reads image and link targets in raw HTML as well as
+Pandoc `Image` and `Link` nodes, so a new file referenced by `<img>` becomes
+managed and is uploaded before its ADF media reference is sent. This also
+applies inside HTML table cells; examples in code fences and HTML comments
+are excluded.
 
 `mediaInline` maps to a Pandoc `Image` or `Link` inside its paragraph, and an
 image that shares a paragraph with other content maps back to `mediaInline`. An
@@ -352,7 +407,7 @@ string:
 
 ````markdown
 ```atlas_doc_format
-{"type":"expand","attrs":{"title":"Details"},"content":[...]}
+{"type":"extension","attrs":{"extensionKey":"toc","extensionType":"com.atlassian.confluence.macro.core"}}
 ```
 ````
 
@@ -440,8 +495,8 @@ retains the nearest valid ancestor rather than changing the document shape.
 
 - Custom emoji and unsupported media. Inline cards were promoted to a readable
   mapping (see Direct inline mappings).
-- `expand`, `nestedExpand`, decision lists, and `extensionFrame`. Layouts
-  were promoted to a readable mapping (see Direct block mappings).
+- Decision lists and `extensionFrame`. Layouts, expands, and nested expands
+  were promoted to readable mappings (see Direct block mappings).
 - `extension`, `bodiedExtension`, `multiBodiedExtension`, sync blocks, and
   third-party Confluence macro nodes.
 - Tables, including multi-paragraph cells and unsupported geometry.
