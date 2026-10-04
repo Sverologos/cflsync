@@ -75,7 +75,7 @@ rename` rewrites the generated heading separately from body conversion.
 | `paragraph` | `Para` | `paragraph` |
 | `heading` with `attrs.level` 1–6 | `Header max(2, level)` | `heading` with `attrs.level` |
 | `blockquote` | `BlockQuote` | `blockquote` |
-| `panel` | GFM alert `Div` | canonical `panel` |
+| `panel` | GFM alert `Div`, or raw HTML `<div data-type="panel-TYPE">` tag blocks around its blocks | `panel` with the same type and attributes |
 | `bulletList` and `listItem` | `BulletList` | `bulletList` and `listItem` |
 | `orderedList` and `listItem` | `OrderedList` | `orderedList` and `listItem` |
 | `taskList` and `taskItem` | `BulletList` beginning each item with `☐` or `☒` | `taskList` and `taskItem` |
@@ -155,21 +155,43 @@ an empty column was written.
 Blockquotes map to Markdown `>` blocks and back to ADF `blockquote` nodes,
 with their contained blocks and inline formatting converted recursively.
 
-Panels map to GFM alerts and back to canonical panel types:
+Panels of the five types that GitHub has an alert for, without icon or colour,
+map one to one to GFM alerts:
 
-| ADF `panelType` | GFM alert | Reverse `panelType` |
-| --- | --- | --- |
-| `info` | `NOTE` | `note` |
-| `note` | `NOTE` | `note` |
-| `tip` | `TIP` | `tip` |
-| `warning` | `WARNING` | `warning` |
-| `error` | `CAUTION` | `error` |
-| `success` | `TIP` | `tip` |
-| `custom` | `NOTE` | `note` |
+| ADF `panelType` | GFM alert |
+| --- | --- |
+| `info` | `NOTE` |
+| `note` | `IMPORTANT` |
+| `success` | `TIP` |
+| `warning` | `WARNING` |
+| `error` | `CAUTION` |
 
-The mapping discards `panelColor`, panel icon attributes, and `localId`.
+Every other panel, `custom` and `tip` panels and panels with `panelIcon`,
+`panelIconId`, `panelIconText`, or `panelColor`, is written in twg's HTML form,
+tag lines around Markdown blocks as for layouts:
+
+```markdown
+<div data-type="panel-custom" data-icon=":dart:" data-color="#F4F5F7" data-icon-id="1f3af" data-icon-text="🎯">
+
+Panel content.
+
+</div>
+```
+
+`data-type` is `panel-` followed by the panel type; `data-icon`, `data-color`,
+`data-icon-id`, and `data-icon-text` hold `panelIcon`, `panelColor`,
+`panelIconId`, and `panelIconText`, HTML-escaped, in that order. twg reads
+`panel-tip` as `info` (twg's reference); cflsync keeps `tip`. A panel with other
+attributes, or non-string attribute values, stays opaque. `localId` is not
+written; twg's `data-local-id` is accepted and ignored on reverse conversion.
+Panels in this form are recognized wherever blocks are, including layout
+columns, list items, and HTML-table cells, where the HTML reader returns the
+`<div>` as a Pandoc `Div` with its attributes. An unclosed panel, a layout
+inside a panel, an unknown panel type, and unknown attributes are rejected. A
+panel without blocks becomes a panel holding an empty paragraph.
+
 Only the Pandoc alert `Div` shape emitted by GFM alert syntax is recognized as
-a panel on reverse conversion; ordinary blockquotes remain blockquotes.
+an alert panel on reverse conversion; ordinary blockquotes remain blockquotes.
 
 Task lists map directly to GFM task lists: `TODO` becomes `- [ ]` and `DONE`
 becomes `- [x]`. Pandoc represents these markers as leading `☐` and `☒` inline
@@ -255,7 +277,7 @@ single paragraph and all spans are 1, and an HTML `<table>` otherwise. The
 reverse direction reads a pipe table directly; an HTML table arrives as a raw
 block and is parsed back into a Pandoc `Table` by a second Pandoc invocation,
 after which both representations share one mapping. Only raw blocks that are
-HTML tables or layout tags are accepted; other raw content has no ADF
+HTML tables, layout tags, or panel tags are accepted; other raw content has no ADF
 equivalent. Pandoc's
 HTML writer adds the text-presentation selector U+FE0E after `↔` and `↩` that
 lack one, so these characters in an HTML-table cell are pushed with it; the

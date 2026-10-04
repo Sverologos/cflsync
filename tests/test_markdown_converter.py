@@ -208,7 +208,7 @@ class TestMarkdownToADFConverter(unittest.TestCase):
                 {
                     "type": "panel",
                     "attrs": {
-                        "panelType": "note"},
+                        "panelType": "info"},
                     "content": [{
                         "type": "paragraph",
                         "content": [{
@@ -216,7 +216,7 @@ class TestMarkdownToADFConverter(unittest.TestCase):
                             "text": "Note content."}]}]}, {
                                 "type": "panel",
                                 "attrs": {
-                                    "panelType": "tip"},
+                                    "panelType": "success"},
                                 "content": [{
                                     "type": "paragraph",
                                     "content": [{
@@ -225,7 +225,7 @@ class TestMarkdownToADFConverter(unittest.TestCase):
                 {
                     "type": "panel",
                     "attrs": {
-                        "panelType": "info"},
+                        "panelType": "note"},
                     "content": [{
                         "type": "paragraph",
                         "content": [{
@@ -1129,7 +1129,9 @@ class TestMarkdownToADFHTMLTableCells(unittest.TestCase):
 
     def _round_trip(self, content):
         markdown = ADFToMarkdownConverter(self.pandoc).convert({"type": "doc", "version": 1, "content": content})
-        return markdown, MarkdownToADFConverter(self.pandoc).convert(markdown)["content"]
+        content = MarkdownToADFConverter(self.pandoc).convert(markdown)["content"]
+        assert isinstance(content, list)
+        return markdown, content
 
     def test_converts_cell_content_as_outside_a_table(self) -> None:
         for name, block in HTML_CELL_CONSTRUCTS.items():
@@ -1260,6 +1262,109 @@ class TestLayouts(unittest.TestCase):
             "breakout width without mode": (
                 '<section data-type="layout-section" data-breakout-width="1800">\n\n' + column + "</section>\n",
                 "without data-breakout"), }
+        for name, (markdown, message) in cases.items():
+            with self.subTest(case=name):
+                with self.assertRaisesRegex(ConversionError, message):
+                    self._adf(markdown)
+
+
+def _panel(panel_type, *content, **attrs):
+    return {"type": "panel", "attrs": {"panelType": panel_type, **attrs}, "content": list(content)}
+
+
+CUSTOM_PANEL_ATTRS = {"panelIcon": ":dart:", "panelColor": "#F4F5F7", "panelIconId": "1f3af", "panelIconText": "🎯"}
+
+
+class TestPanels(unittest.TestCase):
+    """Panels are GFM alerts where an alert holds them, and twg's <div data-type="panel-TYPE"> otherwise."""
+
+    def setUp(self) -> None:
+        self.pandoc = PandocRunner()
+
+    def _markdown(self, content):
+        return ADFToMarkdownConverter(self.pandoc).convert({"type": "doc", "version": 1, "content": content})
+
+    def _adf(self, markdown):
+        return MarkdownToADFConverter(self.pandoc).convert(markdown)["content"]
+
+    def test_maps_panel_types_one_to_one_to_alerts(self) -> None:
+        alerts = {"info": "NOTE", "note": "IMPORTANT", "success": "TIP", "warning": "WARNING", "error": "CAUTION"}
+        for panel_type, alert in alerts.items():
+            with self.subTest(panel_type=panel_type):
+                content = [_panel(panel_type, _paragraph(_text("x")))]
+
+                markdown = self._markdown(content)
+
+                self.assertEqual(markdown, f"> [!{alert}]\n> x\n")
+                self.assertEqual(self._adf(markdown), content)
+
+    def test_writes_custom_tip_and_coloured_panels_as_twg_divs(self) -> None:
+        custom = _panel("custom", _paragraph(_text('a & "<b>"')), _bullet_list("i"), **CUSTOM_PANEL_ATTRS)
+        cases = {
+            "custom": (
+                [custom], '<div data-type="panel-custom" data-icon=":dart:" data-color="#F4F5F7" data-icon-id="1f3af" '
+                'data-icon-text="🎯">\n\na & "\\<b\\>"\n\n- i\n\n</div>\n'),
+            "tip": ([_panel("tip", _paragraph(_text("x")))], '<div data-type="panel-tip">\n\nx\n\n</div>\n'),
+            "coloured info": (
+                [_panel("info", _paragraph(_text("x")),
+                        panelColor='a"b')], '<div data-type="panel-info" data-color="a&quot;b">\n\nx\n\n</div>\n'),
+            "empty": (
+                [_panel("custom", EMPTY_PARAGRAPH,
+                        panelColor="#F4F5F7")], '<div data-type="panel-custom" data-color="#F4F5F7">\n\n</div>\n'), }
+        for name, (content, expected) in cases.items():
+            with self.subTest(case=name):
+                markdown = self._markdown(content)
+
+                self.assertEqual(markdown, expected)
+                self.assertEqual(self._adf(markdown), content)
+
+    def test_round_trips_panels_in_columns_cells_and_list_items(self) -> None:
+        custom = _panel("custom", _paragraph(_text("c")), **CUSTOM_PANEL_ATTRS)
+        cell = {"type": "tableCell", "attrs": {"colspan": 1, "rowspan": 1}}
+        cases = {
+            "layout column": [_layout(_column(50.0, custom), _column(50.0, _panel("tip", _paragraph(_text("t")))))],
+            "table cell": [
+                {
+                    "type":
+                    "table",
+                    "content": [
+                        {
+                            "type": "tableRow",
+                            "content":
+                            [{
+                                **cell, "content": [custom]}, {
+                                    **cell, "content": [_panel("note", _paragraph(_text("n")))]}]}]}],
+            "list item": [{
+                "type": "bulletList",
+                "content": [_list_item(_paragraph(_text("a")), custom)]}], }
+        for name, content in cases.items():
+            with self.subTest(case=name):
+                self.assertEqual(self._adf(self._markdown(content)), content)
+
+    def test_reads_twg_panels_with_local_ids_and_tags_without_blank_lines(self) -> None:
+        markdown = '<div data-local-id="p" data-type="panel-custom" data-icon="&#x1F3AF;">\n\nx\n\n</div>\n'
+
+        self.assertEqual(self._adf(markdown), [_panel("custom", _paragraph(_text("x")), panelIcon="🎯")])
+
+    def test_keeps_a_panel_with_unsupported_attributes_opaque(self) -> None:
+        panel = _panel("custom", _paragraph(_text("x")), unknown="y")
+
+        markdown = self._markdown([panel])
+
+        self.assertIn("``` atlas_doc_format", markdown)
+        self.assertEqual(self._adf(markdown), [panel])
+
+    def test_rejects_malformed_panels(self) -> None:
+        cases = {
+            "not closed": ('<div data-type="panel-info">\n\nx\n', "panel is not closed"),
+            "invalid type": ('<div data-type="panel-x">\n\nx\n\n</div>\n', "invalid data-type 'panel-x'"),
+            "unsupported attribute": ('<div data-type="panel-info" style="x">\n\nx\n\n</div>\n', "unsupported attribute 'style'"),
+            "layout inside": (
+                '<div data-type="panel-info">\n\n<section data-type="layout-section">\n\n</section>\n\n</div>\n',
+                "only at the top level"),
+            "in a cell": (
+                '<table><tr><td><div data-type="panel-info" style="x"><p>x</p></div></td></tr></table>\n',
+                "unsupported attribute 'style'"), }
         for name, (markdown, message) in cases.items():
             with self.subTest(case=name):
                 with self.assertRaisesRegex(ConversionError, message):

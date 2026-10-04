@@ -21,15 +21,15 @@ from .errors import SyncError
 PANDOC_API_VERSION = (1, 23, 1, 2)
 IMAGE_SUFFIXES = (".apng", ".avif", ".bmp", ".gif", ".jpeg", ".jpg", ".png", ".svg", ".tif", ".tiff", ".webp")
 STATUS_COLORS = {"neutral": "gray", "purple": "purple", "blue": "blue", "red": "red", "yellow": "yellow", "green": "green"}
-PANEL_ALERTS = {
-    "info": "note",
-    "note": "note",
-    "tip": "tip",
-    "warning": "warning",
-    "error": "caution",
-    "success": "tip",
-    "custom": "note"}
-ALERT_PANELS = {"note": "note", "tip": "tip", "important": "info", "warning": "warning", "caution": "error"}
+# A panel of one of these types without icon or colour is a GFM alert; any other panel is twg's <div data-type="panel-TYPE">.
+PANEL_ALERTS = {"info": "note", "note": "important", "success": "tip", "warning": "warning", "error": "caution"}
+ALERT_PANELS = {alert: panel_type for panel_type, alert in PANEL_ALERTS.items()}
+PANEL_TYPES = {"info", "note", "tip", "warning", "error", "success", "custom"}
+PANEL_ATTRIBUTES = {
+    "panelIcon": "data-icon",
+    "panelColor": "data-color",
+    "panelIconId": "data-icon-id",
+    "panelIconText": "data-icon-text"}
 RAW_MARKS = {
     "<u>": ("</u>", {
         "type": "underline"}, "underline"),
@@ -46,11 +46,11 @@ TYPED_RAW_MARKS = {"Underline": "<u>", "Subscript": "<sub>", "Superscript": "<su
 DELIMITED_MARKS = (("strong", "Strong"), ("em", "Emph"), ("strike", "Strikeout"))
 # An empty HTML comment between two blocks keeps Markdown from reading them as one; any comment-only block is ignored.
 BLOCK_SEPARATOR = "<!-- -->"
-# A layout section and its columns are written in twg's HTML form, with a generic section type, around Markdown bodies.
+# Layouts and panels written in twg's HTML form are tag lines around Markdown; a layout section has a generic section type.
 LAYOUT_SECTION_TYPE = "layout-section"
 LAYOUT_BREAKOUT_MODES = {"wide", "full-width"}
-LAYOUT_TAG = re.compile(r"<(section|div)((?:\s+[\w-]+=\"[^\"<>]*\")*)\s*>|</(section|div)>")
-LAYOUT_ATTRIBUTE = re.compile(r'\s+([\w-]+)="([^"<>]*)"')
+BLOCK_TAG = re.compile(r"<(section|div)((?:\s+[\w-]+=\"[^\"<>]*\")*)\s*>|</(section|div)>")
+TAG_ATTRIBUTE = re.compile(r'\s+([\w-]+)="([^"<>]*)"')
 # An inline card is written in twg's form, a link-like <a> pair around its URL; its text is ignored on push.
 CARD_OPENING = re.compile(r'<a((?:\s+[\w-]+="[^"<>]*")*)\s*>')
 CARD_ATTRIBUTES = {"href", "data-card-appearance", "data-local-id"}
@@ -61,8 +61,8 @@ MONTHS = ("January", "February", "March", "April", "May", "June", "July", "Augus
 TIME_OPENING = re.compile(r'<time datetime="(\d{4}-\d{2}-\d{2})">')
 
 
-class _LayoutTag:
-    """One tag line of the HTML form of layouts: a ``<section>`` or ``<div>`` opening tag, or its closing tag."""
+class _BlockTag:
+    """One tag line of the HTML form of layouts and panels: a ``<section>`` or ``<div>`` opening tag, or its closing tag."""
 
     def __init__(self, kind, opening, attributes, text):
         self.kind = kind
@@ -74,14 +74,14 @@ class _LayoutTag:
     @classmethod
     def parse(cls, text):
         """Return the tag that *text* consists of, or ``None``."""
-        match = LAYOUT_TAG.fullmatch(text)
+        match = BLOCK_TAG.fullmatch(text)
         if match is None:
             return None
 
         if match.group(3) is not None:
             return cls(match.group(3), False, {}, text)
 
-        attributes = dict(LAYOUT_ATTRIBUTE.findall(match.group(2)))
+        attributes = {name: unescape(value) for name, value in TAG_ATTRIBUTE.findall(match.group(2))}
         return cls(match.group(1), True, attributes, text)
 
     @property
@@ -95,6 +95,10 @@ class _LayoutTag:
             return not self.opening or self.attributes.get("data-type", "").startswith("layout-")
 
         return self.is_column
+
+    @property
+    def is_panel(self):
+        return self.kind == "div" and self.opening and self.attributes.get("data-type", "").startswith("panel-")
 
 
 def _layout_width_text(width):
@@ -196,6 +200,12 @@ class ADFToMarkdownConverter:
                 continue
 
             block = self._convert_block(node)
+            # A block written in HTML form is a list: its tag lines around Markdown blocks.
+            if isinstance(block, list):
+                blocks.extend(block)
+                previous = block[-1]
+                continue
+
             if previous is not None and self._continues(previous, block):
                 blocks.append({"t": "RawBlock", "c": ["html", BLOCK_SEPARATOR]})
 
@@ -340,19 +350,30 @@ class ADFToMarkdownConverter:
         return {"t": "BlockQuote", "c": self._convert_blocks(content)}
 
     def _convert_panel(self, node):
+        """Write a panel as a GFM alert, or as twg's ``<div data-type="panel-TYPE">`` around Markdown blocks.
+
+        Only the five types with an alert, and without icon or colour, are alerts. The local ID is not kept.
+        """
         attrs = node.get("attrs")
         content = self._convert_block_content(node)
         if not isinstance(attrs, Mapping) or content is None:
             return self._convert_opaque(node)
 
-        alert = PANEL_ALERTS.get(attrs.get("panelType"))
-        if alert is None:
+        panel_type = attrs.get("panelType")
+        present = {key for key, value in attrs.items() if value is not None and key not in {"panelType", "localId"}}
+        strings = all(isinstance(attrs[key], str) for key in present)
+        if panel_type not in PANEL_TYPES or present - set(PANEL_ATTRIBUTES) or not strings:
             return self._convert_opaque(node)
 
         blocks = self._convert_blocks(content)
-        title = {"t": "Div", "c": [["", ["title"], []], [{"t": "Para", "c": [{"t": "Str", "c": alert.title()}]}]]}
+        alert = PANEL_ALERTS.get(panel_type)
+        if alert is not None and not present:
+            title = {"t": "Div", "c": [["", ["title"], []], [{"t": "Para", "c": [{"t": "Str", "c": alert.title()}]}]]}
+            return {"t": "Div", "c": [["", [alert], []], [title, *blocks]]}
 
-        return {"t": "Div", "c": [["", [alert], []], [title, *blocks]]}
+        tag = [f'data-type="panel-{panel_type}"']
+        tag.extend(f'{name}="{escape(attrs[key])}"' for key, name in PANEL_ATTRIBUTES.items() if key in present)
+        return [{"t": "RawBlock", "c": ["html", f"<div {' '.join(tag)}>"]}, *blocks, {"t": "RawBlock", "c": ["html", "</div>"]}]
 
     def _convert_bullet_list(self, node):
         items = self._convert_list_items(node)
@@ -1161,12 +1182,12 @@ class MarkdownToADFConverter:
 
     def _convert_top_level_blocks(self, pandoc_blocks):
         """Convert the blocks of a page, grouping layout sections, which ADF allows only at the top level."""
-        tokens = self._layout_tokens(pandoc_blocks)
+        tokens = self._block_tokens(pandoc_blocks)
         content: list[Mapping[str, object]] = []
         index = 0
         while index < len(tokens):
             token = tokens[index]
-            if isinstance(token, _LayoutTag) and token.is_layout:
+            if isinstance(token, _BlockTag) and token.is_layout:
                 if token.kind != "section" or not token.opening:
                     raise ConversionError(f"'{token.text}' is outside a layout section")
 
@@ -1174,26 +1195,42 @@ class MarkdownToADFConverter:
                 content.append(node)
                 continue
 
-            content.extend(self._convert_blocks([token.block if isinstance(token, _LayoutTag) else token]))
-            index += 1
+            # The blocks up to the next layout, which a layout tag inside a panel does not start.
+            blocks = []
+            depth = 0
+            while index < len(tokens):
+                token = tokens[index]
+                if isinstance(token, _BlockTag):
+                    if token.is_layout and depth == 0:
+                        break
+
+                    if token.kind == "div":
+                        depth += 1 if token.opening else -1
+
+                    token = token.block
+
+                blocks.append(token)
+                index += 1
+
+            content.extend(self._convert_blocks(blocks))
 
         return content
 
     @staticmethod
-    def _layout_tokens(pandoc_blocks):
-        """Return the blocks with every raw block made only of layout tags split into one tag per line.
+    def _block_tokens(pandoc_blocks):
+        """Return the blocks with every raw block made only of ``<section>`` and ``<div>`` tags split into one tag per line.
 
         Written with blank lines, each tag is a raw block of its own; without them, Markdown joins neighbouring tag lines
-        into one raw block. Other ``<div>`` tags count too, so that a column ends at its own ``</div>``.
+        into one raw block.
         """
         tokens: list[object] = []
         for pandoc_block in pandoc_blocks:
             value = pandoc_block.get("c") if isinstance(pandoc_block, Mapping) else None
             lines = value[1].split("\n") if (
-                pandoc_block.get("t") == "RawBlock" and isinstance(value, list) and len(value) == 2 and value[0] == "html"
-                and isinstance(value[1], str)) else []
+                isinstance(pandoc_block, Mapping) and pandoc_block.get("t") == "RawBlock" and isinstance(value, list)
+                and len(value) == 2 and value[0] == "html" and isinstance(value[1], str)) else []
             lines = [line.strip() for line in lines if line.strip()]
-            tags = [_LayoutTag.parse(line) for line in lines]
+            tags = [_BlockTag.parse(line) for line in lines]
             if tags and all(tag is not None for tag in tags):
                 tokens.extend(tags)
             else:
@@ -1232,11 +1269,11 @@ class MarkdownToADFConverter:
                 raise ConversionError("layout section is not closed with </section>")
 
             token = tokens[index]
-            if isinstance(token, _LayoutTag) and token.kind == "section" and not token.opening:
+            if isinstance(token, _BlockTag) and token.kind == "section" and not token.opening:
                 index += 1
                 break
 
-            if isinstance(token, _LayoutTag) and token.is_column:
+            if isinstance(token, _BlockTag) and token.is_column:
                 column, index = self._convert_layout_column(tokens, index)
                 columns.append(column)
                 continue
@@ -1267,18 +1304,34 @@ class MarkdownToADFConverter:
         if width is None:
             raise ConversionError("layout column needs a data-width between 0 and 100")
 
+        blocks, index = self._div_content(tokens, index, "layout column", "layout sections and columns cannot be nested")
+        return {"type": "layoutColumn", "attrs": {"width": width}, "content": blocks}, index
+
+    def _convert_html_panel(self, tokens, index):
+        """Convert the panel opened by ``tokens[index]``; return it and the index after its ``</div>``."""
+        attrs = self._panel_attrs(tokens[index].attributes)
+        content, index = self._div_content(
+            tokens, index, "panel", "a layout is allowed only at the top level of a page, not inside another block")
+        return {"type": "panel", "attrs": attrs, "content": content}, index
+
+    def _div_content(self, tokens, index, element, nested_layout):
+        """Convert the blocks between the ``<div>`` opened by ``tokens[index]`` and its ``</div>``.
+
+        Return them and the index after the ``</div>``. Like a layout column, a panel holds at least one block; an empty
+        one is written as nothing, as an empty paragraph is.
+        """
         blocks = []
         depth = 0
         index += 1
         while True:
             if index == len(tokens):
-                raise ConversionError("layout column is not closed with </div>")
+                raise ConversionError(f"{element} is not closed with </div>")
 
             token = tokens[index]
             index += 1
-            if isinstance(token, _LayoutTag):
+            if isinstance(token, _BlockTag):
                 if token.kind == "section" or token.is_column:
-                    raise ConversionError("layout sections and columns cannot be nested")
+                    raise ConversionError(nested_layout)
 
                 if not token.opening and depth == 0:
                     break
@@ -1288,20 +1341,45 @@ class MarkdownToADFConverter:
 
             blocks.append(token)
 
-        # A column holds at least one block; an empty one is written as nothing, as an empty paragraph is.
-        content = self._convert_blocks(blocks) or [{"type": "paragraph", "content": []}]
-        return {"type": "layoutColumn", "attrs": {"width": width}, "content": content}, index
+        return self._convert_blocks(blocks) or [{"type": "paragraph", "content": []}], index
+
+    @staticmethod
+    def _panel_attrs(attributes):
+        """Return the ADF attributes of a panel from the attributes of its ``<div data-type="panel-TYPE">``."""
+        unsupported = set(attributes) - {"data-type", "data-local-id", *PANEL_ATTRIBUTES.values()}
+        if unsupported:
+            raise ConversionError(f"panel has unsupported attribute '{sorted(unsupported)[0]}'")
+
+        panel_type = attributes["data-type"].removeprefix("panel-")
+        if panel_type not in PANEL_TYPES:
+            raise ConversionError(f"panel has an invalid data-type '{attributes['data-type']}'")
+
+        attrs = {"panelType": panel_type}
+        attrs.update((key, attributes[name]) for key, name in PANEL_ATTRIBUTES.items() if name in attributes)
+        return attrs
 
     def _convert_blocks(self, pandoc_blocks):
-        blocks = []
-        for pandoc_block in pandoc_blocks:
-            if not isinstance(pandoc_block, Mapping):
+        tokens = self._block_tokens(pandoc_blocks)
+        blocks: list[Mapping[str, object]] = []
+        index = 0
+        while index < len(tokens):
+            token = tokens[index]
+            if isinstance(token, _BlockTag):
+                if token.is_panel:
+                    panel, index = self._convert_html_panel(tokens, index)
+                    blocks.append(panel)
+                    continue
+
+                token = token.block
+
+            index += 1
+            if not isinstance(token, Mapping):
                 raise ConversionError("Pandoc block must be an object")
 
-            if self._is_comment(pandoc_block):
+            if self._is_comment(token):
                 continue
 
-            blocks.append(self._convert_block(pandoc_block))
+            blocks.append(self._convert_block(token))
 
         return blocks
 
@@ -1424,9 +1502,39 @@ class MarkdownToADFConverter:
 
         panel = self._convert_panel(pandoc_block)
         if panel is None:
+            panel = self._convert_html_table_panel(pandoc_block)
+
+        if panel is None:
             raise ConversionError("unsupported Pandoc div")
 
         return panel
+
+    @staticmethod
+    def _is_key_value(pair):
+        return isinstance(pair, list) and len(pair) == 2 and all(isinstance(item, str) for item in pair)
+
+    def _convert_html_table_panel(self, pandoc_block):
+        """Convert a panel ``<div>`` in an HTML-table cell, which the HTML reader returns as a div with its attributes."""
+        value = pandoc_block.get("c")
+        if not self._has_fields(pandoc_block, {"t", "c"}) or not isinstance(value, list) or len(value) != 2:
+            return None
+
+        attributes, blocks = value
+        if not isinstance(attributes, list) or len(attributes) != 3 or attributes[:2] != ["", []]:
+            return None
+
+        key_values = attributes[2]
+        if not isinstance(key_values, list) or not all(self._is_key_value(pair) for pair in key_values):
+            return None
+
+        # The HTML reader drops the data- prefix of attributes whose names HTML does not also have without it.
+        known = {"data-local-id", *PANEL_ATTRIBUTES.values()}
+        attributes = {f"data-{name}" if f"data-{name}" in known else name: value for name, value in key_values}
+        if not attributes.get("data-type", "").startswith("panel-") or not isinstance(blocks, list):
+            return None
+
+        attrs = self._panel_attrs(attributes)
+        return {"type": "panel", "attrs": attrs, "content": self._convert_blocks(blocks) or [{"type": "paragraph", "content": []}]}
 
     def _highlighted_code_block(self, pandoc_block):
         """Return the plain code block of a syntax-highlighted one, which earlier releases wrote in HTML tables."""
@@ -1734,7 +1842,7 @@ class MarkdownToADFConverter:
             raise ConversionError("raw content other than an HTML table cannot be represented in ADF")
 
         if not value[1].lstrip().startswith("<table"):
-            tag = _LayoutTag.parse(value[1].strip().split("\n")[0].strip())
+            tag = _BlockTag.parse(value[1].strip().split("\n")[0].strip())
             if tag is not None and tag.is_layout:
                 raise ConversionError("a layout is allowed only at the top level of a page, not inside another block")
 
@@ -1952,7 +2060,7 @@ class MarkdownToADFConverter:
     def _convert_raw_card(self, pandoc_inlines, index, inlines, marks):
         """Convert an ``<a href="URL" data-card-appearance="inline">…</a>`` pair to an inline card; its text is ignored."""
         match = CARD_OPENING.fullmatch(self._raw_html(pandoc_inlines[index]))
-        attributes = dict(LAYOUT_ATTRIBUTE.findall(match.group(1))) if match is not None else {}
+        attributes = dict(TAG_ATTRIBUTE.findall(match.group(1))) if match is not None else {}
         if attributes.get("data-card-appearance") != "inline":
             raise ConversionError(
                 'raw HTML links are not supported, except inline cards written as '

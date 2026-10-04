@@ -272,26 +272,13 @@ class TestADFToMarkdownConverter(unittest.TestCase):
                                     "c": "Done"}]}]]})
 
     def test_maps_panel_types_to_pandoc_alerts(self) -> None:
-        alerts = {
-            "info": "note",
-            "note": "note",
-            "tip": "tip",
-            "warning": "warning",
-            "error": "caution",
-            "success": "tip",
-            "custom": "note"}
+        alerts = {"info": "note", "note": "important", "success": "tip", "warning": "warning", "error": "caution"}
         paragraph = {"type": "paragraph", "content": [{"type": "text", "text": "Content"}]}
 
         for panel_type, alert in alerts.items():
             with self.subTest(panel_type=panel_type):
                 pandoc = RecordingPandoc()
-                panel = {
-                    "type": "panel",
-                    "attrs": {
-                        "panelType": panel_type,
-                        "panelColor": "#123456",
-                        "panelIcon": "ignored"},
-                    "content": [paragraph]}
+                panel = {"type": "panel", "attrs": {"panelType": panel_type, "localId": "ignored"}, "content": [paragraph]}
 
                 ADFToMarkdownConverter(pandoc).convert({"type": "doc", "version": 1, "content": [panel]})
 

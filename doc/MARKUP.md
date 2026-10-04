@@ -46,7 +46,7 @@ headings in the page body.
 | Links | `[label](https://example.com)` |
 | Headings | `## Heading` through `###### Heading` |
 | Blockquotes | `> Quoted text` |
-| Panels | `> [!NOTE]`, `> [!TIP]`, `> [!WARNING]`, or `> [!CAUTION]`, followed by quoted panel content |
+| Panels | `> [!NOTE]`, `> [!IMPORTANT]`, `> [!TIP]`, `> [!WARNING]`, or `> [!CAUTION]`, followed by quoted panel content; other panels as an HTML `<div>`; see [Panels](#panels) |
 | Lists | `- item`, `1. item`, and task items such as `- [ ] todo` or `- [x] done` |
 | Code blocks | Fenced blocks such as ```` ```python ````; the language is retained by Confluence |
 | Horizontal rules | `---` |
@@ -88,6 +88,37 @@ cell colours, alignment, and similar presentation settings are not retained.
 In HTML tables, pull writes `↔` and `↩` followed by the invisible character
 U+FE0E, which selects their text form, and push keeps it; the arrows look the
 same.
+
+## Panels
+
+Each GitHub alert is one Confluence panel type:
+
+| Markdown | Confluence panel |
+| --- | --- |
+| `> [!NOTE]` | Info |
+| `> [!IMPORTANT]` | Note |
+| `> [!TIP]` | Success |
+| `> [!WARNING]` | Warning |
+| `> [!CAUTION]` | Error |
+
+Custom panels, with an emoji and a background colour, and panels without an
+alert are written as an HTML `<div>` around ordinary Markdown:
+
+```markdown
+<div data-type="panel-custom" data-icon=":dart:" data-color="#F4F5F7" data-icon-id="1f3af" data-icon-text="🎯">
+
+Panel text, with **formatting** and lists.
+
+</div>
+```
+
+Edit the text inside as any other Markdown, with the tags on lines of their own
+and a blank line before and after each, as for [layouts](#layouts).
+`data-type` is `panel-` followed by `info`, `note`, `tip`, `success`,
+`warning`, `error`, or `custom`. `data-color` sets the background colour,
+`data-icon` the emoji's short name, and `data-icon-id` and `data-icon-text` its
+code point and character; each may be left out. Pull uses this form for any
+panel with an emoji or colour, also of the other types, and for `tip` panels.
 
 ## Layouts
 
@@ -217,6 +248,6 @@ Markdown authoring format.
 
 ## Round-trip limitations
 
-Some content is converted but loses presentation detail: panel colours and
-icons, image size and layout, and advanced table formatting. Check the remote
+Some content is converted but loses presentation detail: image size and
+layout, and advanced table formatting. Check the remote
 page after pushing changes to pages that use these features.
