@@ -43,8 +43,9 @@ JSON in a Pandoc code block, which Pandoc writes as a fenced GFM block.
   reads back as a task item, a code block loses its final line break and,
   when written indented (without language), its leading and trailing blank
   lines, an inline image alone in a paragraph reads back as a block image,
-  and `strong`, `em`, or `strike` runs that cross read back with literal
-  delimiters. A push of unchanged pulled Markdown can therefore
+  `strong`, `em`, or `strike` runs that cross read back with literal
+  delimiters, and so does `strong` or `em` text that starts with punctuation
+  after a letter or ends with punctuation before one. A push of unchanged pulled Markdown can therefore
   differ from the original ADF in these respects.
 
 ## Root document

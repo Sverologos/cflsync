@@ -106,6 +106,10 @@ Markdown rules apply, also to text that came from Confluence:
   italic over "b c", cannot be written in Markdown; such text is pushed with
   literal asterisks. Nest one inside the other, or separate them by a space,
   as in `**a *b*** *c*`.
+- Bold or italic text that starts with punctuation right after a letter, or
+  ends with punctuation right before one, as in `pijnpunten**:**`, is not
+  formatting but text with literal asterisks. Include the neighbouring word,
+  as in `**pijnpunten:**`, or leave the punctuation unformatted.
 - A bare URL or email address stays text; write `<https://example.com>` or
   `[label](https://example.com)` for a link.
 - HTML comments, such as the `<!-- -->` that pull writes between two lists
