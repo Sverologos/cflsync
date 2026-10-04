@@ -62,6 +62,9 @@ write a name with spaces the same way, or in angle brackets:
 `![](<_attachments/Pasted image.png>)`. The label is the alt text, or the plain
 filename when Confluence has none, and is pushed as alt text. cflsync 0.5.4 and
 0.5.5 wrote the encoded name as that label; edit it, or it is pushed as written.
+When a page has several attachments with the same filename, which happens on
+copied pages, pull downloads one of them and reports the others; cflsync
+leaves those in Confluence untouched.
 File links such as `[Report](_attachments/report.pdf)` become inline Confluence
 file references using that page's attachment manifest. After page copy, these
 references resolve to the copied files; ordinary source download URLs remain
@@ -81,6 +84,9 @@ Use pipe tables for ordinary tables:
 Pulled tables that require merged cells or multiple blocks in a cell may be
 written as HTML tables. These are accepted on push, but table layout, widths,
 cell colours, alignment, and similar presentation settings are not retained.
+In HTML tables, pull writes `↔` and `↩` followed by the invisible character
+U+FE0E, which selects their text form, and push keeps it; the arrows look the
+same.
 
 ## How Markdown reads text
 
@@ -141,6 +147,10 @@ accessible result has the given email address. If no result or multiple results
 match, the link remains an ordinary email link. Pull writes this form for a
 mention whose user has a visible email address; otherwise it writes the
 `cfl-type="mention"` HTML span.
+
+Confluence search does not find deactivated users. A pulled mention of a
+deactivated user, such as `[Jane Doe (Deactivated)](mailto:jane.doe@example.com)`,
+is therefore pushed as an email link, not as a mention.
 
 ### Other macros
 

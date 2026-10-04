@@ -21,7 +21,7 @@ from .convert import MarkdownToADFConverter, PandocRunner
 from .errors import SyncError
 from .sync import (
     PageChangeDetector, PageChangeStatus, PageDeletion, PageIndex, PagePullOperation, PagePushOperation, PageRemoveOperation,
-    PageStatus, PageStatusState, RepositoryPullOperation, RepositoryPushOperation, TreeStatus)
+    PageStatus, PageStatusState, RepositoryPullOperation, RepositoryPushOperation, TreeStatus, duplicates_detail)
 from .workarea import (CONTENT_FILENAME, PageMetadata, PageRef, PageState, Workarea, filesystem_error_message)
 
 
@@ -288,6 +288,8 @@ class PagePullCommand:
 
         if not pulled:
             print(f"Page '{page.id}' is already in sync; nothing pulled. Use --force to regenerate local content.")
+        elif operation.duplicate_attachments:
+            print(f"Page '{page.id}': {duplicates_detail(operation.duplicate_attachments)}")
 
         return 0
 

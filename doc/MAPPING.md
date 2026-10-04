@@ -201,7 +201,10 @@ single paragraph and all spans are 1, and an HTML `<table>` otherwise. The
 reverse direction reads a pipe table directly; an HTML table arrives as a raw
 block and is parsed back into a Pandoc `Table` by a second Pandoc invocation,
 after which both representations share one mapping. Only raw blocks that are
-HTML tables are accepted; other raw content has no ADF equivalent.
+HTML tables are accepted; other raw content has no ADF equivalent. Pandoc's
+HTML writer adds the text-presentation selector U+FE0E after `↔` and `↩` that
+lack one, so these characters in an HTML-table cell are pushed with it; the
+change happens once, and is accepted.
 
 Pandoc's HTML reader, used for that second invocation, represents some cell
 content differently from the GFM reader. The reverse mapping accepts both
@@ -308,7 +311,10 @@ A mention whose account ID resolves to a user with an email address becomes
 `[Display name](mailto:address)`; the leading `@` in the ADF text is omitted
 from the display name. On push, this form queries Confluence for that display
 name and emits a mention when exactly one result has the given email address.
-It otherwise remains an email link. When the resolved user has no email
+It otherwise remains an email link. This applies to every mention of a
+deactivated user: pull resolves the account ID and writes the email link, but
+Confluence and Jira user search leave deactivated accounts out, so push sends
+an email link instead of a mention. When the resolved user has no email
 address, a mention becomes `<span cfl-type="mention" cfl-id="ACCOUNT-ID">TEXT</span>`.
 For this fallback, `accessLevel` and `userType` become `cfl-access-level` and
 `cfl-user-type` attributes. `localId` is ignored. Reverse conversion parses
@@ -364,7 +370,10 @@ as page-link path segments are encoded, since Pandoc's GFM writer does not
 escape link destinations and a name with spaces or unbalanced parentheses
 would otherwise not read back as a link. `id_for()` looks up the decoded
 filename first and the path segment as written second, for unencoded paths
-written by earlier releases.
+written by earlier releases. The manifest holds one entry per filename: of
+remote attachments sharing a filename, the synchronization layer supplies only
+the managed one (`unique_attachments`), so media referencing another stays
+opaque.
 
 Managed `_attachments/<filename>` links become `mediaInline` file references
 on push, using the manifest's file ID and the destination page's collection.

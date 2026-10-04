@@ -409,11 +409,18 @@ filename is percent-encoded as page-link path segments are, so a name with
 spaces or parentheses stays a valid Markdown link:
 `![Pasted](_attachments/Pasted%20image%201.png)`. Reverse conversion decodes
 the path; a path that does not decode to a managed filename is looked up as
-written, which accepts the unencoded paths of releases before 0.5.3. The
+written, which accepts the unencoded paths of releases before 0.5.4. The
 reverse conversion recognizes only paths rooted at `_attachments/`; a
 `MediaResolver` maps them to Confluence attachment references. Other links stay
 ordinary links. Filenames are validated to prevent traversal, and duplicate
 manifest names or attachment IDs are rejected as ambiguous.
+
+Confluence can hold two attachments with the same filename and different IDs,
+for example on copied pages. Since a local file is identified by its filename,
+only one of them is managed: on pull, the one the page's ADF references, else
+the one managed before, else the first listed; afterwards, the cached one.
+The others are reported by pull and never downloaded, updated, or deleted; media
+that references them stays opaque.
 
 On pull, the remote attachment manifest determines managed local files. A local
 file under `_attachments/` that `content.md` links to also becomes managed, so new

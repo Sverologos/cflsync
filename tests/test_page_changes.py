@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import unittest
 
 from cflsync import AttachmentMetadata, PageChangeDetector, PageChangeStatus, PageMetadata, PageState, PandocRunner
+from cflsync.sync import _media_ids, unique_attachments
 from tests.support import temporary_workarea
 
 MARKDOWN = "# Example page\n\nExample\n"
@@ -22,7 +23,7 @@ def remote_page(version=17, title="Example page"):
 
 
 def remote_attachment(filename="diagram.png", attachment_id="att987654", version=3):
-    return SimpleNamespace(filename=filename, id=attachment_id, version=version)
+    return SimpleNamespace(filename=filename, id=attachment_id, version=version, file_id=None)
 
 
 class TestPageChangeDetector(unittest.TestCase):
@@ -177,6 +178,20 @@ class TestPageChangeDetector(unittest.TestCase):
 
                     self.assertEqual(attachment_changes, expected)
 
+    def test_ignores_a_remote_duplicate_of_a_managed_attachment(self) -> None:
+        duplicate = remote_attachment(attachment_id="att111111", version=1)
+        cases = [
+            ("duplicate after", [remote_attachment(), duplicate], []),
+            ("duplicate before", [duplicate, remote_attachment()], []),
+            ("managed one deleted", [duplicate], ["diagram.png"]), ]
+        for name, attachments, expected in cases:
+            with self.subTest(case=name):
+                with temporary_workarea() as workarea:
+                    _, state = self._page(workarea)
+                    _, attachment_changes = self.inspector.remote_changes(remote_page(), attachments, state)
+
+                    self.assertEqual(attachment_changes, expected)
+
     def test_reports_both_sides_when_each_changed(self) -> None:
         with temporary_workarea() as workarea:
             directory, state = self._page(workarea)
@@ -194,6 +209,40 @@ class TestPageChangeDetector(unittest.TestCase):
             self.assertEqual(self.inspector.local_status(directory / "missing", state), PageChangeStatus.ABSENT)
             self.assertEqual(self.inspector.remote_status(None, [], state), PageChangeStatus.ABSENT)
             self.assertEqual(self.inspector.remote_status(remote_page(), [remote_attachment()], None), PageChangeStatus.CHANGED)
+
+
+class TestUniqueAttachments(unittest.TestCase):
+    """Of attachments sharing a filename, one is managed; the others are left out."""
+
+    def setUp(self) -> None:
+        self.first = SimpleNamespace(filename="a.png", id="att1", file_id="file-1")
+        self.second = SimpleNamespace(filename="a.png", id="att2", file_id="file-2")
+        self.other = SimpleNamespace(filename="b.png", id="att3", file_id="file-3")
+
+    def test_keeps_the_first_listed_without_a_preference(self) -> None:
+        self.assertEqual(unique_attachments([self.first, self.other, self.second]), ([self.first, self.other], [self.second]))
+
+    def test_keeps_the_attachment_of_the_first_matching_preference(self) -> None:
+        attachments = [self.first, self.second, self.other]
+
+        self.assertEqual(unique_attachments(attachments, {"file-2"}, {"att1"}), ([self.second, self.other], [self.first]))
+        self.assertEqual(unique_attachments(attachments, {"file-9"}, {"att2"}), ([self.second, self.other], [self.first]))
+
+    def test_keeps_an_attachment_id_listed_twice_for_validation(self) -> None:
+        again = SimpleNamespace(filename="a.png", id="att1", file_id="file-1")
+
+        self.assertEqual(unique_attachments([self.first, again]), ([self.first, again], []))
+
+
+class TestMediaIds(unittest.TestCase):
+
+    def test_collects_media_ids_and_skips_non_string_types(self) -> None:
+        document = {"type": "doc", "content": [
+            {"type": "extension", "attrs": {"parameters": {"type": {"value": "x"}, "list": [{"type": ["y"]}]}}},
+            {"type": "mediaSingle", "content": [{"type": "media", "attrs": {"id": "file-1"}}]},
+            {"type": "paragraph", "content": [{"type": "mediaInline", "attrs": {"id": "file-2"}}]}]}
+
+        self.assertEqual(_media_ids(document), {"file-1", "file-2"})
 
 
 # vim: set ts=4 sw=4 et tw=132:

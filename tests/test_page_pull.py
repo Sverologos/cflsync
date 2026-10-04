@@ -304,6 +304,33 @@ class TestPagePull(unittest.TestCase):
 
                     self.assertEqual(self._snapshot(workarea), before)
 
+    def test_manages_one_of_two_attachments_with_the_same_filename(self) -> None:
+        first = attachment_fixture()
+        second = attachment_fixture()
+        second.update({"id": "att567891", "fileId": "file-second", "_links": {"download": "/download/second"}})
+        for referenced, managed, download in (
+                (None, first, "/download/attachments/123456/diagram.png?version=3"),
+                ("file-second", second, "/download/second")):
+            with self.subTest(referenced=referenced):
+                page = self._page()
+                if referenced is not None:
+                    media = {"type": "media", "attrs": {"type": "file", "id": referenced, "collection": "contentId-123456"}}
+                    document = {"type": "doc", "version": 1, "content": [{"type": "mediaSingle", "content": [media]}]}
+                    page["body"] = {"atlas_doc_format": {"value": json.dumps(document)}}
+                with temporary_workarea() as workarea:
+                    output = StringIO()
+                    with redirect_stdout(output):
+                        transport = self._pull(workarea, page=page, attachments=[first, second], downloads=[MockResponse(200, {}, b"PNG")])
+                    state = PageState.load(workarea.cache_path("123456"))
+                    directory = workarea.page_directory(state)
+
+                    self.assertEqual(state.attachments["diagram.png"].id, managed["id"])
+                    self.assertEqual(sorted(path.name for path in (directory / "_attachments").iterdir()), ["diagram.png"])
+                    self.assertEqual([request.path for request in transport.requests if "download" in request.path], [download])
+                    self.assertIn("1 duplicate attachment(s) not managed: 'diagram.png'", output.getvalue())
+                    if referenced is not None:
+                        self.assertIn("](_attachments/diagram.png)", (directory / "content.md").read_text())
+
     def test_failed_install_or_state_write_rolls_back_first_pull_update_and_rename(self) -> None:
         for existing in [False, True]:
             for title in ["Example page", "Renamed"]:

@@ -87,6 +87,55 @@ from .workarea import (
 ATTACHMENTS_PREFIX = "_attachments/"
 
 
+def unique_attachments(attachments, *preferred):
+    """Return one attachment per filename, in listing order, and the duplicates left out.
+
+    Confluence can hold two attachments with one filename and different IDs, for example on copied pages. The workarea identifies an
+    attachment by its filename, so only one of them is managed: the first whose attachment or file ID is in the first
+    of the *preferred* ID sets that matches, otherwise the first listed. The others are never downloaded, updated, or
+    deleted.
+    """
+    groups: dict[str, list] = {}
+    for attachment in attachments:
+        groups.setdefault(attachment.filename, []).append(attachment)
+
+    chosen = {}
+    for filename, group in groups.items():
+        chosen[filename] = group[0]
+        for ids in preferred:
+            match = next((attachment for attachment in group if attachment.id in ids or attachment.file_id in ids), None)
+            if match is not None:
+                chosen[filename] = match
+                break
+
+    # An attachment ID listed twice is not a duplicate but an invalid manifest, which MediaResolver rejects.
+    managed = [attachment for attachment in attachments if chosen[attachment.filename].id == attachment.id]
+    duplicates = [attachment for attachment in attachments if chosen[attachment.filename].id != attachment.id]
+    return managed, duplicates
+
+
+def _cached_ids(state):
+    return {attachment.id for attachment in state.attachments.values()} if state is not None else set()
+
+
+def _media_ids(document) -> set[str]:
+    """Return the media identifiers (attachment file IDs) that an ADF document references."""
+    ids = set()
+    pending = [document]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, dict):
+            attrs = value.get("attrs")
+            # Macro parameters can hold a "type" key of any JSON type.
+            if value.get("type") in ("media", "mediaInline") and isinstance(attrs, dict) and isinstance(attrs.get("id"), str):
+                ids.add(attrs["id"])
+            pending.extend(value.values())
+        elif isinstance(value, list):
+            pending.extend(value)
+
+    return ids
+
+
 class PageOperationResult:
     """The outcome of one page in a repository-level operation."""
 
@@ -211,7 +260,8 @@ class PageChangeDetector:
     def remote_changes(self, page, attachments, state: PageState) -> tuple[bool, list[str]]:
         """Return remote page and managed-attachment changes for detailed status reporting."""
         page_changed = page.version != state.page.version or page.title != state.page.title
-        remote = {attachment.filename: (attachment.id, attachment.version) for attachment in attachments}
+        managed, _ = unique_attachments(attachments, _cached_ids(state))
+        remote = {attachment.filename: (attachment.id, attachment.version) for attachment in managed}
         cached = {name: (attachment.id, attachment.version) for name, attachment in state.attachments.items()}
         changed = []
         for name in sorted(set(remote) | set(cached)):
@@ -411,7 +461,8 @@ class PagePushOperation:
         self._check_page_links(workarea, api, page, markdown, bodies, relative_directory, page_index)
         self._upload_attachments(page, state, bodies, attachments)
         # Re-read the manifest so new uploads contribute their server-assigned file IDs.
-        remote = {attachment.filename: attachment for attachment in page.attachments()}
+        managed, _ = unique_attachments(page.attachments(), _cached_ids(state))
+        remote = {attachment.filename: attachment for attachment in managed}
         links = LinkResolver(workarea, api.hostname, page.id, relative_directory, page_index)
         document = self._convert(markdown, page, bodies, remote, api, links)
         updated = page.update(json.dumps(document))
@@ -440,7 +491,8 @@ class PagePushOperation:
 
     @staticmethod
     def _upload_attachments(page, state, bodies, attachments):
-        remote = {attachment.filename: attachment for attachment in attachments}
+        managed, _ = unique_attachments(attachments, _cached_ids(state))
+        remote = {attachment.filename: attachment for attachment in managed}
         for name, body in bodies.items():
             existing = remote.get(name)
             if existing is None:
@@ -519,6 +571,8 @@ class PagePullOperation:
     def __init__(self, pandoc: PandocRunner | None = None) -> None:
         self._pandoc = pandoc or PandocRunner()
         self._detector = PageChangeDetector(self._pandoc)
+        # The filenames of the duplicate attachments that the last pull left unmanaged; see unique_attachments.
+        self.duplicate_attachments: list[str] = []
 
     def install_ancestors(
             self, workarea: Workarea, api, page_id: str, include_page: bool = False, page_index: PageIndex | None = None) -> None:
@@ -563,11 +617,8 @@ class PagePullOperation:
         content is preferred and a missing local directory is restored. Links to pages in the workarea's tree become
         local links, resolved through *page_index* or a new on-demand index; no other page's files are touched.
         """
+        self.duplicate_attachments = []
         attachments = page.attachments()
-        MediaResolver((attachment.filename, attachment.id) for attachment in attachments)
-        # ADF media nodes reference attachments by file ID, not by attachment ID.
-        media = MediaResolver(
-            (attachment.filename, attachment.file_id) for attachment in attachments if attachment.file_id is not None)
         cache_path = workarea.cache_path(page.id)
         # The root page's parent is outside the workarea; every other page is placed below its parent. A planner may
         # restore a cached ancestor at its cached location, despite remote hierarchy or title changes.
@@ -609,6 +660,13 @@ class PagePullOperation:
         if not isinstance(document, dict):
             raise SyncError(f"page '{page.id}' ADF must be an object")
 
+        # Of attachments sharing a filename, the one the page references is managed, else the one managed before.
+        attachments, duplicates = unique_attachments(attachments, _media_ids(document), _cached_ids(previous))
+        self.duplicate_attachments = [attachment.filename for attachment in duplicates]
+        MediaResolver((attachment.filename, attachment.id) for attachment in attachments)
+        # ADF media nodes reference attachments by file ID, not by attachment ID.
+        media = MediaResolver(
+            (attachment.filename, attachment.file_id) for attachment in attachments if attachment.file_id is not None)
         if page_index is None:
             page_index = PageIndex(workarea, api, prefill=False)
 
@@ -724,7 +782,9 @@ class RepositoryPullOperation:
                 unsuccessful.add(page_status.id)
                 results.add(page_status.id, page_status.title, "failed", str(error))
             else:
-                results.add(page_status.id, page_status.title, "pulled" if changed else "unchanged")
+                results.add(
+                    page_status.id, page_status.title, "pulled" if changed else "unchanged",
+                    duplicates_detail(self._page_pull.duplicate_attachments))
 
         # Absent pages are handled last, after every relocation out of their directories has been applied.
         if delete:
@@ -893,6 +953,15 @@ class PageRemoveOperation:
 
         if page_status.local is not None:
             _delete_local_copy(workarea, page_status.local)
+
+
+def duplicates_detail(filenames):
+    """Describe the duplicate attachments a pull left unmanaged, or return ``None``."""
+    if not filenames:
+        return None
+
+    names = ", ".join(f"'{name}'" for name in sorted(set(filenames)))
+    return f"{len(filenames)} duplicate attachment(s) not managed: {names}"
 
 
 def _remote_page_exists(api, page_id):

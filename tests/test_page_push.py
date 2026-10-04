@@ -233,6 +233,34 @@ class TestPagePush(unittest.TestCase):
             self.assertEqual(dict(state.attachments), {})
             self.assertTrue((directory / "_attachments/unmanaged.png").is_file())
 
+    def test_updates_and_deletes_only_the_managed_one_of_duplicate_attachments(self) -> None:
+        duplicate = attachment_fixture()
+        duplicate.update({"id": "att111111", "fileId": "file-duplicate", "_links": {"download": "/download/duplicate"}})
+        attachments = [attachment_fixture(), duplicate]
+        for change in ("edited", "removed"):
+            with self.subTest(change=change):
+                with temporary_workarea() as workarea:
+                    self._pull(workarea, attachments)
+                    path = workarea.root_dir / "Example page_123456/_attachments/diagram.png"
+                    if change == "edited":
+                        path.write_bytes(b"EDITED")
+                        responses = self._push_responses(attachments=attachments, uploads=[MockResponse.from_json(attachment_fixture())])
+                    else:
+                        path.unlink()
+                        responses = self._push_responses(attachments=attachments) + [MockResponse(204, {}, b"")]
+                    self._edit(workarea)
+
+                    _, _, transport = self._push(workarea, responses)
+
+                    writes = [(request.method, request.path) for request in transport.requests if request.method in {"POST", "DELETE"}]
+                    state = PageState.load(workarea.cache_path("123456"))
+                    if change == "edited":
+                        self.assertEqual(writes, [("POST", "/content/123456/child/attachment/att567890/data")])
+                        self.assertEqual(state.attachments["diagram.png"].id, "att567890")
+                    else:
+                        self.assertEqual(writes, [("DELETE", "/attachments/att567890")])
+                        self.assertEqual(dict(state.attachments), {})
+
     def test_rejects_an_edited_title_heading(self) -> None:
         with temporary_workarea() as workarea:
             self._pull(workarea)
