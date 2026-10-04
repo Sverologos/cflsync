@@ -13,7 +13,7 @@ import re
 import subprocess
 from collections.abc import Mapping
 from datetime import date, datetime, timezone
-from html import escape
+from html import escape, unescape
 from urllib.parse import unquote
 
 from .errors import SyncError
@@ -51,6 +51,9 @@ LAYOUT_SECTION_TYPE = "layout-section"
 LAYOUT_BREAKOUT_MODES = {"wide", "full-width"}
 LAYOUT_TAG = re.compile(r"<(section|div)((?:\s+[\w-]+=\"[^\"<>]*\")*)\s*>|</(section|div)>")
 LAYOUT_ATTRIBUTE = re.compile(r'\s+([\w-]+)="([^"<>]*)"')
+# An inline card is written in twg's form, a link-like <a> pair around its URL; its text is ignored on push.
+CARD_OPENING = re.compile(r'<a((?:\s+[\w-]+="[^"<>]*")*)\s*>')
+CARD_ATTRIBUTES = {"href", "data-card-appearance", "data-local-id"}
 HTML_COMMENT = re.compile(r"\s*<!--(?:(?!-->).)*-->\s*", re.DOTALL)
 
 MONTHS = ("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
@@ -767,6 +770,9 @@ class ADFToMarkdownConverter:
         if node_type == "status":
             return self._convert_status(node)
 
+        if node_type == "inlineCard":
+            return self._convert_inline_card(node)
+
         return None
 
     def _convert_hard_break(self, node):
@@ -881,6 +887,31 @@ class ADFToMarkdownConverter:
                 "c": ["html", f'<span cfl-type="status" style="background-color: {background}">']}, *inlines, {
                     "t": "RawInline",
                     "c": ["html", "</span>"]}, ]
+
+    def _convert_inline_card(self, node):
+        """Write an inline card as twg does, ``<a href="URL" data-card-appearance="inline">URL</a>``, or return ``None``.
+
+        The URL is kept verbatim, also for pages in the workarea's tree. A card with other attributes, such as embedded
+        ``data`` instead of a URL, or with marks stays opaque.
+        """
+        attrs = node.get("attrs")
+        if not isinstance(attrs, Mapping) or set(attrs) - {"url", "localId"} or node.get("marks"):
+            return None
+
+        url = attrs.get("url")
+        inlines = self._convert_text({"type": "text", "text": url}) if isinstance(url, str) and url else None
+        if inlines is None:
+            return None
+
+        return [
+            {
+                "t": "RawInline",
+                # A "|" would end a pipe-table cell even inside the tag.
+                "c": ["html", f'<a href="{escape(url, quote=True).replace("|", "&#124;")}" data-card-appearance="inline">']},
+            *inlines,
+            {
+                "t": "RawInline",
+                "c": ["html", "</a>"]}, ]
 
     def _convert_media_inline(self, node):
         attrs = node.get("attrs")
@@ -1918,6 +1949,46 @@ class MarkdownToADFConverter:
 
         raise ConversionError("date is not closed")
 
+    def _convert_raw_card(self, pandoc_inlines, index, inlines, marks):
+        """Convert an ``<a href="URL" data-card-appearance="inline">…</a>`` pair to an inline card; its text is ignored."""
+        match = CARD_OPENING.fullmatch(self._raw_html(pandoc_inlines[index]))
+        attributes = dict(LAYOUT_ATTRIBUTE.findall(match.group(1))) if match is not None else {}
+        if attributes.get("data-card-appearance") != "inline":
+            raise ConversionError(
+                'raw HTML links are not supported, except inline cards written as '
+                '<a href="URL" data-card-appearance="inline">URL</a>; write other links as [text](URL)')
+
+        self._append_inline_card(attributes, inlines, marks, unescape(attributes.get("href", "")))
+        index += 1
+        while index < len(pandoc_inlines):
+            pandoc_inline = pandoc_inlines[index]
+            if not isinstance(pandoc_inline, Mapping):
+                raise ConversionError("Pandoc inline must be an object")
+
+            if pandoc_inline.get("t") == "RawInline":
+                if self._raw_html(pandoc_inline) != "</a>":
+                    raise ConversionError("inline card has an invalid closing tag")
+
+                return index + 1
+
+            index += 1
+
+        raise ConversionError("inline card is not closed with </a>")
+
+    @staticmethod
+    def _append_inline_card(attributes, inlines, marks, url):
+        unsupported = set(attributes) - CARD_ATTRIBUTES
+        if unsupported:
+            raise ConversionError(f"inline card has unsupported attribute '{sorted(unsupported)[0]}'")
+
+        if marks:
+            raise ConversionError("an inline card cannot be formatted")
+
+        if not url:
+            raise ConversionError("inline card needs an href")
+
+        inlines.append({"type": "inlineCard", "attrs": {"url": url}})
+
     def _convert_mention_span(self, attributes, text, inlines):
         allowed = {"cfl-type", "cfl-id", "cfl-access-level", "cfl-user-type", }
         if not attributes.get("cfl-id"):
@@ -2051,6 +2122,8 @@ class MarkdownToADFConverter:
                     index = self._convert_raw_mark(pandoc_inlines, index, inlines, marks, *raw_mark)
                 elif raw_html.startswith("<time"):
                     index = self._convert_raw_time(pandoc_inlines, index, inlines, marks)
+                elif raw_html.startswith("<a ") or raw_html == "<a>":
+                    index = self._convert_raw_card(pandoc_inlines, index, inlines, marks)
                 else:
                     index = self._convert_raw_span(pandoc_inlines, index, inlines, marks)
                 continue
@@ -2158,11 +2231,23 @@ class MarkdownToADFConverter:
             raise ConversionError("Pandoc link has invalid content")
 
         attributes, content, target = value
-        if attributes != ["", [], []] or not isinstance(content, list) or not isinstance(target, list) or len(target) != 2:
+        if not isinstance(content, list) or not isinstance(target, list) or len(target) != 2:
             raise ConversionError("Pandoc link has unsupported attributes")
 
         href, title = target
-        if not isinstance(href, str) or not href or not isinstance(title, str):
+        if not isinstance(href, str) or not isinstance(title, str):
+            raise ConversionError("Pandoc link has invalid target")
+
+        # In HTML tables, the HTML reader returns an inline card as a link with its data- attributes, prefix dropped.
+        if self._is_card_link(attributes):
+            card = {f"data-{name}": value for name, value in attributes[2]}
+            self._append_inline_card({**card, "href": href}, inlines, marks, href)
+            return
+
+        if attributes != ["", [], []]:
+            raise ConversionError("Pandoc link has unsupported attributes")
+
+        if not href:
             raise ConversionError("Pandoc link has invalid target")
 
         if href.startswith("_attachments/"):
@@ -2193,6 +2278,15 @@ class MarkdownToADFConverter:
 
         mark = {"type": "link", "attrs": {"href": href, "title": title}}
         self._convert_marked_content(content, inlines, marks, mark)
+
+    @staticmethod
+    def _is_card_link(attributes):
+        if not isinstance(attributes, list) or len(attributes) != 3 or attributes[:2] != ["", []]:
+            return False
+
+        pairs = attributes[2]
+        return isinstance(pairs, list) and all(isinstance(pair, list) and len(pair) == 2
+                                               for pair in pairs) and ["card-appearance", "inline"] in pairs
 
     def _convert_mailto_mention(self, href, title, content, inlines, marks):
         """Convert a plain ``mailto:`` link to an ADF mention when it resolves uniquely."""

@@ -194,6 +194,7 @@ task item. Reverse conversion emits no task-list or task-item `localId`.
 | `mention` with `attrs.id` but no email address | raw HTML `span` | `mention` |
 | `date` with a millisecond timestamp | raw HTML `<time datetime>` inline pair | `date` at UTC midnight |
 | `status` | raw HTML `span` | `status` |
+| `inlineCard` with `attrs.url` | raw HTML `<a href="URL" data-card-appearance="inline">` inline pair around the URL | `inlineCard` |
 
 Underline, subscript, and superscript are represented by strict `<u>`,
 `<sub>`, and `<sup>` raw HTML inline pairs, so they remain editable in the
@@ -269,6 +270,7 @@ forms:
 | `<u>`, `<sub>`, `<sup>` | raw HTML inline pair | `Underline`, `Subscript`, `Superscript` |
 | status and mention spans | raw HTML inline pair | `Span` with the same attributes; a `style` declaration loses the space after its colon |
 | `<time datetime>` | raw HTML inline pair | raw HTML inline pair |
+| inline card `<a … data-card-appearance="inline">` | raw HTML inline pair | `Link` with the attribute `card-appearance` (the `data-` prefix dropped), its `href` percent-encoded as for any link |
 | ordered list | `Decimal`, `Period` | `Decimal`, `DefaultDelim` |
 | task item | `☐`/`☒` marker | the same marker inside a raw `<label>` pair, which is ignored |
 
@@ -377,8 +379,22 @@ For this fallback, `accessLevel` and `userType` become `cfl-access-level` and
 the span through Pandoc and requires a non-empty account ID; it performs no
 name or email lookup.
 
-ADF has inline nodes such as `inlineCard`. A GFM fence is a block construct and cannot
-occupy a position inside a Pandoc `Para` or `Header`.
+An `inlineCard` is written in twg's form,
+`<a href="URL" data-card-appearance="inline">URL</a>`, its URL HTML-escaped in
+the attribute (with `|` as `&#124;`, which would otherwise end a pipe-table
+cell) and repeated as text. The URL is kept verbatim, also for pages in the
+workarea's tree; page links are not localized for cards. A card with other
+attributes, such as embedded `data` instead of a URL, or with marks, keeps its
+paragraph opaque; `localId` is dropped. Reverse conversion reads the `href`
+and ignores the text; it accepts twg's `data-local-id`, and rejects a card
+inside formatting, a card without `href`, an unclosed card, other attributes,
+and any other raw `<a>`. In HTML-table cells, Pandoc's HTML reader
+percent-encodes `|`, `{`, `}`, `^`, `` ` ``, `[`, `]`, and spaces in the `href`
+of a card or link, which yields an equivalent URL.
+
+ADF has inline nodes without a readable form, such as `inlineExtension`. A GFM
+fence is a block construct and cannot occupy a position inside a Pandoc `Para`
+or `Header`.
 
 Therefore, when an unsupported inline node occurs, the ADF reader
 retains the smallest enclosing ADF block node as one `atlas_doc_format` marker.
@@ -394,7 +410,8 @@ retains the nearest valid ancestor rather than changing the document shape.
 
 ### Initially opaque ADF features
 
-- `inlineCard`, custom emoji, and unsupported media.
+- Custom emoji and unsupported media. Inline cards were promoted to a readable
+  mapping (see Direct inline mappings).
 - `expand`, `nestedExpand`, decision lists, and `extensionFrame`. Layouts
   were promoted to a readable mapping (see Direct block mappings).
 - `extension`, `bodiedExtension`, `multiBodiedExtension`, sync blocks, and

@@ -1266,4 +1266,72 @@ class TestLayouts(unittest.TestCase):
                     self._adf(markdown)
 
 
+def _card(url):
+    return {"type": "inlineCard", "attrs": {"url": url}}
+
+
+class TestInlineCards(unittest.TestCase):
+    """Inline cards are written in twg's form, an <a> with data-card-appearance="inline" around the URL."""
+
+    URL = "https://example.atlassian.net/browse/X_1?a=1&b=*2*|c"
+
+    def setUp(self) -> None:
+        self.pandoc = PandocRunner()
+
+    def _markdown(self, content):
+        return ADFToMarkdownConverter(self.pandoc).convert({"type": "doc", "version": 1, "content": content})
+
+    def _adf(self, markdown):
+        return MarkdownToADFConverter(self.pandoc).convert(markdown)["content"]
+
+    def test_round_trips_a_card_in_a_paragraph(self) -> None:
+        content = [_paragraph(_text("see "), _card(self.URL), _text(" now"))]
+
+        markdown = self._markdown(content)
+
+        self.assertEqual(
+            markdown, 'see <a href="https://example.atlassian.net/browse/X_1?a=1&amp;b=*2*&#124;c" '
+            'data-card-appearance="inline">https://example.atlassian.net/browse/X_1?a=1&b=\\*2\\*\\|c</a> now\n')
+        self.assertEqual(self._adf(markdown), content)
+
+    def test_round_trips_a_card_in_pipe_and_html_table_cells(self) -> None:
+        header = {"type": "tableRow", "content": [_cell("tableHeader", [_paragraph(_text("h"))])]}
+        # Pandoc's HTML reader percent-encodes "|" in an href, as for links, so the HTML table uses a URL without it.
+        cases = {
+            "pipe table": [_paragraph(_card(self.URL))],
+            "html table": [_paragraph(_card(self.URL.replace("|", ""))),
+                           _paragraph(_text("second"))], }
+        for name, blocks in cases.items():
+            with self.subTest(table=name):
+                table = {"type": "table", "content": [header, {"type": "tableRow", "content": [_cell("tableCell", blocks)]}]}
+
+                document = self._adf(self._markdown([table]))
+
+                self.assertEqual(document[0]["content"][1]["content"][0]["content"], blocks)
+
+    def test_reads_twg_local_ids_and_ignores_the_card_text(self) -> None:
+        markdown = '<a data-local-id="l" href="https://a.test/x" data-card-appearance="inline">edited text</a>\n'
+
+        self.assertEqual(self._adf(markdown), [_paragraph(_card("https://a.test/x"))])
+
+    def test_keeps_cards_with_data_or_marks_opaque(self) -> None:
+        for name, card in {"data": {"type": "inlineCard", "attrs": {"data": {"name": "x"}}}, "marks":
+                           {**_card("https://a.test/x"), "marks": [{"type": "annotation", "attrs": {"id": "1"}}]}, }.items():
+            with self.subTest(card=name):
+                self.assertIn("``` atlas_doc_format", self._markdown([_paragraph(card)]))
+
+    def test_rejects_malformed_cards(self) -> None:
+        card = '<a href="https://a.test/x" data-card-appearance="inline">x</a>'
+        cases = {
+            "other raw link": ('<a href="https://a.test/x">x</a>\n', "raw HTML links are not supported"),
+            "formatted": (f"**{card}**\n", "cannot be formatted"),
+            "missing href": ('<a data-card-appearance="inline">x</a>\n', "needs an href"),
+            "not closed": ('<a href="https://a.test/x" data-card-appearance="inline">x\n', "not closed"),
+            "unsupported attribute": (card.replace("<a ", '<a title="t" ') + "\n", "unsupported attribute 'title'"), }
+        for name, (markdown, message) in cases.items():
+            with self.subTest(case=name):
+                with self.assertRaisesRegex(ConversionError, message):
+                    self._adf(markdown)
+
+
 # vim: set ts=4 sw=4 et tw=132:

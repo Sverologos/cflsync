@@ -167,8 +167,20 @@ intact:
 - A mention span needs its non-empty `cfl-id`; preserve its other metadata
   unless the corresponding Confluence account values are known.
 
-These are HTML forms rather than ordinary Markdown syntax. The date form is
-the one the Atlassian `twg` CLI uses; a pulled date is written as:
+Inline cards, the link previews Confluence shows for Jira issues and pages,
+are written as an HTML link with `data-card-appearance="inline"`:
+
+```html
+<a href="https://example.atlassian.net/browse/ABC-123" data-card-appearance="inline">https://example.atlassian.net/browse/ABC-123</a>
+```
+
+Change a card's target in `href`; the text between the tags is ignored on
+push, and Confluence shows the card's own title. The same element creates a
+new card. A card cannot be inside bold, italic, or other formatting. Other
+HTML links are not supported; write them as `[text](URL)`.
+
+These are HTML forms rather than ordinary Markdown syntax. The date and card
+forms are the ones the Atlassian `twg` CLI uses; a pulled date is written as:
 
 ```html
 <time datetime="2026-04-01">April 1, 2026</time>
