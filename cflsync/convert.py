@@ -530,7 +530,8 @@ class ADFToMarkdownConverter:
         if content is None or len(content) != 1:
             return self._convert_opaque(node)
 
-        inline = self._convert_media(content[0])
+        # A single image is an image whatever its file name: ADF media carry no media type to tell otherwise.
+        inline = self._convert_media(content[0], as_image=True)
         if inline is None:
             return self._convert_opaque(node)
 
@@ -556,7 +557,7 @@ class ADFToMarkdownConverter:
 
         return {"t": "Para", "c": inlines}
 
-    def _convert_media(self, node):
+    def _convert_media(self, node, as_image=False):
         if not isinstance(node, Mapping) or node.get("type") != "media":
             return None
 
@@ -569,13 +570,13 @@ class ADFToMarkdownConverter:
             if not isinstance(url, str) or not url:
                 return None
 
-            return self._convert_media_target(url, attrs.get("alt"))
+            return self._convert_media_target(url, attrs.get("alt"), as_image)
 
         path = self._media_path(attrs)
         if path is None:
             return None
 
-        return self._convert_media_target(path, attrs.get("alt"))
+        return self._convert_media_target(path, attrs.get("alt"), as_image)
 
     def _media_path(self, attrs):
         file_id = attrs.get("id")
@@ -587,7 +588,7 @@ class ADFToMarkdownConverter:
         except SyncError:
             return None
 
-    def _convert_media_target(self, url, alt):
+    def _convert_media_target(self, url, alt, as_image=False):
         # Without alt text, the label is the file name; attachment paths are percent-encoded, their labels are not.
         name = url.rsplit("/", 1)[-1]
         if url.startswith("_attachments/"):
@@ -598,7 +599,8 @@ class ADFToMarkdownConverter:
         if inlines is None:
             return None
 
-        node_type = "Image" if _is_image_target(url) else "Link"
+        # Unless the caller knows it is an image, the file name's suffix decides between an image and a file link.
+        node_type = "Image" if as_image or _is_image_target(url) else "Link"
 
         return {"t": node_type, "c": [["", [], []], inlines, [url, ""]]}
 

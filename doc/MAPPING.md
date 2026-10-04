@@ -293,9 +293,11 @@ which has no ADF counterpart in either direction.
 
 `mediaSingle` and `mediaGroup` map to a Pandoc paragraph of `Image` or `Link`
 inlines when the page attachment manifest resolves the ADF media identifier to
-a managed local `_attachments/<filename>` path. `Image` is used for filenames
-with an image suffix and `Link` otherwise, since the ADF media node carries no
-media type. The `alt` text is the inline text; media without `alt` is labelled
+a managed local `_attachments/<filename>` path. A `mediaSingle` always becomes
+an `Image`, whatever its file name, such as `GetClipboardImage.ashx?Id=…`; in
+a `mediaGroup` and for `mediaInline`, `Image` is used for filenames with an
+image suffix and `Link` otherwise, since the ADF media node carries no media
+type. The `alt` text is the inline text; media without `alt` is labelled
 with its filename, decoded from the percent-encoded path, or with the last
 path segment of an external URL. External media uses its own URL and needs no
 manifest. The reverse

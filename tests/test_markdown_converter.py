@@ -1091,6 +1091,17 @@ class TestMarkdownToADFAttachmentPaths(unittest.TestCase):
 
         self.assertEqual(markdown, "![x](_attachments/Pasted%20image%2020260601.png)\n")
 
+    def test_writes_a_single_image_as_an_image_whatever_its_file_name(self) -> None:
+        media = self._media_node(3, "plan v2.pdf")
+        block = {"type": "mediaSingle", "attrs": {"layout": "center"}, "content": [media]}
+
+        markdown, document = self._round_trip([block])
+        group_markdown, _ = self._round_trip([{"type": "mediaGroup", "content": [media]}])
+
+        self.assertEqual(markdown, "![plan v2.pdf](_attachments/plan%20v2.pdf)\n")
+        self.assertEqual(document, [block])
+        self.assertEqual(group_markdown, "[plan v2.pdf](_attachments/plan%20v2.pdf)\n")
+
     def test_labels_media_without_alt_text_with_the_decoded_filename(self) -> None:
         for number, name in enumerate(self.NAMES):
             attrs = {"type": "file", "id": f"file-{number}", "collection": "contentId-1"}
