@@ -32,7 +32,7 @@ class TestADFToMarkdownConverter(unittest.TestCase):
             "Synthetic",
             "marks": [
                 {
-                    "type": "textColor",
+                    "type": "futureMark",
                     "attrs": {
                         "color": "#123456"}}, {
                             "type": "code",

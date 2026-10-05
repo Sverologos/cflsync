@@ -49,6 +49,8 @@ RAW_MARKS = {
         "attrs": {
             "type": "sup"}}, "superscript"), }
 TYPED_RAW_MARKS = {"Underline": "<u>", "Subscript": "<sub>", "Superscript": "<sup>"}
+COLOUR_MARKS = {"textColor": "color", "backgroundColor": "background-color"}
+HEX_COLOUR = re.compile(r"#[0-9a-fA-F]{6}")
 # The marks written as Markdown delimiters, with their Pandoc nodes, outermost first when they cover the same text.
 DELIMITED_MARKS = (("strong", "Strong"), ("em", "Emph"), ("strike", "Strikeout"))
 # An empty HTML comment between two blocks keeps Markdown from reading them as one; any comment-only block is ignored.
@@ -904,7 +906,7 @@ class ADFToMarkdownConverter:
     def _convert_inline_item(self, node):
         """Return the delimited marks of an inline node and its inlines without them, or ``None``.
 
-        Only text without an outer mark (link, underline, subsup) separates its delimited marks: an outer mark's own
+        Only text without an outer mark (link, underline, subsup, colour) separates its delimited marks: an outer mark's own
         syntax already separates neighbouring delimiters, so such text keeps its delimiters inside, as other inlines do.
         """
         if node.get("type") != "text":
@@ -917,7 +919,7 @@ class ADFToMarkdownConverter:
             return None
 
         delimited = tuple(mark_type for mark_type, _ in DELIMITED_MARKS if mark_type in values)
-        if not delimited or values.keys() & {"link", "underline", "subsup"}:
+        if not delimited or values.keys() & {"link", "underline", "subsup", *COLOUR_MARKS}:
             converted = self._convert_marks(inlines, list(values.values()))
             return None if converted is None else ((), converted)
 
@@ -1188,7 +1190,7 @@ class ADFToMarkdownConverter:
                 return None
 
             mark_type = mark["type"]
-            if mark_type not in {"strong", "em", "strike", "code", "link", "underline", "subsup"}:
+            if mark_type not in {"strong", "em", "strike", "code", "link", "underline", "subsup", *COLOUR_MARKS}:
                 continue
 
             if mark_type in values:
@@ -1205,7 +1207,7 @@ class ADFToMarkdownConverter:
 
         result = inlines
         if "code" in values:
-            if "subsup" in values:
+            if values.keys() & {"subsup", *COLOUR_MARKS}:
                 return None
 
             result = self._convert_code_mark(inlines)
@@ -1223,6 +1225,23 @@ class ADFToMarkdownConverter:
             result = self._convert_subsup_mark(result, values["subsup"])
             if result is None:
                 return None
+
+        for mark_type, property_name in COLOUR_MARKS.items():
+            if mark_type not in values:
+                continue
+
+            mark = values[mark_type]
+            attrs = mark.get("attrs")
+            if (set(mark) != {"type", "attrs"} or not isinstance(attrs, Mapping) or set(attrs) != {"color"}
+                    or not isinstance(attrs["color"], str) or HEX_COLOUR.fullmatch(attrs["color"]) is None):
+                return None
+
+            result = [
+                {
+                    "t": "RawInline",
+                    "c": ["html", f'<span style="{property_name}: {attrs["color"]}">']}, *result, {
+                        "t": "RawInline",
+                        "c": ["html", "</span>"]}, ]
 
         if "link" in values:
             return self._convert_link_mark(result, values["link"])
@@ -2330,9 +2349,9 @@ class MarkdownToADFConverter:
         return {"type": "mediaGroup", "content": content}
 
     def _convert_span(self, pandoc_inline, inlines, marks):
-        """Accept the emoji span that reading a `:shortcode:` produces, keeping its Unicode text, and a status or cflsync span.
+        """Read emoji, colour, highlight, status, and cflsync spans.
 
-        Reading an HTML table turns a status or cflsync span into a Pandoc span rather than a pair of raw HTML inlines.
+        Reading an HTML table turns inline HTML into Pandoc spans rather than pairs of raw HTML inlines.
         """
         if not self._has_fields(pandoc_inline, {"t", "c"}):
             raise ConversionError("Pandoc span has unsupported fields")
@@ -2346,10 +2365,21 @@ class MarkdownToADFConverter:
             self._convert_inline_nodes_into(value[1], inlines, marks)
             return
 
+        if attributes == ["", ["mark"], []]:
+            self._convert_coloured_content(value[1], inlines, marks, [{"type": "backgroundColor", "attrs": {"color": "#FFFF00"}}])
+            return
+
         key_values = attributes[2] if isinstance(attributes, list) and len(attributes) == 3 else None
-        if not isinstance(key_values, list) or not any(
-                isinstance(pair, list) and (pair[:1] == ["cfl-type"] or pair == ["data-type", "status"]) for pair in key_values):
-            raise ConversionError("only emoji, status, and cflsync spans can be represented in ADF")
+        is_cflsync = isinstance(key_values, list) and any(
+            isinstance(pair, list) and (pair[:1] == ["cfl-type"] or pair == ["data-type", "status"]) for pair in key_values)
+        if not is_cflsync and isinstance(key_values, list) and any(isinstance(pair, list) and pair[:1] == ["style"]
+                                                                   for pair in key_values):
+            colours = self._colour_style(self._raw_span_attributes(pandoc_inline))
+            self._convert_coloured_content(value[1], inlines, marks, colours)
+            return
+
+        if not is_cflsync:
+            raise ConversionError("only emoji, colour, highlight, status, and cflsync spans can be represented in ADF")
 
         if marks:
             raise ConversionError("cflsync span has unsupported marks")
@@ -2357,10 +2387,12 @@ class MarkdownToADFConverter:
         self._convert_cflsync_span(self._raw_span_attributes(pandoc_inline), value[1], inlines)
 
     def _convert_raw_span(self, pandoc_inlines, index, inlines, marks):
-        if marks:
-            raise ConversionError("Pandoc raw inline has unsupported marks")
-
         opening = self._raw_html(pandoc_inlines[index])
+        if opening == "<mark>":
+            content, end = self._raw_mark_content(pandoc_inlines, index, "</mark>", "highlight")
+            self._convert_coloured_content(content, inlines, marks, [{"type": "backgroundColor", "attrs": {"color": "#FFFF00"}}])
+            return end
+
         blocks = self._pandoc_runner.html_to_pandoc(opening).get("blocks")
         if not isinstance(blocks, list) or len(blocks) != 1 or not isinstance(blocks[0], Mapping):
             raise ConversionError("raw HTML must contain exactly one cflsync span")
@@ -2374,6 +2406,15 @@ class MarkdownToADFConverter:
             raise ConversionError("raw HTML must contain exactly one cflsync span")
 
         attributes = self._raw_span_attributes(content[0])
+        if "style" in attributes and "cfl-type" not in attributes and attributes.get("data-type") != "status":
+            colours = self._colour_style(attributes)
+            text_inlines, end = self._raw_mark_content(pandoc_inlines, index, "</span>", "colour span")
+            self._convert_coloured_content(text_inlines, inlines, marks, colours)
+            return end
+
+        if marks:
+            raise ConversionError("Pandoc raw inline has unsupported marks")
+
         text_inlines = []
         index += 1
         while index < len(pandoc_inlines):
@@ -2413,24 +2454,72 @@ class MarkdownToADFConverter:
         if any(existing["type"] == mark["type"] for existing in marks):
             raise ConversionError(f"Pandoc inline has duplicate '{mark['type']}' marks")
 
+        content, end = self._raw_mark_content(pandoc_inlines, index, closing, name)
+        self._convert_inline_nodes_into(content, inlines, [*marks, mark])
+        return end
+
+    def _raw_mark_content(self, pandoc_inlines, index, closing, name):
+        """Find a matching closing tag, retaining nested pairs for recursive inline conversion."""
         content = []
+        depth = 0
+        opening = re.compile(r"<" + re.escape(closing[2:-1]) + r"(?:\s[^<>]*)?>")
         index += 1
         while index < len(pandoc_inlines):
             pandoc_inline = pandoc_inlines[index]
             if not isinstance(pandoc_inline, Mapping):
                 raise ConversionError("Pandoc inline must be an object")
 
-            if pandoc_inline.get("t") == "RawInline" and self._raw_html(pandoc_inline) == closing:
-                if not content:
-                    raise ConversionError(f"Pandoc {name} content must not be empty")
+            if pandoc_inline.get("t") == "RawInline":
+                tag = self._raw_html(pandoc_inline)
+                if tag == closing:
+                    if depth:
+                        depth -= 1
+                    else:
+                        if not content:
+                            raise ConversionError(f"Pandoc {name} content must not be empty")
 
-                self._convert_inline_nodes_into(content, inlines, [*marks, mark])
-                return index + 1
+                        return content, index + 1
+                elif opening.fullmatch(tag):
+                    depth += 1
 
             content.append(pandoc_inline)
             index += 1
 
         raise ConversionError(f"Pandoc {name} is not closed")
+
+    @staticmethod
+    def _colour_style(attributes):
+        """Read twg colour CSS without discarding other attributes or declarations."""
+        if set(attributes) != {"style"}:
+            raise ConversionError("colour span has unsupported attributes")
+
+        values = {}
+        for declaration in attributes["style"].split(";"):
+            if not declaration.strip():
+                continue
+
+            property_name, separator, colour = declaration.partition(":")
+            property_name, colour = property_name.strip().lower(), colour.strip()
+            if (not separator or property_name not in COLOUR_MARKS.values() or property_name in values
+                    or HEX_COLOUR.fullmatch(colour) is None):
+                raise ConversionError(
+                    "colour span requires unique color or background-color declarations with six-digit hex values")
+
+            values[property_name] = colour
+
+        if not values:
+            raise ConversionError("colour span has no colour declarations")
+
+        return [
+            {
+                "type": kind,
+                "attrs": {
+                    "color": values[property_name]}} for kind, property_name in COLOUR_MARKS.items() if property_name in values]
+
+    def _convert_coloured_content(self, content, inlines, marks, colours):
+        # CSS colours inherit; an inner declaration overrides the corresponding outer mark.
+        kinds = {mark["type"] for mark in colours}
+        self._convert_inline_nodes_into(content, inlines, [mark for mark in marks if mark["type"] not in kinds] + colours)
 
     def _raw_html(self, pandoc_inline):
         if not self._has_fields(pandoc_inline, {"t", "c"}):

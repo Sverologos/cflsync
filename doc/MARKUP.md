@@ -55,6 +55,16 @@ headings in the page body.
 | Image figures | `<figure data-type="media-single" …>` around an image, with optional `<figcaption>`; see [Images](#images) |
 | Layouts | An HTML `<section>` with one `<div data-type="column">` per column around Markdown; see [Layouts](#layouts) |
 | Expands | `<details>` with a plain-text `<summary>` title and Markdown body; see [Expands](#expands) |
+| Text colour and highlight | `<span style="color: #0747a6">text</span>` and `<span style="background-color: #f8e6a0">text</span>` |
+
+Colour spans use twg's syntax and work with emphasis, links, underline,
+subscript, and superscript, including in tables and captions. Use six-digit
+hex values; existing values retain their spelling. A span can contain both
+`color` and `background-color`, and nested spans can override either colour.
+`<mark>text</mark>` is also accepted as highlight `#FFFF00`; pull writes the
+explicit colour span. Inline code cannot carry colours. GitHub strips inline
+styles when rendering, so colour is preserved for Confluence but may not show
+in Markdown previews.
 
 Nest list items with indentation. Images or files in `_attachments/` are
 uploaded and maintained with the page. Links outside `_attachments/` remain

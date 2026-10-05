@@ -497,7 +497,7 @@ class TestMarkdownToADFConverter(unittest.TestCase):
                         "t": "Str",
                         "c": "text"}]]}]}]))
 
-        with self.assertRaisesRegex(ConversionError, "only emoji, status, and cflsync spans"):
+        with self.assertRaisesRegex(ConversionError, "only emoji, colour, highlight, status, and cflsync spans"):
             MarkdownToADFConverter(pandoc).convert("source")
 
     def test_rejects_raw_html_that_is_not_a_table(self) -> None:
@@ -661,6 +661,8 @@ def _list_item(*blocks):
 STATUS = {"type": "status", "attrs": {"text": "OPEN", "color": "green"}}
 UNDERLINE = {"type": "underline"}
 SUPERSCRIPT = {"type": "subsup", "attrs": {"type": "sup"}}
+TEXT_COLOUR = {"type": "textColor", "attrs": {"color": "#Ab1234"}}
+HIGHLIGHT = {"type": "backgroundColor", "attrs": {"color": "#F8E6A0"}}
 
 # Constructs whose Markdown form is raw HTML or that Pandoc's HTML reader represents differently from its GFM reader, each
 # alone and in the nested positions a table cell admits.
@@ -672,6 +674,9 @@ HTML_CELL_CONSTRUCTS = {
             "type": "sub"}})),
     "superscript": _paragraph(_text("s", SUPERSCRIPT)),
     "strong underline": _paragraph(_text("bu", {"type": "strong"}, UNDERLINE)),
+    "text colour": _paragraph(_text("colour", TEXT_COLOUR)),
+    "highlight": _paragraph(_text("highlight", HIGHLIGHT)),
+    "formatted colours": _paragraph(_text("both", TEXT_COLOUR, HIGHLIGHT, UNDERLINE, {"type": "strong"})),
     "status": _paragraph(STATUS),
     "date": _paragraph({
         "type": "date",
@@ -1867,3 +1872,152 @@ class TestImageFigures(unittest.TestCase):
 
 
 # vim: set ts=4 sw=4 et tw=132:
+
+
+class TestColourMarks(unittest.TestCase):
+
+    def setUp(self) -> None:
+        self.pandoc = PandocRunner()
+
+    @staticmethod
+    def _normalized(value):
+        if isinstance(value, list):
+            return [TestColourMarks._normalized(child) for child in value]
+        if isinstance(value, dict):
+            result = {key: TestColourMarks._normalized(child) for key, child in value.items()}
+            if "marks" in result:
+                result["marks"].sort(key=lambda mark: json.dumps(mark, sort_keys=True))
+            return result
+        return value
+
+    def _round_trip(self, content):
+        markdown = ADFToMarkdownConverter(self.pandoc).convert({"type": "doc", "version": 1, "content": content})
+        back = MarkdownToADFConverter(self.pandoc).convert(markdown)["content"]
+        self.assertEqual(self._normalized(back), self._normalized(content))
+        return markdown
+
+    def test_round_trips_colour_combinations_and_formatting(self) -> None:
+        for colours in ([TEXT_COLOUR], [HIGHLIGHT], [TEXT_COLOUR, HIGHLIGHT]):
+            for formatting in ([], [{"type": "strong"}], [{"type": "em"}], [{"type": "strike"}], [UNDERLINE], [SUPERSCRIPT],
+                               [{"type": "link", "attrs": {"href": "https://a.test", "title": ""}}], [{"type": "strong"},
+                                                                                                      {"type": "em"}, UNDERLINE]):
+                with self.subTest(colours=colours, formatting=formatting):
+                    markdown = self._round_trip([_paragraph(_text("a < b & [x] * y", *colours, *formatting))])
+                    for mark in colours:
+                        property_name = "color" if mark["type"] == "textColor" else "background-color"
+                        self.assertIn(f'<span style="{property_name}: {mark["attrs"]["color"]}">', markdown)
+
+    def test_round_trips_adjacent_runs_and_marked_spaces(self) -> None:
+        self._round_trip(
+            [
+                _paragraph(
+                    _text("a", TEXT_COLOUR, {"type": "strong"}), _text(" ", TEXT_COLOUR), _text("b", HIGHLIGHT, {"type": "strong"}),
+                    _text("c", {"type": "strong"}), _text("d", TEXT_COLOUR, HIGHLIGHT))])
+
+    def test_round_trips_colours_in_containers_and_caption(self) -> None:
+        paragraph = _paragraph(_text("coloured", TEXT_COLOUR, HIGHLIGHT))
+        self._round_trip(
+            [
+                {
+                    "type": "heading",
+                    "attrs": {
+                        "level": 2},
+                    "content": paragraph["content"]},
+                _bullet_list_of(paragraph), {
+                    "type": "panel",
+                    "attrs": {
+                        "panelType": "warning"},
+                    "content": [paragraph]}, {
+                        "type": "expand",
+                        "attrs": {
+                            "title": "Details"},
+                        "content": [paragraph]}, {
+                            "type":
+                            "mediaSingle",
+                            "attrs": {
+                                "layout": "center"},
+                            "content": [
+                                {
+                                    "type": "media",
+                                    "attrs": {
+                                        "type": "external",
+                                        "url": "https://a.test/image.png",
+                                        "alt": "image"}}, {
+                                            "type": "caption",
+                                            "content": paragraph["content"]}]}])
+
+    def test_accepts_combined_styles_and_nested_overrides_in_both_readers(self) -> None:
+        for wrapper in ("{}", "<table><tr><td><p>{}</p></td></tr></table>"):
+            for bold in ("**x**", "<strong>x</strong>"):
+                # Markdown emphasis is used outside HTML tables; HTML emphasis inside them.
+                if (wrapper == "{}") != (bold == "**x**"):
+                    continue
+                source = (
+                    '<span style=" COLOR : #Ab1234; background-color: #F8E6A0;">'
+                    f'a<span style="color: #ffffff">{bold}</span>b</span>')
+                content = MarkdownToADFConverter(self.pandoc).convert(wrapper.format(source))["content"]
+                if wrapper != "{}":
+                    content = content[0]["content"][0]["content"][0]["content"]
+                self.assertEqual(
+                    self._normalized(content),
+                    self._normalized(
+                        [
+                            _paragraph(
+                                _text("a", TEXT_COLOUR, HIGHLIGHT),
+                                _text("x", {
+                                    "type": "textColor",
+                                    "attrs": {
+                                        "color": "#ffffff"}}, HIGHLIGHT, {"type": "strong"}), _text("b", TEXT_COLOUR, HIGHLIGHT))]))
+
+    def test_reads_mark_as_yellow_and_writes_the_hex_span(self) -> None:
+        yellow = {"type": "backgroundColor", "attrs": {"color": "#FFFF00"}}
+        for source in ("<mark>x</mark>", "<table><tr><td><p><mark>x</mark></p></td></tr></table>"):
+            document = MarkdownToADFConverter(self.pandoc).convert(source)
+            paragraph = document["content"][0]
+            if paragraph["type"] == "table":
+                paragraph = paragraph["content"][0]["content"][0]["content"][0]
+            self.assertEqual(paragraph, _paragraph(_text("x", yellow)))
+            self.assertIn('<span style="background-color: #FFFF00">', ADFToMarkdownConverter(self.pandoc).convert(document))
+
+    def test_preserves_invalid_or_unsupported_adf_colours_opaquely(self) -> None:
+        marks = [
+            {
+                "type": "textColor"}, {
+                    "type": "textColor",
+                    "attrs": {
+                        "color": "red"}}, {
+                            "type": "backgroundColor",
+                            "attrs": {
+                                "color": "#123"}}, {
+                                    "type": "textColor",
+                                    "attrs": {
+                                        "color": None}}, {
+                                            "type": "textColor",
+                                            "attrs": {
+                                                "color": ["#123456"]}}, {
+                                                    "type": "textColor",
+                                                    "attrs": {
+                                                        "color": '#123456\" onclick=\"x'}}, {
+                                                            "type": "textColor",
+                                                            "attrs": {
+                                                                "color": "#123456",
+                                                                "future": True}}, {
+                                                                    **TEXT_COLOUR, "future": True}]
+        for selected in ([mark] for mark in marks):
+            with self.subTest(marks=selected):
+                self.assertIn("atlas_doc_format", self._round_trip([_paragraph(_text("x", *selected))]))
+        for selected in ([TEXT_COLOUR, TEXT_COLOUR], [TEXT_COLOUR, {"type": "code"}]):
+            with self.subTest(marks=selected):
+                self.assertIn("atlas_doc_format", self._round_trip([_paragraph(_text("x", *selected))]))
+
+    def test_rejects_styles_that_cannot_be_preserved(self) -> None:
+        for tag in ('<span style="color: red">', '<span style="color: #123">', '<span style="color: #123456; font-weight: bold">',
+                    '<span style="color: #123456; color: #abcdef">', '<span style="">', '<span id="x" style="color: #123456">'):
+            for wrapper in ("{}", "<table><tr><td><p>{}</p></td></tr></table>"):
+                with self.subTest(tag=tag, wrapper=wrapper):
+                    with self.assertRaises(ConversionError):
+                        MarkdownToADFConverter(self.pandoc).convert(wrapper.format(f"{tag}x</span>"))
+        for source in ('<span style="color: #123456">x', '<mark>x', '<span style="color: #123456">`code`</span>'):
+            with self.subTest(source=source):
+                with self.assertRaises(ConversionError):
+                    MarkdownToADFConverter(self.pandoc).convert(source)

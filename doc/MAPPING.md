@@ -234,6 +234,8 @@ task item. Reverse conversion emits no task-list or task-item `localId`.
 | `code` mark | `Code` | `code` mark |
 | `underline` mark | Raw HTML `<u>` inline pair | `underline` mark |
 | `subsup` mark | Raw HTML `<sub>` or `<sup>` inline pair | `subsup` mark |
+| `textColor` mark | Raw HTML `<span style="color: #hex">` inline pair | `textColor` mark with the original hex value |
+| `backgroundColor` mark | Raw HTML `<span style="background-color: #hex">` inline pair | `backgroundColor` mark with the original hex value; `<mark>` reads as `#FFFF00` |
 | `link` mark | `Link`; page links become local links (see below) | `link` mark |
 | `emoji` with `attrs.text` | `Str` holding that text | `text` |
 | `mention` with `attrs.id` and a resolvable email address | `Link` with a `mailto:` target | `mention` |
@@ -241,6 +243,16 @@ task item. Reverse conversion emits no task-list or task-item `localId`.
 | `date` with a millisecond timestamp | raw HTML `<time datetime>` inline pair | `date` at UTC midnight |
 | `status` | raw HTML `<span data-type="status">` inline pair | `status` |
 | `inlineCard` with `attrs.url` | raw HTML `<a href="URL" data-card-appearance="inline">` inline pair around the URL | `inlineCard` |
+
+Text and highlight colours use twg's style spans, including in HTML-table
+cells and image captions. Values must be six-digit hexadecimal colours;
+their case is preserved, and existing values outside twg's authoring palettes
+are retained. Both properties can be read from one span, with an optional
+trailing semicolon; inner colour declarations override the corresponding
+outer colour. Other span attributes, CSS properties, duplicate declarations,
+and non-hex values are rejected on push. Invalid, repeated, or extended ADF
+colour marks preserve the enclosing block as opaque JSON. Colours combined
+with `code` also stay opaque, since ADF code cannot carry colour marks.
 
 Underline, subscript, and superscript are represented by strict `<u>`,
 `<sub>`, and `<sup>` raw HTML inline pairs, so they remain editable in the
