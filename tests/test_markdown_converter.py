@@ -1803,6 +1803,21 @@ class TestImageFigures(unittest.TestCase):
             self._adf('<img src="_attachments/f.png" alt="a &amp; &quot;b&quot;" height="480" />\n'),
             [self._figure(dimensions={"height": 480})])
 
+    def test_reads_single_line_figcaption_as_html(self) -> None:
+        start = '<figure data-type="media-single">\n\n![a](_attachments/f.png)\n\n'
+        for caption, end, content in (
+                ('<figcaption>caption</figcaption>', '\n\n</figure>\n', [_text("caption")]),
+                ('<figcaption data-local-id="c"><strong>caption</strong></figcaption>', '\n</figure>\n',
+                 [_text("caption", {"type": "strong"})]),
+                ('<figcaption>**caption**</figcaption>', '\n\n</figure>\n', [_text("**caption**")])):
+            with self.subTest(caption=caption):
+                self.assertEqual(self._adf(start + caption + end)[0]["content"][1]["content"], content)
+        for caption in ('<figcaption class="x">x</figcaption>', '<figcaption>a</figcaption><figcaption>b</figcaption>',
+                        '<figcaption><p>a</p><p>b</p></figcaption>'):
+            with self.subTest(caption=caption):
+                with self.assertRaises(ConversionError):
+                    self._adf(start + caption + '\n\n</figure>\n')
+
     def test_accepts_local_ids_and_edits_to_geometry_and_attachment_paths(self) -> None:
         figure = self._figure({"widthType": "pixel", "width": 400}, {"width": 800}, [_text("caption")])
         markdown = self._markdown([figure]).replace('<figure ', '<figure data-local-id="figure-id" ')

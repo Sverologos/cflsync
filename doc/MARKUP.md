@@ -115,7 +115,9 @@ content, including formatting, links, dates, mentions, statuses, and hard
 breaks; an empty `<figcaption>` preserves an empty caption. Images can use
 managed `_attachments/` paths or external URLs, including filenames without
 an image suffix. Figures also work inside lists, layouts, expands, and HTML
-table cells. Compact HTML figures are accepted on push.
+table cells. Compact HTML figures are accepted on push, as is a caption on a
+single line, `<figcaption>Caption text.</figcaption>`; its content is then HTML
+(`<strong>`), not Markdown, as in any one-line HTML block.
 New local files referenced by `<img>` become managed attachments on push,
 including images in HTML table cells.
 

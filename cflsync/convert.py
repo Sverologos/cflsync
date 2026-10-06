@@ -62,6 +62,8 @@ BLOCK_TAG = re.compile(
     r"<(section|div|details|summary|figure|figcaption)((?:\s+[\w-]+=\"[^\"<>]*\")*)\s*>|</(section|div|details|summary|figure|figcaption)>"
 )
 SUMMARY = re.compile(r"<summary>([^<>]*)</summary>", re.DOTALL)
+# A caption on one line is a single raw GFM block, so its content is HTML, not Markdown.
+FIGCAPTION = re.compile(r"<figcaption((?:\s+[\w-]+=\"[^\"<>]*\")*)\s*>(.*)</figcaption>", re.DOTALL)
 TAG_ATTRIBUTE = re.compile(r'\s+([\w-]+)="([^"<>]*)"')
 # An inline card is written in twg's form, a link-like <a> pair around its URL; its text is ignored on push.
 CARD_OPENING = re.compile(r'<a((?:\s+[\w-]+="[^"<>]*")*)\s*>')
@@ -74,14 +76,15 @@ TIME_OPENING = re.compile(r'<time datetime="(\d{4}-\d{2}-\d{2})">')
 
 
 class _BlockTag:
-    """One HTML container tag line, or a complete plain-text ``<summary>`` line."""
+    """One HTML container tag line, or a complete plain-text ``<summary>`` or HTML ``<figcaption>`` line."""
 
-    def __init__(self, kind, opening, attributes, text, title=None):
+    def __init__(self, kind, opening, attributes, text, title=None, html=None):
         self.kind = kind
         self.opening = opening
         self.attributes = attributes
         self.text = text
         self.title = title
+        self.html = html
         self.block = {"t": "RawBlock", "c": ["html", text]}
 
     @classmethod
@@ -90,6 +93,11 @@ class _BlockTag:
         summary = SUMMARY.fullmatch(text)
         if summary is not None:
             return cls("summary", True, {}, text, unescape(summary.group(1)))
+
+        caption = FIGCAPTION.fullmatch(text)
+        if caption is not None:
+            attributes = {name: unescape(value) for name, value in TAG_ATTRIBUTE.findall(caption.group(1))}
+            return cls("figcaption", True, attributes, text, html=caption.group(2))
 
         match = BLOCK_TAG.fullmatch(text)
         if match is None:
@@ -1763,6 +1771,9 @@ class MarkdownToADFConverter:
                 if token.kind == "figcaption" and token.opening and caption is None:
                     if set(token.attributes) - {"data-local-id"}:
                         raise ConversionError("figcaption has unsupported attributes")
+                    if token.html is not None:
+                        caption = self._html_blocks(token.html)
+                        continue
                     caption_blocks = []
                     while index < len(tokens):
                         token = tokens[index]
