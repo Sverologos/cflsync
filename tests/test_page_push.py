@@ -182,7 +182,18 @@ class TestPagePushInTree(unittest.TestCase):
         figure = '<figure data-type="media-single" data-width="400" data-width-type="pixel">\n' \
             '<img src="_attachments/new%20%26%20image.png" width="800" height="600" alt="New" />\n' \
             '<figcaption>Caption</figcaption>\n</figure>\n'
-        for markup in (figure, '<table><tr><td>' + figure + '</td></tr></table>\n'):
+        legacy = '<figure data-type="media-single" data-width="400" data-width-type="pixel">\n\n' \
+            '<img src="_attachments/new%20%26%20image.png" width="800" height="600" alt="New" />\n\n' \
+            '<figcaption>\n\nCaption\n\n</figcaption>\n\n</figure>\n'
+        joined = '<figure data-type="media-single" data-width="400" data-width-type="pixel">\n\n' \
+            '<img src="_attachments/new%20%26%20image.png" width="800" height="600" alt="New" />\n\n' \
+            '<figcaption>\n\nCaption\n\n</figcaption>\n</figure>\n'
+        # HTML cells contain HTML caption paragraphs, not the blank-separated Markdown body used outside a table.
+        table_joined = '<table><tr><td><figure data-type="media-single" data-width="400" data-width-type="pixel">\n' \
+            '<img src="_attachments/new%20%26%20image.png" width="800" height="600" alt="New" />\n' \
+            '<figcaption>\n<p>Caption</p>\n</figcaption>\n</figure>\n</td></tr></table>\n'
+        markups = (figure, legacy, joined, '<table><tr><td>' + figure + '</td></tr></table>\n', table_joined)
+        for markup in markups:
             with self.subTest(markup=markup), temporary_workarea(root_page_id="100") as workarea:
                 self.site = FakeConfluence()
                 self.site.add_page("100", "Root")
@@ -194,6 +205,9 @@ class TestPagePushInTree(unittest.TestCase):
 
                 self._run(workarea, lambda: PagePushCommand().run("200"))
 
+                writes = [(request.method, request.path) for request in self.site.requests if request.method != "GET"]
+                self.assertEqual(
+                    writes, [("PUT", "/wiki/rest/api/content/200/child/attachment"), ("PUT", "/wiki/api/v2/pages/200")])
                 attachment = next(iter(self.site.attachments.values()))
                 self.assertEqual(attachment["filename"], "new & image.png")
                 self.assertEqual(attachment["body"], b"NEW IMAGE")

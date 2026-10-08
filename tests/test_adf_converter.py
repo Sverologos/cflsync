@@ -6,6 +6,7 @@
 
 """Tests for ADF to Markdown conversion."""
 
+from copy import deepcopy
 import json
 from typing import Any
 import unittest
@@ -388,6 +389,171 @@ class TestADFToMarkdownConverter(unittest.TestCase):
         block = pandoc.pandoc["blocks"][0]
         self.assertEqual(block["c"][0], ["", ["atlas_doc_format"], []])
         self.assertEqual(json.loads(block["c"][1]), paragraph)
+
+
+class TestTagBlockCompaction(unittest.TestCase):
+    """Only adjacent supported raw tag blocks merge, including already joined nested runs."""
+
+    def setUp(self) -> None:
+        self.pandoc = RecordingPandoc()
+        self.converter = ADFToMarkdownConverter(self.pandoc)
+
+    @staticmethod
+    def _raw(text, format="html"):
+        return {"t": "RawBlock", "c": [format, text]}
+
+    def test_merges_empty_singleton_and_long_runs_without_mutation(self) -> None:
+        tags = ['<details>', '<summary>A &amp; B&#10;C&#9;D</summary>', '</details>']
+        for count in (0, 1, 3):
+            blocks = [self._raw(tag) for tag in tags[:count]]
+            original = deepcopy(blocks)
+            expected = [self._raw("\n".join(tags[:count]))] if count else []
+            with self.subTest(count=count):
+                self.assertEqual(self.converter._merge_tag_blocks(blocks), expected)
+                self.assertEqual(blocks, original)
+
+    def test_merges_multiline_runs_idempotently_and_preserves_entities(self) -> None:
+        blocks = [
+            self._raw('<section data-type="layout-section">\n<div data-type="column" data-width="50">'),
+            self._raw('<details>\n<summary>A &amp; B&#10;C&#9;D</summary>'),
+            self._raw('</details>\n</div>\n</section>')]
+        expected = [
+            self._raw(
+                '<section data-type="layout-section">\n<div data-type="column" data-width="50">\n'
+                '<details>\n<summary>A &amp; B&#10;C&#9;D</summary>\n</details>\n</div>\n</section>')]
+        original = deepcopy(blocks)
+        merged = self.converter._merge_tag_blocks(blocks)
+        self.assertEqual(merged, expected)
+        self.assertEqual(self.converter._merge_tag_blocks(merged), expected)
+        self.assertEqual(blocks, original)
+
+    def test_ineligible_blocks_break_runs_and_stay_unchanged(self) -> None:
+        boundaries = [
+            {
+                "t": "Para",
+                "c": [{
+                    "t": "Str",
+                    "c": "x"}]}, {
+                        "t": "Para",
+                        "c": []}, {
+                            "t": "Plain",
+                            "c": []}, {
+                                "t": "Header",
+                                "c": [2, ["", [], []], []]}, {
+                                    "t": "CodeBlock",
+                                    "c": [["", ["html"], []], '</details>\n\n<summary>code</summary>']},
+            self._raw('<img src="a.png" />'),
+            self._raw('<!-- -->'),
+            self._raw('<div>text</div>'),
+            self._raw('<details>', "latex"),
+            self._raw('<details>\n\n</details>'),
+            self._raw('<details>\n'),
+            self._raw(' <details>'),
+            self._raw(''), {
+                "t": "RawBlock",
+                "c": []}, {
+                    "t": "RawBlock",
+                    "c": ["html", 42]}]
+        for boundary in boundaries:
+            blocks = [
+                self._raw('<details>'),
+                self._raw('<summary>T</summary>'), boundary,
+                self._raw('</details>'),
+                self._raw('</div>')]
+            original = deepcopy(blocks)
+            with self.subTest(boundary=boundary):
+                self.assertEqual(
+                    self.converter._merge_tag_blocks(blocks),
+                    [self._raw('<details>\n<summary>T</summary>'), boundary,
+                     self._raw('</details>\n</div>')])
+                self.assertEqual(blocks, original)
+
+    def test_converts_flattened_container_runs_before_writing(self) -> None:
+        paragraph = {"type": "paragraph", "content": [{"type": "text", "text": "x"}]}
+        para = {"t": "Para", "c": [{"t": "Str", "c": "x"}]}
+        cases = [
+            (
+                {
+                    "type": "layoutSection",
+                    "content": [{
+                        "type": "layoutColumn",
+                        "attrs": {
+                            "width": 100},
+                        "content": [paragraph]}]}, [
+                            self._raw('<section data-type="layout-section">\n<div data-type="column" data-width="100">'), para,
+                            self._raw('</div>\n</section>')]),
+            (
+                {
+                    "type": "expand",
+                    "attrs": {
+                        "title": "T"},
+                    "content": [paragraph]}, [self._raw('<details>\n<summary>T</summary>'), para,
+                                              self._raw('</details>')]),
+            (
+                {
+                    "type": "panel",
+                    "attrs": {
+                        "panelType": "custom"},
+                    "content": [{
+                        "type": "panel",
+                        "attrs": {
+                            "panelType": "tip"},
+                        "content": [paragraph]}]},
+                [self._raw('<div data-type="panel-custom">\n<div data-type="panel-tip">'), para,
+                 self._raw('</div>\n</div>')]),
+            (
+                {
+                    "type":
+                    "mediaSingle",
+                    "attrs": {
+                        "layout": "center"},
+                    "content": [
+                        {
+                            "type": "media",
+                            "attrs": {
+                                "type": "external",
+                                "url": "https://example.test/a.png",
+                                "width": 400,
+                                "height": 3}}, {
+                                    "type": "caption",
+                                    "content": [{
+                                        "type": "text",
+                                        "text": "x"}]}]},
+                [
+                    self._raw('<figure data-type="media-single">'),
+                    self._raw('<img src="https://example.test/a.png" width="400" height="3" alt="a.png" />'),
+                    self._raw('<figcaption>'), para,
+                    self._raw('</figcaption>\n</figure>')])]
+        for node, expected in cases:
+            with self.subTest(type=node["type"]):
+                self.converter.convert({"type": "doc", "version": 1, "content": [node]})
+                self.assertEqual(self.pandoc.pandoc["blocks"], expected)
+
+    def test_retains_empty_paragraph_and_separator_comment_barriers(self) -> None:
+        empty = {"type": "paragraph", "content": []}
+        panel = {"type": "panel", "attrs": {"panelType": "tip"}, "content": [empty]}
+        self.converter.convert({"type": "doc", "version": 1, "content": [panel]})
+        self.assertEqual(
+            self.pandoc.pandoc["blocks"], [self._raw('<div data-type="panel-tip">'), {
+                "t": "Para",
+                "c": []}, self._raw('</div>')])
+        item = {"type": "listItem", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "a"}]}]}
+        bullet = {"type": "bulletList", "content": [item]}
+        expand = {"type": "expand", "attrs": {"title": "T"}, "content": [bullet, empty, bullet]}
+        self.converter.convert({"type": "doc", "version": 1, "content": [expand]})
+        self.assertEqual(self.pandoc.pandoc["blocks"][3], self._raw('<!-- -->'))
+        self.assertEqual(self.pandoc.pandoc["blocks"][0], self._raw('<details>\n<summary>T</summary>'))
+
+    def test_reusing_converter_does_not_merge_across_documents(self) -> None:
+        paragraph = {"type": "paragraph", "content": [{"type": "text", "text": "x"}]}
+        first = {"type": "doc", "version": 1, "content": [{"type": "expand", "attrs": {"title": "T"}, "content": [paragraph]}]}
+        original = deepcopy(first)
+        self.converter.convert(first)
+        captured = deepcopy(self.pandoc.pandoc)
+        self.converter.convert({"type": "doc", "version": 1, "content": [paragraph]})
+        self.assertEqual(self.pandoc.pandoc["blocks"], [{"t": "Para", "c": [{"t": "Str", "c": "x"}]}])
+        self.assertEqual(first, original)
+        self.assertEqual(captured["blocks"][-1], self._raw('</details>'))
 
 
 class RecordingLinks:

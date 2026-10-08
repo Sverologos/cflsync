@@ -317,7 +317,37 @@ class ADFToMarkdownConverter:
             if block.get("t") != "Para" or block["c"]:
                 previous = block
 
-        return blocks
+        return self._merge_tag_blocks(blocks)
+
+    def _merge_tag_blocks(self, blocks):
+        """Join adjacent supported container tag blocks without changing Markdown or raw-image boundaries."""
+        merged: list[Mapping[str, object]] = []
+        pending: list[str] = []
+        for block in blocks:
+            if self._is_tag_block(block):
+                pending.append(block["c"][1])
+                continue
+
+            if pending:
+                merged.append({"t": "RawBlock", "c": ["html", "\n".join(pending)]})
+                pending.clear()
+
+            merged.append(block)
+
+        if pending:
+            merged.append({"t": "RawBlock", "c": ["html", "\n".join(pending)]})
+
+        return merged
+
+    @staticmethod
+    def _is_tag_block(block):
+        """Accept only raw HTML made entirely of supported tag lines, including already joined runs."""
+        value = block.get("c")
+        if (block.get("t") != "RawBlock" or not isinstance(value, list) or len(value) != 2 or value[0] != "html"
+                or not isinstance(value[1], str)):
+            return False
+
+        return all(_BlockTag.parse(line) is not None for line in value[1].split("\n"))
 
     @staticmethod
     def _continues(previous, block):

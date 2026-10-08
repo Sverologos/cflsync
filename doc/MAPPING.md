@@ -116,25 +116,32 @@ holds only an HTML comment, whatever its text, so Pandoc's own separators and
 hand-written comments are accepted; the comments are not pushed. A comment
 inside a paragraph is rejected like other raw inline HTML.
 
+Before rendering GFM, the ADF writer joins consecutive supported HTML
+container-tag `RawBlock`s into one multi-line raw block. This applies to
+layouts, panels, expands (including complete summaries), and figure caption
+closings, also inside list items, blockquotes, alert bodies, and table cells.
+The original tag text and order are retained. Markdown blocks, including
+empty paragraphs, raw `<img>` blocks, and separator comments break these runs;
+code and opaque fences are not altered. Pandoc keeps its spacing between
+these blocks, including the blank before a closing tag. Reverse conversion
+accepts both joined tag lines and the older individually spaced blocks.
+
 A layout section at the top level of the page is written in twg's HTML form,
 each tag on a line of its own and separated by blank lines from the column
 content, which stays Markdown:
 
 ```markdown
 <section data-type="layout-section" data-breakout="wide" data-breakout-width="1800">
-
 <div data-type="column" data-width="50">
 
 Column text
 
 </div>
-
 <div data-type="column" data-width="50">
 
 - item
 
 </div>
-
 </section>
 ```
 
@@ -196,7 +203,8 @@ Only the Pandoc alert `Div` shape emitted by GFM alert syntax is recognized as
 an alert panel on reverse conversion; ordinary blockquotes remain blockquotes.
 
 Expands use twg's `<details>` container with a plain-text `<summary>` title,
-written on separate tag lines with blank lines around the Markdown body.
+written on consecutive opening/summary lines with blank lines around the
+Markdown body. Adjacent closing container tags are also joined.
 `nestedExpand` adds `data-type="nested-expand"` to `<details>`. The title is
 HTML-escaped, including line breaks and tabs as numeric entities; Markdown
 delimiters in the title remain literal. Empty titles are allowed. Ordinary
@@ -381,9 +389,12 @@ fractional pixel dimensions.
 
 A second `caption` child becomes `<figcaption>` tag blocks around a Pandoc
 paragraph of ordinary inline content. Caption formatting follows the existing
-inline mapping; empty captions are retained. GFM reads these as raw tag blocks
-and an image paragraph or raw `<img>`; the HTML-table reader instead produces
-a native `Figure`, which is also handled on push. A temporary comment protects
+inline mapping; empty captions are retained. The closing `</figcaption>` and
+`</figure>` share a raw block on consecutive lines; raw `<img>` remains a
+separate block with blank lines on both sides in GFM's tag-line form.
+GFM reads these as raw tag blocks and an image paragraph or raw `<img>`; the
+HTML-table reader instead produces a native `Figure`, which is also handled
+on push. A temporary comment protects
 empty captions during HTML parsing. Exactly one image must precede at most
 one caption, containing a single paragraph of inline content. Unsupported
 figure or caption attributes, marks, and dimensions keep the whole image

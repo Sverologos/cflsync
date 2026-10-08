@@ -66,6 +66,14 @@ explicit colour span. Inline code cannot carry colours. GitHub strips inline
 styles when rendering, so colour is preserved for Confluence but may not show
 in Markdown previews.
 
+Pull writes adjacent HTML container tags on consecutive lines, keeping blank
+lines around Markdown body blocks. Both this compact form and older files
+with blank lines between tags are accepted on push. Existing files keep their
+spacing until a pull rewrites them, normally after a remote change or an
+explicit force pull. No workarea migration is needed; `pull --force` overwrites
+local edits. Adding or removing tag-spacing blank lines by hand can still
+mark a page as locally changed.
+
 Nest list items with indentation. Images or files in `_attachments/` are
 uploaded and maintained with the page. Links outside `_attachments/` remain
 ordinary links; external images are supported as external media.
@@ -98,7 +106,6 @@ Pull preserves extra settings in a figure, using twg's attribute names:
 An editable **caption** with [a link](https://example.test).
 
 </figcaption>
-
 </figure>
 ```
 
@@ -109,10 +116,12 @@ height preserve the separate intrinsic pixel dimensions. An image without
 intrinsic dimensions stays `![alt](path)` inside the figure.
 
 `data-layout` accepts `center` (the default), `wrap-left`, `wrap-right`,
-`wide`, `full-width`, `align-start`, and `align-end`. Keep blank lines between
-tags and Markdown content. The caption is one paragraph of ordinary inline
-content, including formatting, links, dates, mentions, statuses, and hard
-breaks; an empty `<figcaption>` preserves an empty caption. Images can use
+`wide`, `full-width`, `align-start`, and `align-end`. In this tag-line form,
+keep blank lines between tags and Markdown content and on both sides of a raw
+`<img>` line. Adjacent container tags, such as `</figcaption>` and `</figure>`,
+need no blank line between them; do not join `<img>` to those tag runs.
+The caption is one paragraph of ordinary inline content, including formatting,
+links, dates, mentions, statuses, and hard breaks; an empty `<figcaption>` preserves an empty caption. Images can use
 managed `_attachments/` paths or external URLs, including filenames without
 an image suffix. Figures also work inside lists, layouts, expands, and HTML
 table cells. Compact HTML figures are accepted on push, as is a caption on a
@@ -168,7 +177,8 @@ Panel text, with **formatting** and lists.
 ```
 
 Edit the text inside as any other Markdown, with the tags on lines of their own
-and a blank line before and after each, as for [layouts](#layouts).
+and blank lines around Markdown body blocks, as for [layouts](#layouts).
+Adjacent opening or closing container tags can be on consecutive lines.
 `data-type` is `panel-` followed by `info`, `note`, `tip`, `success`,
 `warning`, `error`, or `custom`. `data-color` sets the background colour,
 `data-icon` the emoji's short name, and `data-icon-id` and `data-icon-text` its
@@ -182,27 +192,26 @@ ordinary Markdown:
 
 ```markdown
 <section data-type="layout-section" data-breakout="wide" data-breakout-width="1800">
-
 <div data-type="column" data-width="66.66">
 
 Main text, with **formatting**, lists, tables, and images.
 
 </div>
-
 <div data-type="column" data-width="33.33">
 
 Sidebar text.
 
 </div>
-
 </section>
 ```
 
 Edit the text in the columns as any other Markdown. Keep each tag on a line of
-its own with a blank line before and after it; otherwise the next lines are
-read as HTML rather than Markdown. A column is a `<div data-type="column">`
-with its width in percent as `data-width`; add, remove, or reorder columns, or
-change their widths, to change the layout. `data-breakout` (`wide` or
+its own and retain blank lines around the Markdown column content; without a
+blank after an opening tag run, the body is read as HTML rather than Markdown.
+No blank is needed between adjacent container tag lines.
+A column is a `<div data-type="column">` with its width in percent as
+`data-width`; add, remove, or reorder columns, or change their widths, to change
+the layout. `data-breakout` (`wide` or
 `full-width`) and `data-breakout-width` set the width of the whole layout and
 may be left out. Layouts can only be placed at the top level of a page, not
 inside a list, quote, panel, or table, and cannot be nested. Content between
@@ -215,7 +224,6 @@ visible title; the remaining content is the body shown when expanded:
 
 ```markdown
 <details data-breakout="wide" data-breakout-width="1800">
-
 <summary>Additional details</summary>
 
 Text with **formatting**, lists, code, and tables.
@@ -223,9 +231,10 @@ Text with **formatting**, lists, code, and tables.
 </details>
 ```
 
-Keep the tags on separate lines and a blank line before and after each.
-The title is plain text, not Markdown; escape `&`, `<`, and `>` as `&amp;`,
-`&lt;`, and `&gt;`. Empty titles are allowed. An empty body becomes an empty
+Keep the tags on separate lines and blank lines around Markdown body blocks.
+The opening `<details>` and complete `<summary>` can be on consecutive lines,
+as can adjacent closing container tags. The title is plain text, not Markdown;
+escape `&`, `<`, and `>` as `&amp;`, `&lt;`, and `&gt;`. Empty titles are allowed. An empty body becomes an empty
 paragraph on push.
 
 A nested expand uses `<details data-type="nested-expand">`, with the same

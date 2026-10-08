@@ -6,6 +6,8 @@
 
 """Pull decisions and rollback against a recorded HTTP transport."""
 
+from contextlib import redirect_stdout
+from io import StringIO
 import json
 import os
 from pathlib import Path
@@ -13,7 +15,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from cflsync import APIClient, Profile, SyncError
+from cflsync import APIClient, PageChangeDetector, PageChangeStatus, PageState, PandocRunner, Profile, SyncError
 from cflsync.cli import PagePullCommand
 from tests.support import FakeConfluence, MockResponse, MockTransport, run_with_site, temporary_workarea
 from tests.test_api_operations import attachment_fixture, page_fixture, user_fixture
@@ -68,6 +70,61 @@ class TestPagePull(unittest.TestCase):
         return {
             str(path.relative_to(workarea.root_dir)): path.read_bytes() if path.is_file() else None
             for path in workarea.root_dir.rglob("*")}
+
+    def test_pull_compacts_tags_but_leaves_unchanged_legacy_files_alone(self) -> None:
+        compact = "# Example page\n\n<details>\n<summary>T</summary>\n\nx\n\n</details>\n"
+        legacy = "# Example page\n\n<details>\n\n<summary>T</summary>\n\nx\n\n</details>\n"
+        detector = PageChangeDetector(PandocRunner())
+        with temporary_workarea() as workarea, redirect_stdout(StringIO()):
+            page = self._page()
+            page["body"] = {
+                "atlas_doc_format": {
+                    "value":
+                    json.dumps(
+                        {
+                            "type":
+                            "doc",
+                            "version":
+                            1,
+                            "content": [
+                                {
+                                    "type": "expand",
+                                    "attrs": {
+                                        "title": "T"},
+                                    "content": [{
+                                        "type": "paragraph",
+                                        "content": [{
+                                            "type": "text",
+                                            "text": "x"}]}]}]})}}
+            directory = workarea.root_dir / "Example page_123456"
+            content = directory / "content.md"
+            cache = workarea.cache_path("123456")
+
+            self._pull(workarea, page, attachments=[])
+            self.assertEqual(content.read_text(encoding="utf-8"), compact)
+            state = PageState.load(cache)
+            self.assertEqual(state.page.content_hash, detector.content_hash(compact))
+            self.assertEqual(detector.local_status(directory, state), PageChangeStatus.UNCHANGED)
+            snapshot = self._snapshot(workarea)
+            self._pull(workarea, page, attachments=[])
+            self.assertEqual(self._snapshot(workarea), snapshot)
+
+            content.write_text(legacy, encoding="utf-8")
+            state.page.content_hash = detector.content_hash(legacy)
+            state.save(cache)
+            snapshot = self._snapshot(workarea)
+            self._pull(workarea, page, attachments=[])
+            self.assertEqual(self._snapshot(workarea), snapshot)
+            self.assertEqual(detector.local_status(directory, PageState.load(cache)), PageChangeStatus.UNCHANGED)
+
+            page["version"] = {"number": 18}
+            self._pull(workarea, page, attachments=[])
+            self.assertEqual(content.read_text(encoding="utf-8"), compact)
+            updated = PageState.load(cache)
+            self.assertEqual(updated.page.version, 18)
+            self.assertEqual(updated.page.content_hash, detector.content_hash(compact))
+            self.assertNotEqual(updated.page.content_hash, state.page.content_hash)
+            self.assertEqual(detector.local_status(directory, updated), PageChangeStatus.UNCHANGED)
 
     def test_pull_writes_a_mailto_link_for_a_mention_with_an_email_address(self) -> None:
         with temporary_workarea() as workarea:

@@ -1210,9 +1210,9 @@ class TestLayouts(unittest.TestCase):
 
         self.assertEqual(
             markdown, "before\n\n"
-            '<section data-type="layout-section" data-breakout="wide" data-breakout-width="1800">\n\n'
-            '<div data-type="column" data-width="49.99">\n\n- a\n- b\n\n</div>\n\n'
-            '<div data-type="column" data-width="50">\n\n- c\n\nd\n\n</div>\n\n</section>\n\nafter\n')
+            '<section data-type="layout-section" data-breakout="wide" data-breakout-width="1800">\n'
+            '<div data-type="column" data-width="49.99">\n\n- a\n- b\n\n</div>\n'
+            '<div data-type="column" data-width="50">\n\n- c\n\nd\n\n</div>\n</section>\n\nafter\n')
         self.assertEqual(self._adf(markdown), content)
 
     def test_round_trips_layouts_without_breakout_and_with_an_empty_column(self) -> None:
@@ -1233,6 +1233,17 @@ class TestLayouts(unittest.TestCase):
 
         self.assertEqual(
             self._adf(markdown), [_layout(_column(50.0, _paragraph(_text("x"))), _column(50.0, _paragraph(_text("y"))))])
+
+    def test_reads_legacy_and_joined_layout_tag_lines(self) -> None:
+        expected = [_layout(_column(50.0, _paragraph(_text("a"))), _column(50.0, _paragraph(_text("b"))))]
+        fixtures = (
+            '<section data-type="layout-section">\n\n<div data-type="column" data-width="50">\n\na\n\n</div>\n\n'
+            '<div data-type="column" data-width="50">\n\nb\n\n</div>\n\n</section>\n',
+            '<section data-type="layout-section">\n<div data-type="column" data-width="50">\n\na\n\n</div>\n'
+            '<div data-type="column" data-width="50">\n\nb\n\n</div>\n</section>\n')
+        for markdown in fixtures:
+            with self.subTest(markdown=markdown):
+                self.assertEqual(self._adf(markdown), expected)
 
     def test_keeps_a_layout_with_unsupported_attributes_opaque(self) -> None:
         layout = _layout(_column(100.0, _paragraph(_text("x"))))
@@ -1348,6 +1359,15 @@ class TestPanels(unittest.TestCase):
         markdown = '<div data-local-id="p" data-type="panel-custom" data-icon="&#x1F3AF;">\n\nx\n\n</div>\n'
 
         self.assertEqual(self._adf(markdown), [_panel("custom", _paragraph(_text("x")), panelIcon="🎯")])
+
+    def test_reads_legacy_and_joined_nested_panel_tags(self) -> None:
+        expected = [_panel("custom", _panel("tip", _paragraph(_text("x"))))]
+        fixtures = (
+            '<div data-type="panel-custom">\n\n<div data-type="panel-tip">\n\nx\n\n</div>\n\n</div>\n',
+            '<div data-type="panel-custom">\n<div data-type="panel-tip">\n\nx\n\n</div>\n</div>\n')
+        for markdown in fixtures:
+            with self.subTest(markdown=markdown):
+                self.assertEqual(self._adf(markdown), expected)
 
     def test_keeps_a_panel_with_unsupported_attributes_opaque(self) -> None:
         panel = _panel("custom", _paragraph(_text("x")), unknown="y")
@@ -1560,7 +1580,7 @@ class TestExpands(unittest.TestCase):
         markdown = self._markdown(content)
 
         self.assertEqual(
-            markdown, 'before\n\n<details data-breakout="wide" data-breakout-width="1800">\n\n'
+            markdown, 'before\n\n<details data-breakout="wide" data-breakout-width="1800">\n'
             '<summary> A &amp; &quot;&lt;b&gt;&quot; **literal** </summary>\n\n'
             '**bold**\n\n- a\n- b\n\n</details>\n\nafter\n')
         self.assertEqual(self._adf(markdown), content)
@@ -1623,6 +1643,41 @@ class TestExpands(unittest.TestCase):
         self.assertEqual(
             self._adf('<details><summary> a  &amp; b </summary><p>x</p></details>\n'),
             [_expand(" a  & b ", _paragraph(_text("x")))])
+
+    def test_reads_legacy_and_joined_expand_tags_in_nested_contexts(self) -> None:
+        expand = _expand("A & B", _paragraph(_text("x")))
+        fixtures = (
+            (
+                [expand], '<details>\n\n<summary>A &amp; B</summary>\n\nx\n\n</details>\n',
+                '<details>\n<summary>A &amp; B</summary>\n\nx\n\n</details>\n'), (
+                    [_expand("outer", _expand("I\nT", _paragraph(_text("x")), nested=True))
+                     ], '<details>\n\n<summary>outer</summary>\n\n<details data-type="nested-expand">\n\n'
+                    '<summary>I&#10;T</summary>\n\nx\n\n</details>\n\n</details>\n',
+                    '<details>\n<summary>outer</summary>\n<details data-type="nested-expand">\n'
+                    '<summary>I&#10;T</summary>\n\nx\n\n</details>\n</details>\n'), (
+                        [{
+                            "type": "bulletList",
+                            "content": [_list_item(_paragraph(_text("item")), expand)]}
+                         ], '- item\n\n  <details>\n\n  <summary>A &amp; B</summary>\n\n  x\n\n  </details>\n',
+                        '- item\n\n  <details>\n  <summary>A &amp; B</summary>\n\n  x\n\n  </details>\n'), (
+                            [{
+                                "type": "blockquote",
+                                "content": [expand]}], '> <details>\n>\n> <summary>A &amp; B</summary>\n>\n> x\n>\n> </details>\n',
+                            '> <details>\n> <summary>A &amp; B</summary>\n>\n> x\n>\n> </details>\n'))
+        for expected, legacy, compact in fixtures:
+            for markdown in (legacy, compact):
+                with self.subTest(markdown=markdown):
+                    self.assertEqual(self._adf(markdown), expected)
+
+    def test_retitle_preserves_legacy_and_joined_expand_tags(self) -> None:
+        fixtures = (
+            '<details>\n\n<summary>T</summary>\n\nx\n\n</details>\n', '<details>\n<summary>T</summary>\n\nx\n\n</details>\n')
+        reverse = MarkdownToADFConverter(self.pandoc)
+        for body in fixtures:
+            with self.subTest(body=body):
+                renamed = reverse.retitle("# Old\n\n" + body, "Old", "New")
+                self.assertEqual(renamed, "# New\n\n" + body)
+                self.assertEqual(reverse.convert(renamed, title="New")["content"], [_expand("T", _paragraph(_text("x")))])
 
     def test_reads_ordinary_details_in_a_cell_as_nested_expand(self) -> None:
         markdown = '<table><tr><td><details><summary>T</summary><p>x</p></details></td></tr></table>\n'
@@ -1692,6 +1747,127 @@ class TestExpands(unittest.TestCase):
             with self.subTest(case=name):
                 with self.assertRaisesRegex(ConversionError, message):
                     self._adf(markdown)
+
+
+class TestCompactContainerOutput(unittest.TestCase):
+    """Writer compaction applies recursively, without changing body spacing or literal code."""
+
+    def setUp(self) -> None:
+        self.pandoc = PandocRunner()
+
+    def _markdown(self, content, title=None):
+        return ADFToMarkdownConverter(self.pandoc).convert({"type": "doc", "version": 1, "content": content}, title=title)
+
+    def _adf(self, markdown):
+        return MarkdownToADFConverter(self.pandoc).convert(markdown)["content"]
+
+    def test_writes_joined_tags_with_list_and_quote_prefixes(self) -> None:
+        expand = _expand("T", _paragraph(_text("x")))
+        item = _list_item(_paragraph(_text("item")), expand)
+        cases = (
+            ([expand], '<details>\n<summary>T</summary>\n\nx\n\n</details>\n'),
+            ([{
+                "type": "bulletList",
+                "content": [item]}], '- item\n  <details>\n  <summary>T</summary>\n\n  x\n\n  </details>\n'), (
+                    [{
+                        "type": "orderedList",
+                        "attrs": {
+                            "order": 1},
+                        "content": [item]}], '1.  item\n    <details>\n    <summary>T</summary>\n\n    x\n\n    </details>\n'), (
+                            [
+                                {
+                                    "type": "bulletList",
+                                    "content": [_list_item(_paragraph(_text("outer")), {
+                                        "type": "bulletList",
+                                        "content": [item]})]}],
+                            '- outer\n  - item\n    <details>\n    <summary>T</summary>\n\n    x\n\n    </details>\n'),
+            ([{
+                "type": "blockquote",
+                "content": [expand]}], '> <details>\n> <summary>T</summary>\n>\n> x\n>\n> </details>\n'),
+            ([_panel("warning", expand)], '> [!WARNING]\n> <details>\n> <summary>T</summary>\n>\n> x\n>\n> </details>\n'))
+        for content, expected in cases:
+            with self.subTest(content=content):
+                markdown = self._markdown(content)
+                self.assertEqual(markdown, expected)
+                self.assertEqual(self._adf(markdown), content)
+
+    def test_merges_across_nested_and_sibling_container_boundaries(self) -> None:
+        nested = _panel("custom", _panel("tip", _paragraph(_text("x"))))
+        sibling = _panel("tip", _paragraph(_text("y")))
+        content = [nested, sibling]
+        markdown = self._markdown(content)
+        self.assertEqual(
+            markdown, '<div data-type="panel-custom">\n<div data-type="panel-tip">\n\nx\n\n'
+            '</div>\n</div>\n<div data-type="panel-tip">\n\ny\n\n</div>\n')
+        self.assertEqual(self._adf(markdown), content)
+
+    def test_merges_layout_tags_with_an_expand_body(self) -> None:
+        content = [_layout(_column(100.0, _expand("T", _paragraph(_text("x")))))]
+        markdown = self._markdown(content)
+        self.assertEqual(
+            markdown, '<section data-type="layout-section">\n<div data-type="column" data-width="100">\n'
+            '<details>\n<summary>T</summary>\n\nx\n\n</details>\n</div>\n</section>\n')
+        self.assertEqual(self._adf(markdown), content)
+
+    def test_preserves_nested_expand_summary_and_body_in_html_table_cells(self) -> None:
+        nested = _expand(" A\tB\n<&> ", _paragraph(_text("x")), nested=True)
+        content = [
+            {
+                "type": "table",
+                "content": [{
+                    "type": "tableRow",
+                    "content": [_cell("tableCell", [nested, _paragraph(_text("after"))])]}]}]
+        markdown = self._markdown(content)
+        self.assertEqual(
+            markdown, '<table>\n<tbody>\n<tr>\n<td><details data-type="nested-expand">\n'
+            '<summary> A&#9;B&#10;&lt;&amp;&gt; </summary>\n<p>x</p>\n</details>\n'
+            '<p>after</p></td>\n</tr>\n</tbody>\n</table>\n')
+        self.assertEqual(self._adf(markdown), content)
+
+    def test_distinguishes_no_blocks_from_an_empty_paragraph_barrier(self) -> None:
+        for content, expected in (([_panel("tip")], '<div data-type="panel-tip">\n</div>\n'),
+                                  ([_panel("tip", EMPTY_PARAGRAPH)], '<div data-type="panel-tip">\n\n</div>\n')):
+            with self.subTest(content=content):
+                markdown = self._markdown(content)
+                self.assertEqual(markdown, expected)
+                self.assertEqual(self._adf(markdown), [_panel("tip", EMPTY_PARAGRAPH)])
+
+    def test_keeps_non_tag_block_spacing_and_literal_code(self) -> None:
+        pipe = LIST_ITEM_SECOND_BLOCKS["pipe table"]
+        opaque = {"type": "extension", "attrs": {"extensionType": "macro", "extensionKey": "toc"}}
+        code = "</details>\n\n<summary>code</summary>"
+        cases = (
+            ([_paragraph(_text("a")), _paragraph(_text("b"))], 'a\n\nb'), (
+                [
+                    _paragraph(_text("a")), {
+                        "type": "heading",
+                        "attrs": {
+                            "level": 2},
+                        "content": [_text("H")]},
+                    _paragraph(_text("b"))], 'a\n\n## H\n\nb'),
+            ([_paragraph(_text("a")), {
+                "type": "rule"}, _paragraph(_text("b"))],
+             'a\n\n' + '-' * 72 + '\n\nb'), ([_bullet_list("a", "b"), _paragraph(_text("after"))], '- a\n- b\n\nafter'),
+            ([_code_block(code, "html")], '``` html\n</details>\n\n<summary>code</summary>\n```'),
+            ([{
+                "type": "codeBlock",
+                "content": [_text(code)]}], '    </details>\n\n    <summary>code</summary>'), ([pipe], '| h   |\n|-----|\n| c   |'),
+            ([opaque], '``` atlas_doc_format\n{"attrs":{"extensionKey":"toc","extensionType":"macro"},"type":"extension"}\n```'))
+        for body, expected in cases:
+            content = [_expand("T", *body)]
+            with self.subTest(body=body):
+                markdown = self._markdown(content)
+                self.assertEqual(markdown, '<details>\n<summary>T</summary>\n\n' + expected + '\n\n</details>\n')
+                self.assertEqual(self._adf(markdown), content)
+
+    def test_retitle_preserves_generated_nested_tag_runs(self) -> None:
+        content = [_layout(_column(100.0, _expand("T", _paragraph(_text("x"))), _panel("tip", _paragraph(_text("y")))))]
+        markdown = self._markdown(content, title="Old")
+        self.assertIn('</details>\n<div data-type="panel-tip">', markdown)
+        reverse = MarkdownToADFConverter(self.pandoc)
+        renamed = reverse.retitle(markdown, "Old", "New")
+        self.assertEqual(renamed, '# New\n\n' + markdown[len('# Old\n\n'):])
+        self.assertEqual(reverse.convert(renamed, title="New")["content"], content)
 
 
 class TestImageFigures(unittest.TestCase):
@@ -1805,11 +1981,10 @@ class TestImageFigures(unittest.TestCase):
 
     def test_reads_single_line_figcaption_as_html(self) -> None:
         start = '<figure data-type="media-single">\n\n![a](_attachments/f.png)\n\n'
-        for caption, end, content in (
-                ('<figcaption>caption</figcaption>', '\n\n</figure>\n', [_text("caption")]),
-                ('<figcaption data-local-id="c"><strong>caption</strong></figcaption>', '\n</figure>\n',
-                 [_text("caption", {"type": "strong"})]),
-                ('<figcaption>**caption**</figcaption>', '\n\n</figure>\n', [_text("**caption**")])):
+        for caption, end, content in (('<figcaption>caption</figcaption>', '\n\n</figure>\n', [_text("caption")]),
+                                      ('<figcaption data-local-id="c"><strong>caption</strong></figcaption>', '\n</figure>\n',
+                                       [_text("caption", {"type": "strong"})]), ('<figcaption>**caption**</figcaption>',
+                                                                                 '\n\n</figure>\n', [_text("**caption**")])):
             with self.subTest(caption=caption):
                 self.assertEqual(self._adf(start + caption + end)[0]["content"][1]["content"], content)
         for caption in ('<figcaption class="x">x</figcaption>', '<figcaption>a</figcaption><figcaption>b</figcaption>',
@@ -1831,6 +2006,44 @@ class TestImageFigures(unittest.TestCase):
         self.assertEqual(
             self._adf('<table><tr><td>' + edited.replace('\n\n', '\n') +
                       '</td></tr></table>')[0]["content"][0]["content"][0]["content"], [changed])
+
+    def test_writes_joined_caption_closings_and_keeps_raw_image_boundaries(self) -> None:
+        figure = self._figure(dimensions={"width": 400, "height": 3}, caption=[_text("Cap")], external=True)
+        markdown = self._markdown([figure])
+        self.assertEqual(
+            markdown, '<figure data-type="media-single">\n\n'
+            '<img src="https://example.test/f.png" width="400" height="3" alt="a &amp; &quot;b&quot;" />\n\n'
+            '<figcaption>\n\nCap\n\n</figcaption>\n</figure>\n')
+        self.assertEqual(len(markdown.splitlines()), 10)
+        self.assertEqual(self._adf(markdown), [figure])
+
+    def test_reads_and_retitles_legacy_and_joined_caption_closings(self) -> None:
+        opening = '<figure data-type="media-single">\n\n' \
+            '<img src="https://example.test/f.png" width="400" height="3" alt="a &amp; &quot;b&quot;" />\n\n' \
+            '<figcaption>\n\nCap\n\n'
+        expected = [self._figure(dimensions={"width": 400, "height": 3}, caption=[_text("Cap")], external=True)]
+        reverse = MarkdownToADFConverter(self.pandoc, self.media, "contentId-1")
+        for closing in ('</figcaption>\n\n</figure>\n', '</figcaption>\n</figure>\n'):
+            body = opening + closing
+            with self.subTest(closing=closing):
+                self.assertEqual(self._adf(body), expected)
+                renamed = reverse.retitle("# Old\n\n" + body, "Old", "New")
+                self.assertEqual(renamed, "# New\n\n" + body)
+                self.assertEqual(reverse.convert(renamed, title="New")["content"], expected)
+
+    def test_keeps_blank_lines_around_a_captionless_raw_image(self) -> None:
+        figure = self._figure({"width": 400, "widthType": "pixel"}, {"width": 800})
+        expected = '<figure data-type="media-single" data-width="400" data-width-type="pixel">\n\n' \
+            '<img src="_attachments/f.png" width="800" alt="a &amp; &quot;b&quot;" />\n\n</figure>\n'
+        self.assertEqual(self._markdown([figure]), expected)
+        self.assertEqual(self._adf(expected), [figure])
+        with self.assertRaisesRegex(ConversionError, "figure is not closed"):
+            self._adf('<figure data-type="media-single">\n\n<img src="_attachments/f.png" width="800" />\n</figure>\n')
+
+    def test_reads_legacy_figures_with_equal_display_and_native_widths(self) -> None:
+        markdown = '<figure data-type="media-single" data-width="400" data-width-type="pixel">\n\n' \
+            '<img src="_attachments/f.png" width="400" alt="a &amp; &quot;b&quot;" />\n\n</figure>\n'
+        self.assertEqual(self._adf(markdown), [self._figure({"width": 400, "widthType": "pixel"}, {"width": 400})])
 
     def test_unsupported_figures_stay_opaque_and_old_fences_still_read(self) -> None:
         cases = [

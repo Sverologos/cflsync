@@ -187,9 +187,17 @@ Pandoc provides the GFM reader and writer. The Python implementation exposes
 AST internally. The current Markdown dialect is GFM. The converters have no
 cache, remote-page, or workspace state.
 
-On pull, the ADF body becomes canonical GFM for `content.md`. On push, `content.md`
-becomes ADF for the versioned API update. The synchronization operations own
-cache state, staging, attachment resolution, and concurrent-edit handling.
+On pull, the ADF body becomes GFM for `content.md`, with adjacent supported
+HTML container tag blocks joined in the ADF writer's AST before Pandoc renders
+it. Pandoc retains its normal spacing around Markdown blocks and raw images.
+This writer-local grouping is not applied in `PandocRunner`: change detection
+still hashes a pure GFM → Pandoc → GFM round trip, so existing file hashes are
+unaffected. Retitle preserves existing joined raw tag blocks without compacting
+legacy separated ones. Both forms remain readable, require no workarea format
+bump, and existing files are only compacted when a pull rewrites them.
+On push, `content.md` becomes ADF for the versioned API update. The
+synchronization operations own cache state, staging, attachment resolution,
+and concurrent-edit handling.
 Change detection is a separate concern: `PageChangeDetector` compares local
 files, cached state, and remote metadata, and pull, status, and push interpret
 its results through the decision tables in `SPEC.md`.

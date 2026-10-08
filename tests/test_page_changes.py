@@ -15,6 +15,11 @@ from tests.support import temporary_workarea
 
 MARKDOWN = "# Example page\n\nExample\n"
 ATTACHMENT = b"PNG"
+# Pure Pandoc canonical forms and SHA-256 values captured before writer tag compaction.
+LEGACY_EXPAND = "# Example page\n\n<details>\n\n<summary>T</summary>\n\nx\n\n</details>\n"
+COMPACT_EXPAND = "# Example page\n\n<details>\n<summary>T</summary>\n\nx\n\n</details>\n"
+LEGACY_EXPAND_HASH = "60f6beaa4d71901fd68518800ef791ca63e72ef456c84286bf7a6f39a9e783ff"
+COMPACT_EXPAND_HASH = "852287e77fc69890b9e7bc1e14cefde6e0f5a80d1b095f74fe4634638106f32b"
 
 
 def remote_page(version=17, title="Example page"):
@@ -42,6 +47,34 @@ class TestPageChangeDetector(unittest.TestCase):
         (directory / "_attachments/diagram.png").write_bytes(ATTACHMENT)
 
         return directory, state
+
+    def test_keeps_fixed_hashes_for_legacy_and_compact_tag_spacing(self) -> None:
+        pandoc = PandocRunner()
+        for markdown, expected_hash in ((LEGACY_EXPAND, LEGACY_EXPAND_HASH), (COMPACT_EXPAND, COMPACT_EXPAND_HASH)):
+            with self.subTest(markdown=markdown):
+                self.assertEqual(pandoc.pandoc_to_gfm(pandoc.gfm_to_pandoc(markdown)), markdown)
+                self.assertEqual(self.inspector.content_hash(markdown), expected_hash)
+
+        self.assertNotEqual(LEGACY_EXPAND_HASH, COMPACT_EXPAND_HASH)
+
+    def test_legacy_and_compact_files_are_unchanged_against_their_own_cache(self) -> None:
+        for markdown, expected_hash in ((LEGACY_EXPAND, LEGACY_EXPAND_HASH), (COMPACT_EXPAND, COMPACT_EXPAND_HASH)):
+            with self.subTest(markdown=markdown), temporary_workarea() as workarea:
+                directory, state = self._page(workarea)
+                (directory / "content.md").write_text(markdown, encoding="utf-8")
+                state.page.content_hash = expected_hash
+                state.save(workarea.cache_path("123456"))
+                cached = PageState.load(workarea.cache_path("123456"))
+                self.assertEqual(self.inspector.local_status(directory, cached), PageChangeStatus.UNCHANGED)
+
+    def test_manual_tag_spacing_edit_is_a_local_change(self) -> None:
+        with temporary_workarea() as workarea:
+            directory, state = self._page(workarea)
+            state.page.content_hash = LEGACY_EXPAND_HASH
+            (directory / "content.md").write_text(LEGACY_EXPAND, encoding="utf-8")
+            self.assertEqual(self.inspector.local_status(directory, state), PageChangeStatus.UNCHANGED)
+            (directory / "content.md").write_text(COMPACT_EXPAND, encoding="utf-8")
+            self.assertEqual(self.inspector.local_status(directory, state), PageChangeStatus.CHANGED)
 
     def test_ignores_a_remote_duplicate_of_a_managed_attachment(self) -> None:
         duplicate = remote_attachment(attachment_id="att111111", version=1)
