@@ -749,14 +749,6 @@ class ADFToMarkdownConverter:
                     return self._convert_opaque(node)
                 dimensions.append([name, str(dimension)])
         image: dict = {"t": "Para", "c": [inline]}
-        if dimensions:
-            # Pandoc's GFM writer rounds fractional pixel dimensions. Write the img directly to retain them.
-            url = inline["c"][2][0]
-            alt = self._media_label(url, media_attrs.get("alt"))
-            sizes = " ".join(f'{name}="{value}"' for name, value in dimensions)
-            image = {
-                "t": "RawBlock",
-                "c": ["html", f'<img src="{escape(url, quote=True)}" {sizes} alt="{escape(alt, quote=True)}" />']}
         caption = None
         if len(content) == 2:
             child = content[1]
@@ -770,10 +762,24 @@ class ADFToMarkdownConverter:
             if caption is None:
                 return self._convert_opaque(node)
 
-        if caption is None and not dimensions and attrs == {"layout": "center"}:
+        has_caption = caption is not None  # An empty caption still requires a figure.
+        non_center = attrs["layout"] != "center"
+        different_width = False
+        if "width" in attrs:
+            different_width = (
+                attrs.get("widthType") != "pixel" or "width" not in media_attrs or attrs["width"] != media_attrs["width"])
+
+        if not (has_caption or non_center or different_width):
+            # Markdown images intentionally omit geometry; attachment sizes are restored by Confluence from the file.
             return image
-        if caption is None and not dimensions and attrs == {"layout": "center", "widthType": "percentage"}:
-            return image
+
+        # A figure always contains a raw img, preserving fractional dimensions without Pandoc's rounding.
+        url = inline["c"][2][0]
+        alt = self._media_label(url, media_attrs.get("alt"))
+        image_attrs = [f'src="{escape(url, quote=True)}"']
+        image_attrs.extend(f'{name}="{value}"' for name, value in dimensions)
+        image_attrs.append(f'alt="{escape(alt, quote=True)}"')
+        image = {"t": "RawBlock", "c": ["html", f"<img {' '.join(image_attrs)} />"]}
 
         tag = ['data-type="media-single"']
         for key, name in (("layout", "data-layout"), ("width", "data-width"), ("widthType", "data-width-type")):

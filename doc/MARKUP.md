@@ -93,8 +93,22 @@ unchanged.
 
 ## Images
 
-An image without size, layout, or caption settings uses ordinary Markdown.
-Pull preserves extra settings in a figure, using twg's attribute names:
+Pull writes a block image as ordinary Markdown unless at least one condition
+requires an HTML figure:
+
+- Its layout differs from `center`.
+- It has a caption, including an empty caption.
+- Its display width is a percentage (also when the width type is omitted),
+  or is a pixel width different from its native ADF width or without a known
+  native width.
+
+Equal pixel widths are compared numerically, including fractional values and
+`400` versus `400.0`. Native dimensions mean the media node's dimensions in
+ADF, not the attachment file's pixel size. Native width/height alone, a height
+without width, or a width type without a display width do not require a figure.
+The rule is the same for attachments and external URLs.
+
+A figure retains extra settings using twg's attribute names:
 
 ```markdown
 <figure data-type="media-single" data-layout="wrap-right" data-width="400" data-width-type="pixel">
@@ -112,8 +126,9 @@ An editable **caption** with [a link](https://example.test).
 `data-width` controls the displayed width; `data-width-type` is `pixel` or
 `percentage`, defaulting to percentage when omitted. Widths must be positive
 finite numbers, and percentages cannot exceed 100. The `<img>` width and
-height preserve the separate intrinsic pixel dimensions. An image without
-intrinsic dimensions stays `![alt](path)` inside the figure.
+height preserve the separate intrinsic pixel dimensions when present.
+Every generated figure contains an HTML `<img>`, even without intrinsic
+dimensions. Older figures containing `![alt](path)` remain accepted on push.
 
 `data-layout` accepts `center` (the default), `wrap-left`, `wrap-right`,
 `wide`, `full-width`, `align-start`, and `align-end`. In this tag-line form,
@@ -121,14 +136,25 @@ keep blank lines between tags and Markdown content and on both sides of a raw
 `<img>` line. Adjacent container tags, such as `</figcaption>` and `</figure>`,
 need no blank line between them; do not join `<img>` to those tag runs.
 The caption is one paragraph of ordinary inline content, including formatting,
-links, dates, mentions, statuses, and hard breaks; an empty `<figcaption>` preserves an empty caption. Images can use
-managed `_attachments/` paths or external URLs, including filenames without
-an image suffix. Figures also work inside lists, layouts, expands, and HTML
+links, dates, mentions, statuses, and hard breaks; an empty `<figcaption>`
+preserves an empty caption. Images can use managed `_attachments/` paths or
+external URLs, including filenames without an image suffix. Figures also work inside lists, layouts, expands, and HTML
 table cells. Compact HTML figures are accepted on push, as is a caption on a
 single line, `<figcaption>Caption text.</figcaption>`; its content is then HTML
 (`<strong>`), not Markdown, as in any one-line HTML block.
 New local files referenced by `<img>` become managed attachments on push,
-including images in HTML table cells.
+including images in HTML table cells. Pandoc may also render an otherwise plain
+Markdown image as `<img>` inside an HTML table; this does not retain geometry.
+
+Ordinary Markdown images omit native width/height and display width/type.
+Push sends centered media without dimensions. Confluence restores attachment
+sizes from the file, so an image whose native ADF size differs from its file
+size can change displayed size on push. External images receive no restored
+dimensions. This geometry loss is accepted in exchange for simpler Markdown;
+retained HTML figures keep their geometry. Existing figures are not rewritten
+merely by upgrading: an ordinary pull rewrites remotely changed pages, and
+force pull rewrites even unchanged pages, overwriting local edits. Both image
+forms remain readable and no workarea format bump or migration is required.
 
 Figures with unsupported attributes, marks, dimensions, or caption content
 remain opaque on pull; old opaque image fences still restore their original
@@ -350,5 +376,6 @@ Markdown authoring format.
 ## Round-trip limitations
 
 Some content is converted but loses presentation detail: image borders,
-inline image dimensions, and advanced table formatting. Check the remote
-page after pushing changes to pages that use these features.
+inline image dimensions, geometry of images simplified to ordinary Markdown
+(see [Images](#images)), and advanced table formatting. Check the remote page
+after pushing changes to pages that use these features.

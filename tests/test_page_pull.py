@@ -126,6 +126,71 @@ class TestPagePull(unittest.TestCase):
             self.assertNotEqual(updated.page.content_hash, state.page.content_hash)
             self.assertEqual(detector.local_status(directory, updated), PageChangeStatus.UNCHANGED)
 
+    def test_pull_simplifies_equal_width_images_without_rewriting_unchanged_legacy_figures(self) -> None:
+        plain = '# Example page\n\n![Diagram](_attachments/diagram.png)\n'
+        legacy = '# Example page\n\n<figure data-type="media-single" data-width="400" data-width-type="pixel">\n\n' \
+            '<img src="_attachments/diagram.png" width="400" height="300" alt="Diagram" />\n\n</figure>\n'
+        detector = PageChangeDetector(PandocRunner())
+        with temporary_workarea() as workarea, redirect_stdout(StringIO()):
+            page = self._page()
+            attachment = attachment_fixture()
+            document = {
+                "type":
+                "doc",
+                "version":
+                1,
+                "content": [
+                    {
+                        "type":
+                        "mediaSingle",
+                        "attrs": {
+                            "layout": "center",
+                            "width": 400,
+                            "widthType": "pixel"},
+                        "content": [
+                            {
+                                "type": "media",
+                                "attrs": {
+                                    "type": "file",
+                                    "id": attachment["fileId"],
+                                    "collection": "contentId-123456",
+                                    "alt": "Diagram",
+                                    "width": 400,
+                                    "height": 300}}]}]}
+            page["body"] = {"atlas_doc_format": {"value": json.dumps(document)}}
+            directory = workarea.root_dir / "Example page_123456"
+            content = directory / "content.md"
+            cache = workarea.cache_path("123456")
+
+            self._pull(workarea, page, attachments=[attachment])
+            self.assertEqual(content.read_text(encoding="utf-8"), plain)
+            self.assertEqual((directory / "_attachments" / "diagram.png").read_bytes(), b"PNG")
+            state = PageState.load(cache)
+            self.assertIn("diagram.png", state.attachments)
+            self.assertEqual(state.page.content_hash, detector.content_hash(plain))
+            self.assertEqual(detector.local_status(directory, state), PageChangeStatus.UNCHANGED)
+            snapshot = self._snapshot(workarea)
+            self._pull(workarea, page, attachments=[attachment], downloads=[])
+            self.assertEqual(self._snapshot(workarea), snapshot)
+
+            content.write_text(legacy, encoding="utf-8")
+            state.page.content_hash = detector.content_hash(legacy)
+            state.save(cache)
+            snapshot = self._snapshot(workarea)
+            self._pull(workarea, page, attachments=[attachment], downloads=[])
+            self.assertEqual(self._snapshot(workarea), snapshot)
+            self.assertEqual(detector.local_status(directory, PageState.load(cache)), PageChangeStatus.UNCHANGED)
+
+            page["version"] = {"number": 18}
+            self._pull(workarea, page, attachments=[attachment])
+            self.assertEqual(content.read_text(encoding="utf-8"), plain)
+            updated = PageState.load(cache)
+            self.assertEqual(updated.page.version, 18)
+            self.assertEqual(updated.page.content_hash, detector.content_hash(plain))
+            self.assertNotEqual(updated.page.content_hash, state.page.content_hash)
+            self.assertEqual(updated.attachments, state.attachments)
+            self.assertEqual(detector.local_status(directory, updated), PageChangeStatus.UNCHANGED)
+
     def test_pull_writes_a_mailto_link_for_a_mention_with_an_email_address(self) -> None:
         with temporary_workarea() as workarea:
             page = self._page()

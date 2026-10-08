@@ -228,6 +228,59 @@ class TestPagePushInTree(unittest.TestCase):
                 state = PageState.load(workarea.cache_path("200"))
                 self.assertIn("new & image.png", state.attachments)
 
+    def test_push_uploads_new_images_before_sending_normalized_or_retained_geometry(self) -> None:
+        cases = (
+            ('![New](_attachments/new%20%26%20image.png)\n', {
+                "layout": "center"}, {}), (
+                    '<figure data-type="media-single" data-width="400" data-width-type="pixel">\n\n'
+                    '<img src="_attachments/new%20%26%20image.png" width="800.25" height="600.75" alt="New" />\n\n</figure>\n', {
+                        "layout": "center",
+                        "width": 400,
+                        "widthType": "pixel"}, {
+                            "width": 800.25,
+                            "height": 600.75}))
+        for markup, display, dimensions in cases:
+            with self.subTest(markup=markup), temporary_workarea(root_page_id="100") as workarea:
+                self.site = FakeConfluence()
+                self.site.add_page("100", "Root")
+                self.site.add_page("200", "Child", parent_id="100")
+                self._pull(workarea)
+                directory = workarea.root_dir / "Root_100" / "Child_200"
+                (directory / "_attachments" / "new & image.png").write_bytes(b"NEW IMAGE")
+                (directory / "content.md").write_text('# Child\n\n' + markup, encoding="utf-8")
+
+                self._run(workarea, lambda: PagePushCommand().run("200"))
+
+                writes = [request for request in self.site.requests if request.method != "GET"]
+                self.assertEqual(
+                    [(request.method, request.path) for request in writes], [
+                        ("PUT", "/wiki/rest/api/content/200/child/attachment"), ("PUT", "/wiki/api/v2/pages/200")])
+                attachment = next(iter(self.site.attachments.values()))
+                self.assertEqual(attachment["filename"], "new & image.png")
+                self.assertEqual(attachment["body"], b"NEW IMAGE")
+                # Inspect the outgoing API payload, not simulated dimension restoration by Confluence.
+                payload = json.loads(writes[-1].body or b"")
+                self.assertEqual(payload["body"]["representation"], "atlas_doc_format")
+                document = json.loads(payload["body"]["value"])
+                self.assertEqual(
+                    document["content"], [
+                        {
+                            "type":
+                            "mediaSingle",
+                            "attrs":
+                            display,
+                            "content": [
+                                {
+                                    "type": "media",
+                                    "attrs": {
+                                        "type": "file",
+                                        "id": attachment["file_id"],
+                                        "collection": "contentId-200",
+                                        "alt": "New",
+                                        **dimensions}}]}])
+                state = PageState.load(workarea.cache_path("200"))
+                self.assertIn("new & image.png", state.attachments)
+
     def test_refuses_to_push_over_a_remote_rename_even_with_force(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:
             self._pull(workarea)

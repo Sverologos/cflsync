@@ -1871,7 +1871,7 @@ class TestCompactContainerOutput(unittest.TestCase):
 
 
 class TestImageFigures(unittest.TestCase):
-    """Image figures preserve display geometry, intrinsic dimensions and editable captions."""
+    """Only images requiring figures preserve geometry; plain Markdown images intentionally omit it."""
 
     def setUp(self) -> None:
         self.pandoc = PandocRunner()
@@ -1905,16 +1905,132 @@ class TestImageFigures(unittest.TestCase):
 
     def test_round_trips_all_layouts_and_width_units(self) -> None:
         for layout in ("center", "wrap-left", "wrap-right", "wide", "full-width", "align-start", "align-end"):
-            for width_type, width in (("percentage", 80.5), ("pixel", 640.5), (None, 75)):
+            for width_type, width in (("percentage", 80.5), ("pixel", 640.5), ("pixel", 1024), (None, 75)):
                 attrs = {"layout": layout, "width": width}
                 if width_type:
                     attrs["widthType"] = width_type
                 figure = self._figure(attrs, {"width": 1024, "height": 768.5})
-                with self.subTest(layout=layout, unit=width_type):
+                with self.subTest(layout=layout, unit=width_type, width=width):
                     markdown = self._markdown([figure])
-                    self.assertIn('<figure data-type="media-single"', markdown)
-                    self.assertIn('width="1024" height="768.5"', markdown)
+                    if layout == "center" and width_type == "pixel" and width == 1024:
+                        self.assertEqual(markdown, '![a & "b"](_attachments/f.png)\n')
+                        self.assertEqual(self._adf(markdown), [self._figure()])
+                    else:
+                        self.assertIn('<figure data-type="media-single"', markdown)
+                        self.assertIn('width="1024" height="768.5"', markdown)
+                        self.assertEqual(self._adf(markdown), [figure])
+
+    def test_selects_image_form_by_display_width_not_intrinsic_dimensions(self) -> None:
+        cases = (
+            ("no dimensions", {}, {}, False), ("native dimensions only", {}, {
+                "width": 400,
+                "height": 300}, False), ("native height only", {}, {
+                    "height": 300}, False), ("pixel type without width", {
+                        "widthType": "pixel"}, {
+                            "width":
+                            400}, False), ("percentage type without width", {
+                                "widthType": "percentage"}, {
+                                    "width": 400}, False), ("width type without dimensions", {
+                                        "widthType": "pixel"}, {}, False),
+            ("equal integer widths", {
+                "width": 400,
+                "widthType": "pixel"}, {
+                    "width": 400,
+                    "height":
+                    300}, False), ("equal float native width", {
+                        "width": 400,
+                        "widthType": "pixel"}, {
+                            "width": 400.0}, False),
+            ("equal float display width", {
+                "width": 400.0,
+                "widthType": "pixel"}, {
+                    "width":
+                    400}, False), ("equal fractional widths", {
+                        "width": 400.5,
+                        "widthType": "pixel"}, {
+                            "width": 400.5}, False),
+            ("unequal fractional widths", {
+                "width": 400.5000001,
+                "widthType": "pixel"}, {
+                    "width": 400.5}, True), ("smaller width", {
+                        "width": 200,
+                        "widthType": "pixel"}, {
+                            "width": 400}, True), ("larger width", {
+                                "width": 800,
+                                "widthType": "pixel"}, {
+                                    "width": 400}, True), ("unknown native width", {
+                                        "width": 400,
+                                        "widthType": "pixel"}, {}, True),
+            ("height is not native width", {
+                "width": 400,
+                "widthType": "pixel"}, {
+                    "height":
+                    300}, True), ("percentage is not pixels", {
+                        "width": 80.5,
+                        "widthType": "percentage"}, {
+                            "width": 80.5}, True), ("implicit percentage", {
+                                "width": 80}, {
+                                    "width": 80}, True))
+        for external in (False, True):
+            target = 'https://example.test/f.png' if external else '_attachments/f.png'
+            for name, attrs, dimensions, html in cases:
+                with self.subTest(case=name, external=external):
+                    figure = self._figure(attrs, dimensions, external=external)
+                    markdown = self._markdown([figure])
+                    if html:
+                        self.assertIn('<figure data-type="media-single"', markdown)
+                        self.assertIn('<img src="' + target + '"', markdown)
+                        self.assertNotIn('![', markdown)
+                        self.assertEqual(self._adf(markdown), [figure])
+                    else:
+                        self.assertEqual(markdown, '![a & "b"](' + target + ')\n')
+                        self.assertEqual(self._adf(markdown), [self._figure(external=external)])
+
+    def test_layout_and_caption_require_raw_images_even_without_dimensions(self) -> None:
+        cases: list[tuple[str, list[dict[str, object]] | None]] = [
+            (layout, None) for layout in ("wrap-left", "wrap-right", "wide", "full-width", "align-start", "align-end")]
+        cases.extend((("center", []), ("center", [_text("Cap")])))
+        for external in (False, True):
+            target = 'https://example.test/f.png' if external else '_attachments/f.png'
+            for layout, caption in cases:
+                with self.subTest(layout=layout, caption=caption, external=external):
+                    figure = self._figure({"layout": layout}, caption=caption, external=external)
+                    opening = '<figure data-type="media-single"' + (
+                        f' data-layout="{layout}"' if layout != "center" else '') + '>\n\n'
+                    expected = opening + f'<img src="{target}" alt="a &amp; &quot;b&quot;" />\n\n'
+                    if caption is None:
+                        expected += '</figure>\n'
+                    else:
+                        body = 'Cap\n\n' if caption else ''
+                        expected += '<figcaption>\n\n' + body + '</figcaption>\n</figure>\n'
+
+                    markdown = self._markdown([figure])
+                    self.assertEqual(markdown, expected)
                     self.assertEqual(self._adf(markdown), [figure])
+
+    def test_retains_escaped_urls_and_fractional_native_geometry_in_figures(self) -> None:
+        figure = self._figure({"width": 400.5, "widthType": "pixel"}, {"width": 800.25, "height": 600.75}, external=True)
+        figure["content"][0]["attrs"]["url"] = 'https://example.test/f.png?a=1&b=2'
+        markdown = self._markdown([figure])
+        self.assertEqual(
+            markdown, '<figure data-type="media-single" data-width="400.5" data-width-type="pixel">\n\n'
+            '<img src="https://example.test/f.png?a=1&amp;b=2" width="800.25" height="600.75" '
+            'alt="a &amp; &quot;b&quot;" />\n\n</figure>\n')
+        self.assertEqual(self._adf(markdown), [figure])
+
+    def test_simplifies_extensionless_block_images(self) -> None:
+        for external in (False, True):
+            figure = self._figure({"width": 400, "widthType": "pixel"}, {"width": 400}, external=external)
+            expected = self._figure(external=external)
+            key = "url" if external else "id"
+            value = "https://example.test/no-suffix" if external else "file-2"
+            figure["content"][0]["attrs"][key] = value
+            expected["content"][0]["attrs"][key] = value
+            target = value if external else "_attachments/no-suffix"
+            with self.subTest(external=external):
+                markdown = self._markdown([figure])
+                self.assertEqual(markdown, '![a & "b"](' + target + ')\n')
+                self.assertEqual(self._adf(markdown), [expected])
 
     def test_caption_is_editable_markdown_with_inline_formatting(self) -> None:
         caption = [
@@ -1965,6 +2081,77 @@ class TestImageFigures(unittest.TestCase):
             for content in cases:
                 with self.subTest(caption=caption, container=content[0]["type"]):
                     self.assertEqual(self._adf(self._markdown(content)), content)
+
+    def test_plain_and_retained_images_round_trip_in_all_block_contexts(self) -> None:
+        simplified = self._figure({"width": 400, "widthType": "pixel"}, {"width": 400, "height": 300})
+        retained = self._figure({"layout": "wrap-right"}, caption=[_text("Cap")])
+        for source, pushed in ((simplified, self._figure()), (retained, retained)):
+            source_item = _list_item(_paragraph(_text("item")), source)
+            pushed_item = _list_item(_paragraph(_text("item")), pushed)
+            cases = (
+                ([source], [pushed]), ([_expand("T", source)], [_expand("T", pushed)]), (
+                    [_expand("outer", _expand("inner", source,
+                                              nested=True))], [_expand("outer", _expand("inner", pushed, nested=True))]),
+                ([_layout(_column(100.0, source))], [_layout(_column(100.0, pushed))]),
+                ([_panel("tip", source)], [_panel("tip", pushed)]), ([_panel("warning", source)], [_panel("warning", pushed)]),
+                ([{
+                    "type": "bulletList",
+                    "content": [source_item]}], [{
+                        "type": "bulletList",
+                        "content": [pushed_item]}]), (
+                            [{
+                                "type": "orderedList",
+                                "attrs": {
+                                    "order": 1},
+                                "content":
+                                [source_item]}], [{
+                                    "type": "orderedList",
+                                    "attrs": {
+                                        "order": 1},
+                                    "content": [pushed_item]}]),
+                (
+                    [
+                        {
+                            "type": "bulletList",
+                            "content": [_list_item(_paragraph(_text("outer")), {
+                                "type": "bulletList",
+                                "content": [source_item]})]}], [
+                                    {
+                                        "type":
+                                        "bulletList",
+                                        "content":
+                                        [_list_item(_paragraph(_text("outer")), {
+                                            "type": "bulletList",
+                                            "content": [pushed_item]})]}]),
+                ([{
+                    "type": "blockquote",
+                    "content": [source]}], [{
+                        "type": "blockquote",
+                        "content": [pushed]}]), (
+                            [
+                                {
+                                    "type":
+                                    "table",
+                                    "content":
+                                    [{
+                                        "type": "tableRow",
+                                        "content": [_cell("tableCell", [source, _paragraph(_text("after"))])]}]}],
+                            [
+                                {
+                                    "type":
+                                    "table",
+                                    "content":
+                                    [{
+                                        "type": "tableRow",
+                                        "content": [_cell("tableCell", [pushed, _paragraph(_text("after"))])]}]}]))
+            for content, expected in cases:
+                with self.subTest(image=source, container=content[0]["type"]):
+                    markdown = self._markdown(content)
+                    if content[0]["type"] == "table":
+                        self.assertIn('<table>', markdown)
+                        self.assertIn('<img ', markdown)
+
+                    self.assertEqual(self._adf(markdown), expected)
 
     def test_reads_compact_html_and_raw_img(self) -> None:
         markdown = '<figure data-type="media-single" data-width="70" data-layout="wide">' \
@@ -2044,6 +2231,20 @@ class TestImageFigures(unittest.TestCase):
         markdown = '<figure data-type="media-single" data-width="400" data-width-type="pixel">\n\n' \
             '<img src="_attachments/f.png" width="400" alt="a &amp; &quot;b&quot;" />\n\n</figure>\n'
         self.assertEqual(self._adf(markdown), [self._figure({"width": 400, "widthType": "pixel"}, {"width": 400})])
+
+    def test_retitle_keeps_legacy_equal_width_figure_geometry(self) -> None:
+        body = '<figure data-type="media-single" data-width="400" data-width-type="pixel">\n\n' \
+            '<img src="_attachments/f.png" width="400" height="300" alt="a &amp; &quot;b&quot;" />\n\n</figure>\n'
+        reverse = MarkdownToADFConverter(self.pandoc, self.media, "contentId-1")
+        renamed = reverse.retitle('# Old\n\n' + body, "Old", "New")
+        self.assertEqual(renamed, '# New\n\n' + body)
+        self.assertEqual(
+            reverse.convert(renamed, title="New")["content"],
+            [self._figure({
+                "width": 400,
+                "widthType": "pixel"}, {
+                    "width": 400,
+                    "height": 300})])
 
     def test_unsupported_figures_stay_opaque_and_old_fences_still_read(self) -> None:
         cases = [

@@ -391,6 +391,97 @@ class TestADFToMarkdownConverter(unittest.TestCase):
         self.assertEqual(json.loads(block["c"][1]), paragraph)
 
 
+class TestImageSelection(unittest.TestCase):
+    """Geometry is omitted only after validating the entire mediaSingle and choosing the Markdown form."""
+
+    def setUp(self) -> None:
+        self.pandoc = RecordingPandoc()
+        self.converter = ADFToMarkdownConverter(self.pandoc)
+
+    @staticmethod
+    def _node(attrs=None, dimensions=None, caption=None):
+        media = {
+            "type": "media",
+            "attrs": {
+                "type": "external",
+                "url": "https://example.test/a.png",
+                "alt": "a.png",
+                **(dimensions or {})}}
+        content = [media]
+        if caption is not None:
+            content.append({"type": "caption", "content": caption})
+
+        return {"type": "mediaSingle", "attrs": attrs or {}, "content": content}
+
+    def test_simplified_image_ast_has_no_figure_or_dimension_attributes(self) -> None:
+        cases = (
+            ({}, {
+                "width": 400,
+                "height": 300}), ({}, {
+                    "height": 300}), ({
+                        "width": 400,
+                        "widthType": "pixel"}, {
+                            "width": 400.0,
+                            "height": 300.5}), ({
+                                "widthType": "pixel"}, {
+                                    "width": 400}), ({
+                                        "widthType": "percentage"}, {}))
+        expected = {
+            "t": "Para",
+            "c": [{
+                "t": "Image",
+                "c": [["", [], []], [{
+                    "t": "Str",
+                    "c": "a.png"}], ["https://example.test/a.png", ""]]}]}
+        for attrs, dimensions in cases:
+            with self.subTest(attrs=attrs, dimensions=dimensions):
+                self.converter.convert({"type": "doc", "version": 1, "content": [self._node(attrs, dimensions)]})
+                self.assertEqual(self.pandoc.pandoc["blocks"], [expected])
+
+    def test_required_figures_have_independent_raw_images_without_native_dimensions(self) -> None:
+        cases = (
+            ({
+                "layout": "wrap-right"}, None), ({
+                    "width": 400,
+                    "widthType": "pixel"}, None), ({}, []), ({}, [{
+                        "type": "text",
+                        "text": "Cap"}]))
+        for attrs, caption in cases:
+            with self.subTest(attrs=attrs, caption=caption):
+                self.converter.convert({"type": "doc", "version": 1, "content": [self._node(attrs, caption=caption)]})
+                blocks = self.pandoc.pandoc["blocks"]
+                self.assertEqual(blocks[0]["t"], "RawBlock")
+                self.assertTrue(blocks[0]["c"][1].startswith('<figure data-type="media-single"'))
+                self.assertEqual(
+                    blocks[1], {
+                        "t": "RawBlock",
+                        "c": ["html", '<img src="https://example.test/a.png" alt="a.png" />']})
+                if caption is None:
+                    self.assertEqual(len(blocks), 3)
+                    self.assertEqual(blocks[-1], {"t": "RawBlock", "c": ["html", '</figure>']})
+                else:
+                    self.assertEqual(len(blocks), 5)
+                    self.assertEqual(blocks[2], {"t": "RawBlock", "c": ["html", '<figcaption>']})
+                    self.assertEqual(blocks[-1], {"t": "RawBlock", "c": ["html", '</figcaption>\n</figure>']})
+
+    def test_invalid_native_geometry_cannot_be_discarded_by_simplification(self) -> None:
+        for name in ("width", "height"):
+            for value in (0, -1, None, True, "400", float("nan"), float("inf")):
+                with self.subTest(name=name, value=value):
+                    node = self._node(dimensions={name: value})
+                    self.converter.convert({"type": "doc", "version": 1, "content": [node]})
+                    block = self.pandoc.pandoc["blocks"][0]
+                    self.assertEqual(block["t"], "CodeBlock")
+                    self.assertEqual(block["c"][0], ["", ["atlas_doc_format"], []])
+
+    def test_invalid_caption_keeps_equal_width_image_opaque(self) -> None:
+        node = self._node({"width": 400, "widthType": "pixel"}, {"width": 400}, [{"type": "paragraph", "content": []}])
+        self.converter.convert({"type": "doc", "version": 1, "content": [node]})
+        block = self.pandoc.pandoc["blocks"][0]
+        self.assertEqual(block["t"], "CodeBlock")
+        self.assertEqual(json.loads(block["c"][1]), node)
+
+
 class TestTagBlockCompaction(unittest.TestCase):
     """Only adjacent supported raw tag blocks merge, including already joined nested runs."""
 

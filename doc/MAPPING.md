@@ -374,18 +374,44 @@ mapping uses the manifest to reconstruct images as ADF media; file links become
 `mediaInline` references, so their original block container is not retained.
 Media that the manifest cannot resolve stays opaque.
 
-A `mediaSingle` with a caption, intrinsic dimensions, or non-default layout or
-display width uses raw `<figure data-type="media-single">` tag blocks around
-the image. `data-layout` retains `center`, `wrap-left`, `wrap-right`, `wide`,
-`full-width`, `align-start`, or `align-end`; omitted layout defaults to
+A supported `mediaSingle` uses raw `<figure data-type="media-single">` tag
+blocks around a raw `<img>` only if its layout is not `center`, it has a
+caption (including an empty caption), or its display width differs from the
+native media width. A display width is different if its type is percentage
+or omitted, or if it is a pixel width without a known native width or not
+numerically equal to that width. Integer/float equivalents compare equal;
+fractional values are not rounded or compared with a tolerance. Native width
+means the media node's ADF `width`, not the attachment file's pixel width.
+An absent display width is not a difference, regardless of native width or
+height and any valid width type. Native height alone does not force a figure.
+All existing media, dimension, and caption validation precedes this choice;
+invalid or unsupported nodes still stay opaque rather than being simplified.
+
+Otherwise the node maps to a plain paragraph of `Image` without dimensions:
+native `width`/`height` and display `width`/`widthType` are omitted. Reverse
+conversion sends a centered `mediaSingle` and media without these dimensions,
+while retaining media identity/URL, collection, and alt under the existing
+mapping. Confluence restores attachment geometry from the actual file, which
+can change displayed size if ADF native dimensions differed from file size;
+it restores no dimensions for external images. This loss is accepted for
+simpler Markdown. Both attachment and external images use the same selection
+rule; no image-file parsing is performed. Inside HTML tables, Pandoc may render
+a plain `Image` as `<img>` without restoring its omitted geometry.
+
+In retained figures, `data-layout` preserves `center`, `wrap-left`, `wrap-right`,
+`wide`, `full-width`, `align-start`, or `align-end`; omitted layout defaults to
 `center`. `data-width` retains the positive finite display width, and
 `data-width-type` its `pixel` or `percentage` unit. An omitted unit means
 percentage (at most 100); omission is retained when a width is present.
-An explicitly default `percentage` unit without width may be omitted for a
-plain image. Intrinsic media `width` and `height` use positive finite pixel
+Intrinsic media `width` and `height`, when present, use positive finite pixel
 dimensions on an HTML `<img>` with the same editable attachment path or
-external URL. This tag is written directly because Pandoc's GFM writer rounds
-fractional pixel dimensions.
+external URL. The raw image is also used for caption/layout-only figures
+without native dimensions. It avoids Pandoc's rounding of fractional sizes.
+Legacy figures containing a Markdown image still read with their existing
+geometry; retitle does not reselect their image representation. Previously
+pulled files keep their representation until a rewriting pull (remote change
+or explicit force). Hash canonicalization and cache/workarea versions do not
+change; no migration is needed, and force pull overwrites local edits.
 
 A second `caption` child becomes `<figcaption>` tag blocks around a Pandoc
 paragraph of ordinary inline content. Caption formatting follows the existing
@@ -394,9 +420,8 @@ inline mapping; empty captions are retained. The closing `</figcaption>` and
 separate block with blank lines on both sides in GFM's tag-line form.
 GFM reads these as raw tag blocks and an image paragraph or raw `<img>`; the
 HTML-table reader instead produces a native `Figure`, which is also handled
-on push. A temporary comment protects
-empty captions during HTML parsing. Exactly one image must precede at most
-one caption, containing a single paragraph of inline content. Unsupported
+on push. A temporary comment protects empty captions during HTML parsing.
+Exactly one image must precede at most one caption, containing a single paragraph of inline content. Unsupported
 figure or caption attributes, marks, and dimensions keep the whole image
 opaque on pull; malformed or unsupported HTML is rejected on push. `localId`
 is omitted, and `data-local-id` is accepted on figures, images, and captions.
