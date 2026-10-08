@@ -1081,7 +1081,7 @@ class TestMarkdownToADFAttachmentPaths(unittest.TestCase):
         return markdown, MarkdownToADFConverter(self.pandoc, self._media(), "contentId-1").convert(markdown)["content"]
 
     @staticmethod
-    def _media_node(number, name):
+    def _media_node(number, name) -> dict:
         return {"type": "media", "attrs": {"type": "file", "id": f"file-{number}", "collection": "contentId-1", "alt": name}}
 
     def test_writes_the_encoded_path(self) -> None:
@@ -1102,7 +1102,21 @@ class TestMarkdownToADFAttachmentPaths(unittest.TestCase):
         group_markdown, _ = self._round_trip([{"type": "mediaGroup", "content": [media]}])
 
         self.assertEqual(markdown, "![plan v2.pdf](_attachments/plan%20v2.pdf)\n")
-        self.assertEqual(document, [block])
+        self.assertEqual(
+            document, [
+                {
+                    "type":
+                    "mediaSingle",
+                    "attrs": {
+                        "layout": "center"},
+                    "content": [
+                        {
+                            "type": "media",
+                            "attrs": {
+                                key: value
+                                for key, value in media["attrs"].items() if key != "alt"}}, {
+                                    "type": "caption",
+                                    "content": [_text("plan v2.pdf")]}]}])
         self.assertEqual(group_markdown, "[plan v2.pdf](_attachments/plan%20v2.pdf)\n")
 
     def test_labels_media_without_alt_text_with_the_decoded_filename(self) -> None:
@@ -1116,7 +1130,13 @@ class TestMarkdownToADFAttachmentPaths(unittest.TestCase):
                 pushed = _paragraph({"type": "mediaInline", "attrs": labelled["attrs"]})
             else:
                 block = {"type": "mediaSingle", "attrs": {"layout": "center"}, "content": [media]}
-                pushed = {"type": "mediaSingle", "attrs": {"layout": "center"}, "content": [labelled]}
+                pushed = {
+                    "type": "mediaSingle",
+                    "attrs": {
+                        "layout": "center"},
+                    "content": [media, {
+                        "type": "caption",
+                        "content": [_text(name)]}]}
             with self.subTest(name=name):
                 markdown, document = self._round_trip([block])
 
@@ -1870,6 +1890,247 @@ class TestCompactContainerOutput(unittest.TestCase):
         self.assertEqual(reverse.convert(renamed, title="New")["content"], content)
 
 
+class TestImageDescriptions(unittest.TestCase):
+    """An unwrapped block image's description is its caption, not independent media alt text."""
+
+    def setUp(self) -> None:
+        self.pandoc = PandocRunner()
+        self.media = MediaResolver([("f.png", "file-1"), ("no-suffix", "file-2")])
+
+    def _adf(self, markdown):
+        return MarkdownToADFConverter(self.pandoc, self.media, "contentId-1").convert(markdown)["content"]
+
+    def _markdown(self, content):
+        return ADFToMarkdownConverter(self.pandoc, self.media).convert({"type": "doc", "version": 1, "content": content})
+
+    @staticmethod
+    def _image(caption, external=False) -> dict:
+        attrs = {
+            "type": "external",
+            "url": "https://example.test/f.png"} if external else {
+                "type": "file",
+                "id": "file-1",
+                "collection": "contentId-1"}
+        return {
+            "type": "mediaSingle",
+            "attrs": {
+                "layout": "center"},
+            "content": [{
+                "type": "media",
+                "attrs": attrs}, {
+                    "type": "caption",
+                    "content": caption}]}
+
+    def test_reads_plain_formatted_and_empty_descriptions_as_captions(self) -> None:
+        cases = (("plain caption", [_text("plain caption")]), ("**bold**", [_text("bold", {"type": "strong"})]), ("", []))
+        for external in (False, True):
+            target = "https://example.test/f.png" if external else "_attachments/f.png"
+            for description, caption in cases:
+                with self.subTest(description=description, external=external):
+                    self.assertEqual(self._adf(f"![{description}]({target})\n"), [self._image(caption, external)])
+
+    def test_legacy_figure_keeps_alt_separate_from_explicit_caption(self) -> None:
+        for body, caption in (("", None), ("<figcaption>Caption</figcaption>", [_text("Caption")])):
+            with self.subTest(caption=caption):
+                markdown = '<figure data-type="media-single">\n\n![Alt](_attachments/f.png)\n\n' + body + '\n</figure>\n'
+                image = self._image([])
+                image["content"][0]["attrs"]["alt"] = "Alt"
+                image["content"] = image["content"][:1] if caption is None else [
+                    image["content"][0], {
+                        "type": "caption",
+                        "content": caption}]
+                self.assertEqual(self._adf(markdown), [image])
+
+    def test_caption_precedence_and_captionless_fallbacks_are_stable(self) -> None:
+        for external in (False, True):
+            for caption in (None, [], [_text("Caption")]):
+                for alt in (None, "Independent alt"):
+                    with self.subTest(caption=caption, alt=alt, external=external):
+                        source = self._image([] if caption is None else caption, external)
+                        if caption is None:
+                            source["content"].pop()
+                        if alt is not None:
+                            source["content"][0]["attrs"]["alt"] = alt
+                        description = caption if caption is not None else [_text(alt or "f.png")]
+                        expected = self._image(description, external)
+                        markdown = self._markdown([source])
+                        self.assertNotIn("<figure", markdown)
+                        self.assertEqual(self._adf(markdown), [expected])
+                        self.assertEqual(self._markdown([expected]), markdown)
+                        self.assertEqual(self._adf(self._markdown([expected])), [expected])
+
+    def test_round_trips_caption_formatting_and_supported_inline_nodes(self) -> None:
+        captions: list[list[dict]] = [[_text("marked", {"type": mark})] for mark in ("strong", "em", "strike", "code")]
+        captions.extend(
+            [
+                [_text("linked", {
+                    "type": "link",
+                    "attrs": {
+                        "href": "https://example.test",
+                        "title": ""}})], [_text("first"), {
+                            "type": "hardBreak"}, _text("second")]])
+        for name in ("underline", "subscript", "superscript", "text colour", "highlight", "formatted colours", "status", "date",
+                     "mention"):
+            paragraph: dict = HTML_CELL_CONSTRUCTS[name]
+            captions.append(paragraph["content"])
+        captions.append([_card("https://example.test/card")])
+        for caption in captions:
+            with self.subTest(caption=caption):
+                image = self._image(caption)
+                markdown = self._markdown([image])
+                self.assertTrue(markdown.startswith("!["))
+                self.assertEqual(TestColourMarks._normalized(self._adf(markdown)), TestColourMarks._normalized([image]))
+
+    def test_unicode_emoji_in_caption_follows_existing_text_normalization(self) -> None:
+        image = self._image([{"type": "emoji", "attrs": {"shortName": ":smile:", "id": "1f604", "text": "😄"}}])
+        self.assertEqual(self._markdown([image]), "![😄](_attachments/f.png)\n")
+        self.assertEqual(self._adf(self._markdown([image])), [self._image([_text("😄")])])
+
+    def test_caption_escaping_and_extensionless_targets(self) -> None:
+        caption = [_text('literal [brackets] \\ *stars* & "quotes" café')]
+        self.media = MediaResolver([("Pasted & café (1).png", "file-1"), ("no-suffix", "file-2")])
+        for external in (False, True):
+            for extensionless in (False, True):
+                with self.subTest(external=external, extensionless=extensionless):
+                    image = self._image(caption, external)
+                    attrs = image["content"][0]["attrs"]
+                    if external:
+                        attrs["url"] = "https://example.test/" + ("no-suffix" if extensionless else "f.png?a=1&b=2")
+                    elif extensionless:
+                        attrs["id"] = "file-2"
+                    markdown = self._markdown([image])
+                    self.assertEqual(self._adf(markdown), [image])
+                    self.assertEqual(self._markdown(self._adf(markdown)), markdown)
+                    if not external and not extensionless:
+                        self.assertIn("_attachments/Pasted%20%26%20caf%C3%A9%20%281%29.png", markdown)
+
+    def test_inline_images_and_image_groups_keep_alt_text(self) -> None:
+        media = self._image([])["content"][0]
+        media["attrs"]["alt"] = "Alt"
+        inline = {"type": "mediaInline", "attrs": media["attrs"]}
+        self.assertEqual(
+            self._adf("before ![Alt](_attachments/f.png) after\n"), [_paragraph(_text("before "), inline, _text(" after"))])
+        self.assertEqual(
+            self._adf("![Alt](_attachments/f.png) ![Alt](_attachments/f.png)\n"),
+            [{
+                "type": "mediaGroup",
+                "content": [media, media]}])
+
+    def test_retitle_preserves_a_formatted_image_description(self) -> None:
+        body = self._markdown([self._image([_text("bold", {"type": "strong"})])])
+        reverse = MarkdownToADFConverter(self.pandoc, self.media, "contentId-1")
+        renamed = reverse.retitle("# Old\n\n" + body, "Old", "New")
+        self.assertEqual(renamed, "# New\n\n" + body)
+        self.assertEqual(reverse.convert(renamed, title="New")["content"], self._adf(body))
+
+    def test_captioned_images_round_trip_in_block_containers(self) -> None:
+        for caption in ([], [_text("Caption")], [_text("bold", {"type": "strong"})]):
+            image = self._image(caption)
+            cases = (
+                [image], [_expand("T", image)], [_panel("warning", image)], [_panel("tip", image)],
+                [_layout(_column(100.0, image))], [{
+                    "type": "blockquote",
+                    "content": [image]}], [{
+                        "type": "bulletList",
+                        "content": [_list_item(_paragraph(_text("item")), image)]
+                    }], [{
+                        "type": "orderedList",
+                        "attrs": {
+                            "order": 1},
+                        "content": [_list_item(_paragraph(_text("item")), image)]}])
+            for content in cases:
+                with self.subTest(caption=caption, container=content[0]["type"]):
+                    markdown = self._markdown(content)
+                    self.assertNotIn("<figure", markdown)
+                    self.assertEqual(self._adf(markdown), content)
+
+    @staticmethod
+    def _table(blocks, html=False):
+        return {
+            "type":
+            "table",
+            "content": [
+                {
+                    "type": "tableRow",
+                    "content": [_cell("tableHeader", [_paragraph(_text("h"))])]}, {
+                        "type": "tableRow",
+                        "content": [_cell("tableCell", blocks + ([_paragraph(_text("after"))] if html else []))]}]}
+
+    def test_plain_and_empty_captions_round_trip_in_pipe_and_html_tables(self) -> None:
+        for caption in ([], [_text("Caption")]):
+            for html in (False, True):
+                with self.subTest(caption=caption, html=html):
+                    table = self._table([self._image(caption)], html)
+                    markdown = self._markdown([table])
+                    self.assertEqual("<table>" in markdown, html)
+                    self.assertNotIn("<figure", markdown)
+                    self.assertNotIn("atlas_doc_format", markdown)
+                    self.assertEqual(self._adf(markdown), [table])
+
+    def test_rich_table_captions_preserve_only_the_image_opaquely(self) -> None:
+        captions = ([_text("bold", {"type": "strong"})], [STATUS], [_text("a"), {"type": "hardBreak"}, _text("b")])
+        for caption in captions:
+            for html in (False, True):
+                image = self._image(caption)
+                image["content"][0]["attrs"].update({"alt": "Independent alt", "width": 400, "height": 300})
+                image["attrs"].update({"width": 400, "widthType": "pixel"})
+                wrappers = (
+                    [image], [_expand("T", image, nested=True)], [_panel("tip", image)],
+                    [{
+                        "type": "bulletList",
+                        "content": [_list_item(_paragraph(_text("item")), image)]}], [self._table([image])])
+                for blocks in wrappers:
+                    with self.subTest(caption=caption, html=html, nested=blocks[0]["type"]):
+                        table = self._table(blocks, html)
+                        markdown = self._markdown([table])
+                        self.assertIn("atlas_doc_format", markdown)
+                        self.assertNotIn("<figure", markdown)
+                        self.assertEqual(self._adf(markdown), [table])
+
+    def test_rich_caption_is_protected_when_another_cell_requires_html(self) -> None:
+        image = self._image([_text("bold", {"type": "strong"})])
+        table = {
+            "type":
+            "table",
+            "content": [
+                {
+                    "type": "tableRow",
+                    "content": [_cell("tableHeader", [_paragraph(_text("a"))]),
+                                _cell("tableHeader", [_paragraph(_text("b"))])]},
+                {
+                    "type":
+                    "tableRow",
+                    "content":
+                    [_cell("tableCell", [image]),
+                     _cell("tableCell", [_paragraph(_text("first")), _paragraph(_text("second"))])]}]}
+        markdown = self._markdown([table])
+        self.assertIn("<table>", markdown)
+        self.assertIn("atlas_doc_format", markdown)
+        self.assertEqual(self._adf(markdown), [table])
+
+    def test_table_context_is_restored_after_success_and_failure(self) -> None:
+        converter = ADFToMarkdownConverter(self.pandoc, self.media)
+        image = self._image([_text("bold", {"type": "strong"})])
+        for fail in (False, True):
+            with self.subTest(fail=fail):
+                table = self._table([None] if fail else [image])
+                document = {"type": "doc", "version": 1, "content": [table]}
+                if fail:
+                    with self.assertRaisesRegex(ConversionError, "ADF block must be an object"):
+                        converter.convert(document)
+                else:
+                    self.assertIn("atlas_doc_format", converter.convert(document))
+                self.assertEqual(
+                    converter.convert({
+                        "type": "doc",
+                        "version": 1,
+                        "content": [image]}), "![**bold**](_attachments/f.png)\n")
+
+    def test_rejects_images_inside_caption_descriptions(self) -> None:
+        with self.assertRaisesRegex(ConversionError, "unsupported caption content"):
+            self._adf("![![nested](_attachments/f.png)](_attachments/f.png)\n")
+
+
 class TestImageFigures(unittest.TestCase):
     """Only images requiring figures preserve geometry; plain Markdown images intentionally omit it."""
 
@@ -1883,7 +2144,7 @@ class TestImageFigures(unittest.TestCase):
     def _adf(self, markdown):
         return MarkdownToADFConverter(self.pandoc, self.media, "contentId-1").convert(markdown)["content"]
 
-    def _figure(self, attrs=None, dimensions=None, caption=None, external=False):
+    def _figure(self, attrs=None, dimensions=None, caption=None, external=False) -> dict:
         media_attrs = {
             "type": "external",
             "url": "https://example.test/f.png"} if external else {
@@ -1896,12 +2157,18 @@ class TestImageFigures(unittest.TestCase):
             content.append({"type": "caption", "content": caption})
         return {"type": "mediaSingle", "attrs": {"layout": "center", **(attrs or {})}, "content": content}
 
+    def _simplified(self, dimensions=None, caption=None, external=False) -> dict:
+        image = self._figure(dimensions=dimensions, external=external)
+        alt = image["content"][0]["attrs"].pop("alt")
+        image["content"].append({"type": "caption", "content": [_text(alt)] if caption is None else caption})
+        return image
+
     def test_default_image_keeps_markdown_form(self) -> None:
         figure = self._figure()
         markdown = self._markdown([figure])
         self.assertNotIn("<figure", markdown)
         self.assertIn("![", markdown)
-        self.assertEqual(self._adf(markdown), [figure])
+        self.assertEqual(self._adf(markdown), [self._simplified()])
 
     def test_round_trips_all_layouts_and_width_units(self) -> None:
         for layout in ("center", "wrap-left", "wrap-right", "wide", "full-width", "align-start", "align-end"):
@@ -1914,7 +2181,7 @@ class TestImageFigures(unittest.TestCase):
                     markdown = self._markdown([figure])
                     if layout == "center" and width_type == "pixel" and width == 1024:
                         self.assertEqual(markdown, '![a & "b"](_attachments/f.png)\n')
-                        self.assertEqual(self._adf(markdown), [self._figure()])
+                        self.assertEqual(self._adf(markdown), [self._simplified()])
                     else:
                         self.assertIn('<figure data-type="media-single"', markdown)
                         self.assertIn('width="1024" height="768.5"', markdown)
@@ -1984,12 +2251,12 @@ class TestImageFigures(unittest.TestCase):
                         self.assertEqual(self._adf(markdown), [figure])
                     else:
                         self.assertEqual(markdown, '![a & "b"](' + target + ')\n')
-                        self.assertEqual(self._adf(markdown), [self._figure(external=external)])
+                        self.assertEqual(self._adf(markdown), [self._simplified(external=external)])
 
-    def test_layout_and_caption_require_raw_images_even_without_dimensions(self) -> None:
+    def test_non_center_layouts_require_raw_images_even_without_dimensions(self) -> None:
         cases: list[tuple[str, list[dict[str, object]] | None]] = [
             (layout, None) for layout in ("wrap-left", "wrap-right", "wide", "full-width", "align-start", "align-end")]
-        cases.extend((("center", []), ("center", [_text("Cap")])))
+        cases.extend((("wrap-right", []), ("wrap-right", [_text("Cap")])))
         for external in (False, True):
             target = 'https://example.test/f.png' if external else '_attachments/f.png'
             for layout, caption in cases:
@@ -2021,7 +2288,7 @@ class TestImageFigures(unittest.TestCase):
     def test_simplifies_extensionless_block_images(self) -> None:
         for external in (False, True):
             figure = self._figure({"width": 400, "widthType": "pixel"}, {"width": 400}, external=external)
-            expected = self._figure(external=external)
+            expected = self._simplified(external=external)
             key = "url" if external else "id"
             value = "https://example.test/no-suffix" if external else "file-2"
             figure["content"][0]["attrs"][key] = value
@@ -2048,8 +2315,9 @@ class TestImageFigures(unittest.TestCase):
             _text(" "), STATUS]
         figure = self._figure(caption=caption)
         markdown = self._markdown([figure])
-        self.assertIn("<figcaption>\n\n**bold**", markdown)
-        self.assertEqual(self._adf(markdown), [figure])
+        self.assertIn("![**bold**", markdown)
+        self.assertNotIn("<figure", markdown)
+        self.assertEqual(self._adf(markdown), [self._simplified(caption=caption)])
         edited = markdown.replace("**bold**", "**edited**")
         self.assertEqual(self._adf(edited)[0]["content"][1]["content"][0], _text("edited", {"type": "strong"}))
 
@@ -2085,7 +2353,7 @@ class TestImageFigures(unittest.TestCase):
     def test_plain_and_retained_images_round_trip_in_all_block_contexts(self) -> None:
         simplified = self._figure({"width": 400, "widthType": "pixel"}, {"width": 400, "height": 300})
         retained = self._figure({"layout": "wrap-right"}, caption=[_text("Cap")])
-        for source, pushed in ((simplified, self._figure()), (retained, retained)):
+        for source, pushed in ((simplified, self._simplified()), (retained, retained)):
             source_item = _list_item(_paragraph(_text("item")), source)
             pushed_item = _list_item(_paragraph(_text("item")), pushed)
             cases = (
@@ -2164,7 +2432,7 @@ class TestImageFigures(unittest.TestCase):
                 "layout": "wide"}, {"width": 640}, [_text("caption", {"type": "strong"})])])
         self.assertEqual(
             self._adf('<img src="_attachments/f.png" alt="a &amp; &quot;b&quot;" height="480" />\n'),
-            [self._figure(dimensions={"height": 480})])
+            [self._simplified(dimensions={"height": 480})])
 
     def test_reads_single_line_figcaption_as_html(self) -> None:
         start = '<figure data-type="media-single">\n\n![a](_attachments/f.png)\n\n'
@@ -2195,10 +2463,13 @@ class TestImageFigures(unittest.TestCase):
                       '</td></tr></table>')[0]["content"][0]["content"][0]["content"], [changed])
 
     def test_writes_joined_caption_closings_and_keeps_raw_image_boundaries(self) -> None:
-        figure = self._figure(dimensions={"width": 400, "height": 3}, caption=[_text("Cap")], external=True)
+        figure = self._figure(
+            {"layout": "wrap-right"}, dimensions={
+                "width": 400,
+                "height": 3}, caption=[_text("Cap")], external=True)
         markdown = self._markdown([figure])
         self.assertEqual(
-            markdown, '<figure data-type="media-single">\n\n'
+            markdown, '<figure data-type="media-single" data-layout="wrap-right">\n\n'
             '<img src="https://example.test/f.png" width="400" height="3" alt="a &amp; &quot;b&quot;" />\n\n'
             '<figcaption>\n\nCap\n\n</figcaption>\n</figure>\n')
         self.assertEqual(len(markdown.splitlines()), 10)
@@ -2370,8 +2641,7 @@ class TestColourMarks(unittest.TestCase):
                                     "type": "media",
                                     "attrs": {
                                         "type": "external",
-                                        "url": "https://a.test/image.png",
-                                        "alt": "image"}}, {
+                                        "url": "https://a.test/image.png"}}, {
                                             "type": "caption",
                                             "content": paragraph["content"]}]}])
 

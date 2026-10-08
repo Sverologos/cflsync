@@ -191,6 +191,71 @@ class TestPagePull(unittest.TestCase):
             self.assertEqual(updated.attachments, state.attachments)
             self.assertEqual(detector.local_status(directory, updated), PageChangeStatus.UNCHANGED)
 
+    def test_pull_simplifies_captions_only_when_rewriting_the_page(self) -> None:
+        plain = '# Example page\n\n![**Diagram caption**](_attachments/diagram.png)\n'
+        legacy = '# Example page\n\n<figure data-type="media-single">\n\n' \
+            '<img src="_attachments/diagram.png" width="400" height="300" alt="Independent alt" />\n\n' \
+            '<figcaption>\n\n**Diagram caption**\n\n</figcaption>\n</figure>\n'
+        detector = PageChangeDetector(PandocRunner())
+        with temporary_workarea() as workarea, redirect_stdout(StringIO()):
+            page = self._page()
+            attachment = attachment_fixture()
+            image = {
+                "type":
+                "mediaSingle",
+                "attrs": {
+                    "layout": "center",
+                    "width": 400,
+                    "widthType": "pixel"},
+                "content": [
+                    {
+                        "type": "media",
+                        "attrs": {
+                            "type": "file",
+                            "id": attachment["fileId"],
+                            "collection": "contentId-123456",
+                            "alt": "Independent alt",
+                            "width": 400,
+                            "height": 300}}, {
+                                "type": "caption",
+                                "content": [{
+                                    "type": "text",
+                                    "text": "Diagram caption",
+                                    "marks": [{
+                                        "type": "strong"}]}]}]}
+            page["body"] = {"atlas_doc_format": {"value": json.dumps({"type": "doc", "version": 1, "content": [image]})}}
+            directory = workarea.root_dir / "Example page_123456"
+            content = directory / "content.md"
+            cache = workarea.cache_path("123456")
+
+            self._pull(workarea, page, attachments=[attachment])
+            self.assertEqual(content.read_text(encoding="utf-8"), plain)
+            self.assertEqual((directory / "_attachments" / "diagram.png").read_bytes(), b"PNG")
+            state = PageState.load(cache)
+            self.assertEqual(state.page.content_hash, detector.content_hash(plain))
+            self.assertEqual(detector.local_status(directory, state), PageChangeStatus.UNCHANGED)
+            snapshot = self._snapshot(workarea)
+            self._pull(workarea, page, attachments=[attachment], downloads=[])
+            self.assertEqual(self._snapshot(workarea), snapshot)
+
+            for force in (False, True):
+                with self.subTest(force=force):
+                    content.write_text(legacy, encoding="utf-8")
+                    state = PageState.load(cache)
+                    state.page.content_hash = detector.content_hash(legacy)
+                    state.save(cache)
+                    snapshot = self._snapshot(workarea)
+                    self._pull(workarea, page, attachments=[attachment], downloads=[])
+                    self.assertEqual(self._snapshot(workarea), snapshot)
+                    if not force:
+                        page["version"]["number"] += 1
+                    self._pull(workarea, page, attachments=[attachment], force=force)
+                    self.assertEqual(content.read_text(encoding="utf-8"), plain)
+                    updated = PageState.load(cache)
+                    self.assertEqual(updated.page.version, page["version"]["number"])
+                    self.assertEqual(updated.page.content_hash, detector.content_hash(plain))
+                    self.assertEqual(detector.local_status(directory, updated), PageChangeStatus.UNCHANGED)
+
     def test_pull_writes_a_mailto_link_for_a_mention_with_an_email_address(self) -> None:
         with temporary_workarea() as workarea:
             page = self._page()

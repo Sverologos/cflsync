@@ -443,9 +443,11 @@ class TestImageSelection(unittest.TestCase):
             ({
                 "layout": "wrap-right"}, None), ({
                     "width": 400,
-                    "widthType": "pixel"}, None), ({}, []), ({}, [{
-                        "type": "text",
-                        "text": "Cap"}]))
+                    "widthType": "pixel"}, None), ({
+                        "layout": "wrap-right"}, []), ({
+                            "layout": "wrap-right"}, [{
+                                "type": "text",
+                                "text": "Cap"}]))
         for attrs, caption in cases:
             with self.subTest(attrs=attrs, caption=caption):
                 self.converter.convert({"type": "doc", "version": 1, "content": [self._node(attrs, caption=caption)]})
@@ -463,6 +465,19 @@ class TestImageSelection(unittest.TestCase):
                     self.assertEqual(len(blocks), 5)
                     self.assertEqual(blocks[2], {"t": "RawBlock", "c": ["html", '<figcaption>']})
                     self.assertEqual(blocks[-1], {"t": "RawBlock", "c": ["html", '</figcaption>\n</figure>']})
+
+    def test_caption_replaces_description_without_requiring_a_figure(self) -> None:
+        for caption, description in (([], []), ([{"type": "text", "text": "Cap"}], [{"t": "Str", "c": "Cap"}])):
+            with self.subTest(caption=caption):
+                node = self._node({"width": 400, "widthType": "pixel"}, {"width": 400, "height": 300}, caption)
+                self.converter.convert({"type": "doc", "version": 1, "content": [node]})
+                self.assertEqual(
+                    self.pandoc.pandoc["blocks"],
+                    [{
+                        "t": "Para",
+                        "c": [{
+                            "t": "Image",
+                            "c": [["", [], []], description, ["https://example.test/a.png", ""]]}]}])
 
     def test_invalid_native_geometry_cannot_be_discarded_by_simplification(self) -> None:
         for name in ("width", "height"):
@@ -597,7 +612,7 @@ class TestTagBlockCompaction(unittest.TestCase):
                     "type":
                     "mediaSingle",
                     "attrs": {
-                        "layout": "center"},
+                        "layout": "wrap-right"},
                     "content": [
                         {
                             "type": "media",
@@ -611,7 +626,7 @@ class TestTagBlockCompaction(unittest.TestCase):
                                         "type": "text",
                                         "text": "x"}]}]},
                 [
-                    self._raw('<figure data-type="media-single">'),
+                    self._raw('<figure data-type="media-single" data-layout="wrap-right">'),
                     self._raw('<img src="https://example.test/a.png" width="400" height="3" alt="a.png" />'),
                     self._raw('<figcaption>'), para,
                     self._raw('</figcaption>\n</figure>')])]

@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from cflsync import APIClient, PageState, Profile, SyncError
+from cflsync import APIClient, PageChangeDetector, PageChangeStatus, PageState, PandocRunner, Profile, SyncError
 from cflsync.cli import PagePullCommand, PagePushCommand, PageStatusCommand
 from tests.support import FakeConfluence, MockResponse, MockTransport, run_with_site, temporary_workarea
 from tests.test_api_operations import attachment_fixture, page_fixture, user_fixture
@@ -231,15 +231,25 @@ class TestPagePushInTree(unittest.TestCase):
     def test_push_uploads_new_images_before_sending_normalized_or_retained_geometry(self) -> None:
         cases = (
             ('![New](_attachments/new%20%26%20image.png)\n', {
-                "layout": "center"}, {}), (
-                    '<figure data-type="media-single" data-width="400" data-width-type="pixel">\n\n'
-                    '<img src="_attachments/new%20%26%20image.png" width="800.25" height="600.75" alt="New" />\n\n</figure>\n', {
-                        "layout": "center",
-                        "width": 400,
-                        "widthType": "pixel"}, {
-                            "width": 800.25,
-                            "height": 600.75}))
-        for markup, display, dimensions in cases:
+                "layout": "center"}, {}, [{
+                    "type": "text",
+                    "text": "New"}]), (
+                        '![**Caption**](_attachments/new%20%26%20image.png)\n', {
+                            "layout": "center"}, {}, [{
+                                "type": "text",
+                                "text": "Caption",
+                                "marks": [{
+                                    "type": "strong"}]}]),
+            (
+                '<figure data-type="media-single" data-width="400" data-width-type="pixel">\n\n'
+                '<img src="_attachments/new%20%26%20image.png" width="800.25" height="600.75" alt="New" />\n\n</figure>\n', {
+                    "layout": "center",
+                    "width": 400,
+                    "widthType": "pixel"}, {
+                        "alt": "New",
+                        "width": 800.25,
+                        "height": 600.75}, None))
+        for markup, display, dimensions, caption in cases:
             with self.subTest(markup=markup), temporary_workarea(root_page_id="100") as workarea:
                 self.site = FakeConfluence()
                 self.site.add_page("100", "Root")
@@ -276,10 +286,85 @@ class TestPagePushInTree(unittest.TestCase):
                                         "type": "file",
                                         "id": attachment["file_id"],
                                         "collection": "contentId-200",
-                                        "alt": "New",
-                                        **dimensions}}]}])
+                                        **dimensions}}, *([] if caption is None else [{
+                                            "type": "caption",
+                                            "content": caption}])]}])
                 state = PageState.load(workarea.cache_path("200"))
                 self.assertIn("new & image.png", state.attachments)
+
+    def test_caption_edit_updates_adf_and_preserves_no_op_pushes(self) -> None:
+        detector = PageChangeDetector(PandocRunner())
+        for original_caption in (None, "Original caption"):
+            with self.subTest(caption=original_caption), temporary_workarea(root_page_id="100") as workarea:
+                self.site = FakeConfluence()
+                self.site.add_page("100", "Root")
+                self.site.add_page("200", "Child", parent_id="100")
+                attachment_id = self.site.add_attachment("200", "diagram.png", b"PNG")
+                media_attrs = {
+                    "type": "file",
+                    "id": self.site.attachments[attachment_id]["file_id"],
+                    "collection": "contentId-200",
+                    "alt": "Independent alt",
+                    "width": 400,
+                    "height": 300}
+                content: list[dict] = [{"type": "media", "attrs": media_attrs}]
+                if original_caption is not None:
+                    content.append({"type": "caption", "content": [{"type": "text", "text": original_caption}]})
+                image = {
+                    "type": "mediaSingle",
+                    "attrs": {
+                        "layout": "center",
+                        "width": 400,
+                        "widthType": "pixel"},
+                    "content": content}
+                body = json.dumps({"type": "doc", "version": 1, "content": [image]})
+                self.site.content["200"]["body"] = body
+                self._pull(workarea)
+                directory = workarea.root_dir / "Root_100" / "Child_200"
+                path = directory / "content.md"
+                self.assertEqual(
+                    path.read_text(encoding="utf-8"),
+                    f'# Child\n\n![{original_caption or "Independent alt"}](_attachments/diagram.png)\n')
+                self.site.requests.clear()
+                self._run(workarea, lambda: PagePushCommand().run("200"))
+                self.assertTrue(all(request.method == "GET" for request in self.site.requests))
+                self.assertEqual(self.site.content["200"]["body"], body)
+
+                edited = '# Child\n\n![**Edited caption**](_attachments/diagram.png)\n'
+                path.write_text(edited, encoding="utf-8")
+                self.site.requests.clear()
+                self._run(workarea, lambda: PagePushCommand().run("200"))
+                writes = [request for request in self.site.requests if request.method != "GET"]
+                self.assertEqual([(request.method, request.path) for request in writes], [("PUT", "/wiki/api/v2/pages/200")])
+                document = json.loads(json.loads(writes[0].body or b"")["body"]["value"])
+                self.assertEqual(
+                    document["content"], [
+                        {
+                            "type":
+                            "mediaSingle",
+                            "attrs": {
+                                "layout": "center"},
+                            "content": [
+                                {
+                                    "type": "media",
+                                    "attrs": {
+                                        "type": "file",
+                                        "id": media_attrs["id"],
+                                        "collection": "contentId-200"}}, {
+                                            "type": "caption",
+                                            "content": [{
+                                                "type": "text",
+                                                "text": "Edited caption",
+                                                "marks": [{
+                                                    "type": "strong"}]}]}]}])
+                state = PageState.load(workarea.cache_path("200"))
+                self.assertEqual(state.page.content_hash, detector.content_hash(edited))
+                self.assertEqual(detector.local_status(directory, state), PageChangeStatus.UNCHANGED)
+                version = self.site.content["200"]["version"]
+                self.site.requests.clear()
+                self._run(workarea, lambda: PagePushCommand().run("200"))
+                self.assertTrue(all(request.method == "GET" for request in self.site.requests))
+                self.assertEqual(self.site.content["200"]["version"], version)
 
     def test_refuses_to_push_over_a_remote_rename_even_with_force(self) -> None:
         with temporary_workarea(root_page_id="100") as workarea:

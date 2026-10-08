@@ -265,6 +265,7 @@ class ADFToMarkdownConverter:
         self._media = media
         self._mention_lookup = mention_lookup
         self._links = links
+        self._table_depth = 0
 
     def convert(self, document: Mapping[str, object], title: str | None = None) -> str:
         """Convert an ADF body to GFM, optionally prefixed by its page title."""
@@ -713,7 +714,12 @@ class ADFToMarkdownConverter:
         if type(rowspan) is not int or type(colspan) is not int or rowspan < 1 or colspan < 1:
             return None
 
-        return [["", [], []], {"t": "AlignDefault"}, rowspan, colspan, self._convert_blocks(content)]
+        self._table_depth += 1
+        try:
+            blocks = self._convert_blocks(content)
+        finally:
+            self._table_depth -= 1
+        return [["", [], []], {"t": "AlignDefault"}, rowspan, colspan, blocks]
 
     def _table_row_columns(self, row):
         columns = 0
@@ -762,14 +768,18 @@ class ADFToMarkdownConverter:
             if caption is None:
                 return self._convert_opaque(node)
 
-        has_caption = caption is not None  # An empty caption still requires a figure.
         non_center = attrs["layout"] != "center"
         different_width = False
         if "width" in attrs:
             different_width = (
                 attrs.get("widthType") != "pixel" or "width" not in media_attrs or attrs["width"] != media_attrs["width"])
 
-        if not (has_caption or non_center or different_width):
+        if not (non_center or different_width):
+            if caption is not None:
+                # Pandoc flattens rich image descriptions in HTML tables, so preserve those images opaquely.
+                if self._table_depth and any(part.get("t") not in {"Str", "Space", "SoftBreak"} for part in caption):
+                    return self._convert_opaque(node)
+                inline["c"][1] = caption
             # Markdown images intentionally omit geometry; attachment sizes are restored by Confluence from the file.
             return image
 
@@ -2389,11 +2399,12 @@ class MarkdownToADFConverter:
         if any(not isinstance(inline, Mapping) or inline.get("t") not in {"Image", "Space", "SoftBreak"} for inline in value):
             return None
 
-        content = [self._convert_image(image) for image in images]
-        if len(content) == 1:
+        if len(images) == 1:
+            image = images[0]
+            content = [self._convert_image(image, description_is_caption=True), self._image_caption(image)]
             return {"type": "mediaSingle", "attrs": {"layout": "center"}, "content": content}
 
-        return {"type": "mediaGroup", "content": content}
+        return {"type": "mediaGroup", "content": [self._convert_image(image) for image in images]}
 
     def _convert_span(self, pandoc_inline, inlines, marks):
         """Read emoji, colour, highlight, status, and cflsync spans.
@@ -2729,10 +2740,17 @@ class MarkdownToADFConverter:
 
         inlines.append({"type": "mediaInline", "attrs": attrs})
 
-    def _convert_image(self, pandoc_inline):
-        return {"type": "media", "attrs": self._image_attrs(pandoc_inline)}
+    def _convert_image(self, pandoc_inline, *, description_is_caption=False):
+        return {"type": "media", "attrs": self._image_attrs(pandoc_inline, description_is_caption=description_is_caption)}
 
-    def _image_attrs(self, pandoc_inline):
+    def _image_caption(self, pandoc_inline):
+        """Read the description of a validated block image as a caption, including an empty one."""
+        content = self._convert_inline_nodes(pandoc_inline["c"][1])
+        if any(inline.get("type") not in CAPTION_INLINE_TYPES for inline in content):
+            raise ConversionError("image description has unsupported caption content")
+        return {"type": "caption", "content": content}
+
+    def _image_attrs(self, pandoc_inline, *, description_is_caption=False):
         if not self._has_fields(pandoc_inline, {"t", "c"}):
             raise ConversionError("Pandoc image has unsupported fields")
 
@@ -2766,9 +2784,10 @@ class MarkdownToADFConverter:
         else:
             attrs = {"type": "external", "url": url}
 
-        alt = self._plain_text(description)
-        if alt:
-            attrs["alt"] = alt
+        if not description_is_caption:
+            alt = self._plain_text(description)
+            if alt:
+                attrs["alt"] = alt
 
         attrs.update(dimensions)
 

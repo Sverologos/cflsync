@@ -366,8 +366,8 @@ a managed local `_attachments/<filename>` path. A `mediaSingle` always becomes
 an `Image`, whatever its file name, such as `GetClipboardImage.ashx?Id=…`; in
 a `mediaGroup` and for `mediaInline`, `Image` is used for filenames with an
 image suffix and `Link` otherwise, since the ADF media node carries no media
-type. The `alt` text is the inline text; media without `alt` is labelled
-with its filename, decoded from the percent-encoded path, or with the last
+type. Without a caption, the `alt` text is the inline text; media without `alt`
+is labelled with its filename, decoded from the percent-encoded path, or with the last
 path segment of an external URL. External media uses its own URL and needs no
 manifest. The reverse
 mapping uses the manifest to reconstruct images as ADF media; file links become
@@ -375,10 +375,9 @@ mapping uses the manifest to reconstruct images as ADF media; file links become
 Media that the manifest cannot resolve stays opaque.
 
 A supported `mediaSingle` uses raw `<figure data-type="media-single">` tag
-blocks around a raw `<img>` only if its layout is not `center`, it has a
-caption (including an empty caption), or its display width differs from the
-native media width. A display width is different if its type is percentage
-or omitted, or if it is a pixel width without a known native width or not
+blocks around a raw `<img>` only if its layout is not `center` or its display
+width differs from the native media width. A display width is different if its
+type is percentage or omitted, or if it is a pixel width without a known native width or not
 numerically equal to that width. Integer/float equivalents compare equal;
 fractional values are not rounded or compared with a tolerance. Native width
 means the media node's ADF `width`, not the attachment file's pixel width.
@@ -390,13 +389,36 @@ invalid or unsupported nodes still stay opaque rather than being simplified.
 Otherwise the node maps to a plain paragraph of `Image` without dimensions:
 native `width`/`height` and display `width`/`widthType` are omitted. Reverse
 conversion sends a centered `mediaSingle` and media without these dimensions,
-while retaining media identity/URL, collection, and alt under the existing
-mapping. Confluence restores attachment geometry from the actual file, which
-can change displayed size if ADF native dimensions differed from file size;
+while retaining media identity/URL and collection. Confluence restores attachment
+geometry from the actual file, which can change displayed size if ADF native
+dimensions differed from file size;
 it restores no dimensions for external images. This loss is accepted for
 simpler Markdown. Both attachment and external images use the same selection
 rule; no image-file parsing is performed. Inside HTML tables, Pandoc may render
 a plain `Image` as `<img>` without restoring its omitted geometry.
+
+For a simplified image, a second `caption` child supplies the `Image` description
+in place of alt or filename: `![Caption](target)`, or
+`![**Caption** with [a link](https://example.test)](target)`. Caption formatting
+follows ordinary inline conversion. An empty caption supplies an empty description,
+`![](target)`, without falling back to the filename. An unwrapped block image
+reads back as one media child and one caption child, even for an empty
+description. Its description becomes caption inlines, not media alt.
+Independent original alt cannot be retained in this form. An image without a
+caption keeps its existing alt/filename fallback on pull, but that description
+becomes a visible caption on the next push that sends page content. After this
+normalization, subsequent conversion preserves the caption and Markdown form.
+The same reverse rule applies to standalone raw `<img>` and ordinary table-cell
+images, whose HTML alt attribute supplies the description.
+
+Pandoc's HTML writer flattens rich image descriptions into plain alt text. To
+preserve captions in tables, a simplified image whose converted caption contains
+anything beyond `Str`, `Space`, or `SoftBreak` stays individually opaque. This
+guard applies throughout table cells, including nested containers and otherwise
+eligible pipe tables: another cell or a span can cause the whole table to be
+written as HTML. Plain and empty captions still simplify. Images already
+requiring figures retain their editable rich `<figcaption>` instead. This
+context guard does not add another figure-selection condition.
 
 In retained figures, `data-layout` preserves `center`, `wrap-left`, `wrap-right`,
 `wide`, `full-width`, `align-start`, or `align-end`; omitted layout defaults to
@@ -405,7 +427,7 @@ In retained figures, `data-layout` preserves `center`, `wrap-left`, `wrap-right`
 percentage (at most 100); omission is retained when a width is present.
 Intrinsic media `width` and `height`, when present, use positive finite pixel
 dimensions on an HTML `<img>` with the same editable attachment path or
-external URL. The raw image is also used for caption/layout-only figures
+external URL. The raw image is also used for layout-only figures
 without native dimensions. It avoids Pandoc's rounding of fractional sizes.
 Legacy figures containing a Markdown image still read with their existing
 geometry; retitle does not reselect their image representation. Previously
@@ -413,14 +435,16 @@ pulled files keep their representation until a rewriting pull (remote change
 or explicit force). Hash canonicalization and cache/workarea versions do not
 change; no migration is needed, and force pull overwrites local edits.
 
-A second `caption` child becomes `<figcaption>` tag blocks around a Pandoc
-paragraph of ordinary inline content. Caption formatting follows the existing
-inline mapping; empty captions are retained. The closing `</figcaption>` and
+In retained figures, a second `caption` child becomes `<figcaption>` tag blocks
+around a Pandoc paragraph of ordinary inline content. Caption formatting follows
+the existing inline mapping; empty captions are retained. The closing `</figcaption>` and
 `</figure>` share a raw block on consecutive lines; raw `<img>` remains a
 separate block with blank lines on both sides in GFM's tag-line form.
 GFM reads these as raw tag blocks and an image paragraph or raw `<img>`; the
 HTML-table reader instead produces a native `Figure`, which is also handled
 on push. A temporary comment protects empty captions during HTML parsing.
+Figure image descriptions remain media alt; only an explicit figcaption becomes
+a caption. An absent figcaption stays absent, including in legacy figures.
 Exactly one image must precede at most one caption, containing a single paragraph of inline content. Unsupported
 figure or caption attributes, marks, and dimensions keep the whole image
 opaque on pull; malformed or unsupported HTML is rejected on push. `localId`
@@ -433,10 +457,14 @@ managed and is uploaded before its ADF media reference is sent. This also
 applies inside HTML table cells; examples in code fences and HTML comments
 are excluded.
 
-`mediaInline` maps to a Pandoc `Image` or `Link` inside its paragraph, and an
-image that shares a paragraph with other content maps back to `mediaInline`. An
-image alone in a paragraph is `mediaSingle` in both directions, so a lone
-`mediaInline` becomes `mediaSingle` after a round trip. An inline image outside
+Multiple images sharing a paragraph remain `mediaGroup` with descriptions as
+media alt text. `mediaInline` maps to a Pandoc `Image` or `Link` inside its
+paragraph, and an image that shares a paragraph with other content maps back
+to `mediaInline`. An image alone in a paragraph is `mediaSingle` in both
+directions, so a lone
+`mediaInline` becomes `mediaSingle` with a caption after a round trip. A singleton
+image group has the same normalization. Images mixed with paragraph text keep
+their existing alt mapping and do not acquire captions. An inline image outside
 `_attachments/` is rejected, since ADF inline media has no external form.
 
 ## Opaque ADF retention

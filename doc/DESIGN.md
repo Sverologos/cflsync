@@ -226,6 +226,12 @@ or as typed Pandoc nodes, and the reverse mapping accepts both (see
 unsupported inline nodes, the smallest enclosing ADF block is retained so the
 fence remains valid GFM. Retained JSON is not normalized or stripped of metadata.
 Malformed or contextually invalid retained JSON stops reverse conversion.
+Simplified block images use Markdown descriptions as Confluence captions. A
+temporary table-cell conversion depth protects rich captions from Pandoc's HTML
+alt-text flattening by retaining only the affected image opaquely, including in
+nested cell containers. Plain captions still simplify; images requiring figures
+preserve captions in explicit figcaptions. This context is restored after each
+cell conversion, including failures, and has no synchronization or cache state.
 
 The full mapping, opaque-marker format, and required conversion tests are in
 [MAPPING.md](MAPPING.md).

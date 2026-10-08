@@ -80,9 +80,11 @@ ordinary links; external images are supported as external media.
 Pull writes attachment filenames percent-encoded in the path, as in
 `![Pasted image.png](_attachments/Pasted%20image.png)` for `Pasted image.png`;
 write a name with spaces the same way, or in angle brackets:
-`![](<_attachments/Pasted image.png>)`. The label is the alt text, or the plain
-filename when Confluence has none, and is pushed as alt text. cflsync 0.5.4 and
-0.5.5 wrote the encoded name as that label; edit it, or it is pushed as written.
+`![](<_attachments/Pasted image.png>)`. A block image's description is its caption,
+or its alt text/decoded filename when it has no caption, and is pushed as a
+caption (see [Images](#images)). Inline images, image groups, and file links keep
+their alt/label mapping. cflsync 0.5.4 and 0.5.5 wrote the encoded name as the
+fallback label; edit it, or it is pushed as written.
 When a page has several attachments with the same filename, which happens on
 copied pages, pull downloads one of them and reports the others; cflsync
 leaves those in Confluence untouched.
@@ -97,7 +99,6 @@ Pull writes a block image as ordinary Markdown unless at least one condition
 requires an HTML figure:
 
 - Its layout differs from `center`.
-- It has a caption, including an empty caption.
 - Its display width is a percentage (also when the width type is omitted),
   or is a pixel width different from its native ADF width or without a known
   native width.
@@ -107,6 +108,32 @@ Equal pixel widths are compared numerically, including fractional values and
 ADF, not the attachment file's pixel size. Native width/height alone, a height
 without width, or a width type without a display width do not require a figure.
 The rule is the same for attachments and external URLs.
+
+A simplified image uses its caption as the Markdown description:
+
+```markdown
+![Diagram caption](_attachments/example.png)
+![An editable **caption** with [a link](https://example.test).](_attachments/example.png)
+![](_attachments/example.png)
+```
+
+Push converts an unwrapped block image's description into a Confluence caption,
+including an explicit empty caption for `![](...)`. Formatting follows ordinary
+inline conversion. Caption takes precedence over independent alt text, which
+this representation cannot retain; push does not also assign description as
+media alt. When an image has no caption, pull keeps the alt text or filename
+fallback, which becomes a visible caption on an edited push that sends the page
+content. An unedited push remains a no-op. Multiple images sharing a paragraph
+keep their existing image-group alt mapping; an image mixed with text keeps
+its inline alt mapping. A singleton image group or lone inline image becomes
+a block image and follows the caption rule.
+
+In table cells, simplified images with rich captions (formatting, links, hard
+breaks, or structured inlines) stay individually opaque because Pandoc flattens
+image descriptions when writing HTML tables. This protection also applies in
+otherwise eligible pipe tables and nested cell containers. Plain and empty
+captions still simplify. Images whose layout or display width requires a figure
+retain their editable rich figcaption in tables.
 
 A figure retains extra settings using twg's attribute names:
 
@@ -129,6 +156,8 @@ finite numbers, and percentages cannot exceed 100. The `<img>` width and
 height preserve the separate intrinsic pixel dimensions when present.
 Every generated figure contains an HTML `<img>`, even without intrinsic
 dimensions. Older figures containing `![alt](path)` remain accepted on push.
+Figures keep image alt and explicit figcaption separate; without figcaption,
+the image description does not create a caption.
 
 `data-layout` accepts `center` (the default), `wrap-left`, `wrap-right`,
 `wide`, `full-width`, `align-start`, and `align-end`. In this tag-line form,
@@ -145,6 +174,9 @@ single line, `<figcaption>Caption text.</figcaption>`; its content is then HTML
 New local files referenced by `<img>` become managed attachments on push,
 including images in HTML table cells. Pandoc may also render an otherwise plain
 Markdown image as `<img>` inside an HTML table; this does not retain geometry.
+For a standalone `<img>` or ordinary table-cell image, HTML alt supplies the
+caption description on push; the separate figure rule still applies inside
+figures.
 
 Ordinary Markdown images omit native width/height and display width/type.
 Push sends centered media without dimensions. Confluence restores attachment
@@ -376,6 +408,6 @@ Markdown authoring format.
 ## Round-trip limitations
 
 Some content is converted but loses presentation detail: image borders,
-inline image dimensions, geometry of images simplified to ordinary Markdown
-(see [Images](#images)), and advanced table formatting. Check the remote page
+inline image dimensions, independent alt text and geometry of images simplified
+to ordinary Markdown (see [Images](#images)), and advanced table formatting. Check the remote page
 after pushing changes to pages that use these features.
