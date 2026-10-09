@@ -350,9 +350,17 @@ language.
 
 Cell content uses the ordinary block mapping, so opaque markers inside a cell
 are retained like anywhere else. An ADF table converts unless its structure is
-invalid; a leading row of `tableHeader` cells becomes the table head, and a
-table without one is written with an empty header row, which becomes a real
-empty header row when pushed back.
+invalid; a leading row of `tableHeader` cells becomes the table head. A simple
+table without one is written as a pipe table with a synthetic empty header
+row. On push, a single header row is omitted when the table has body rows,
+the header has at least one cell, every header cell contains only empty
+paragraphs, and all header-cell spans are 1. This convention applies to both
+pipe and HTML tables: an intentional empty header matching these conditions
+is also omitted. Header-only tables, multiple header rows, merged header cells,
+headers with any inline or non-paragraph content, and empty body rows are
+preserved. Pull output is unchanged, so a pipe-table preview still shows the
+empty header; existing exported Markdown follows this convention on its next
+push without requiring a re-pull.
 
 These table features do not survive conversion: header cells outside an
 all-header first row, trailing hard breaks in a cell, table `layout`, `width`,

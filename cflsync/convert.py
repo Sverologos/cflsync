@@ -2253,11 +2253,23 @@ class MarkdownToADFConverter:
         if not isinstance(foot, list) or len(foot) != 2 or foot[1] != []:
             raise ConversionError("Pandoc table footers cannot be represented in ADF")
 
-        rows = self._convert_table_head(head) + self._convert_table_bodies(bodies)
+        header_rows = self._convert_table_head(head)
+        body_rows = self._convert_table_bodies(bodies)
+        if len(header_rows) == 1 and body_rows and self._is_empty_header_row(header_rows[0]):
+            header_rows = []
+
+        rows = header_rows + body_rows
         if not rows:
             raise ConversionError("Pandoc table has no rows")
 
         return {"type": "table", "content": rows}
+
+    @staticmethod
+    def _is_empty_header_row(row):
+        cells = row["content"]
+        return bool(cells) and all(
+            cell["attrs"]["colspan"] == 1 and cell["attrs"]["rowspan"] == 1 and all(
+                block["type"] == "paragraph" and not block.get("content") for block in cell["content"]) for cell in cells)
 
     def _convert_table_head(self, head):
         if not isinstance(head, list) or len(head) != 2 or not isinstance(head[1], list):

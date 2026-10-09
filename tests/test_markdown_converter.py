@@ -642,6 +642,194 @@ class TestMarkdownToADFSoftBreaks(unittest.TestCase):
                 self.assertEqual(self._convert(wrapped), self._convert(spaced))
 
 
+class TestMarkdownToADFTableHeaders(unittest.TestCase):
+
+    def setUp(self):
+        self.pandoc = PandocRunner()
+        self.forward = ADFToMarkdownConverter(self.pandoc)
+        self.reverse = MarkdownToADFConverter(self.pandoc)
+
+    def test_round_trips_headerless_tables_without_dropping_empty_body_rows(self) -> None:
+        row = {"type": "tableRow", "content": [_cell("tableCell", [_paragraph(_text("Cell"))])]}
+        empty_row = {"type": "tableRow", "content": [_cell("tableCell", [{"type": "paragraph"}])]}
+        html_row = {"type": "tableRow", "content": [_cell("tableCell", [_paragraph(_text("First")), _paragraph(_text("Second"))])]}
+        cases = {
+            "single row": [row],
+            "empty first row": [empty_row, row],
+            "empty last row": [row, empty_row],
+            "only empty row": [empty_row],
+            "HTML": [empty_row, html_row]}
+        for name, rows in cases.items():
+            with self.subTest(case=name):
+                source = {"type": "doc", "version": 1, "content": [{"type": "table", "content": rows}]}
+                markdown = self.forward.convert(source)
+
+                self.assertEqual(markdown.lstrip().startswith("<table"), name == "HTML")
+                self.assertEqual(self.reverse.convert(markdown), source)
+
+    def test_filters_headers_inside_containers(self) -> None:
+        table = {"type": "table", "content": [{"type": "tableRow", "content": [_cell("tableCell", [_paragraph(_text("Cell"))])]}]}
+        containers = {
+            "blockquote": {
+                "type": "blockquote",
+                "content": [table]},
+            "list item": {
+                "type": "bulletList",
+                "content": [_list_item(_paragraph(_text("Item")), table)]},
+            "panel": {
+                "type": "panel",
+                "attrs": {
+                    "panelType": "info"},
+                "content": [table]},
+            "expand": {
+                "type": "expand",
+                "attrs": {
+                    "title": "Details"},
+                "content": [table]},
+            "layout": {
+                "type": "layoutSection",
+                "content": [{
+                    "type": "layoutColumn",
+                    "attrs": {
+                        "width": 100},
+                    "content": [table]}]}}
+        for name, container in containers.items():
+            with self.subTest(container=name):
+                source = {"type": "doc", "version": 1, "content": [container]}
+
+                self.assertEqual(self.reverse.convert(self.forward.convert(source)), source)
+
+    def test_drops_intentional_empty_headers_in_pipe_and_html_tables(self) -> None:
+        markups = (
+            "| | |\n|---|---|\n|A|B|\n", "<table><thead><tr><th></th><th><p></p><p></p></th></tr></thead>"
+            "<tbody><tr><td>A</td><td>B</td></tr></tbody></table>\n")
+        expected = {
+            "type":
+            "table",
+            "content": [
+                {
+                    "type": "tableRow",
+                    "content": [_cell("tableCell", [_paragraph(_text("A"))]),
+                                _cell("tableCell", [_paragraph(_text("B"))])]}]}
+        for markup in markups:
+            with self.subTest(markup=markup):
+                self.assertEqual(self.reverse.convert(markup)["content"], [expected])
+
+    def test_preserves_partially_populated_headers_and_empty_body_rows(self) -> None:
+        for populated in (0, 1):
+            cells = ["", ""]
+            cells[populated] = "Header"
+            markups = (
+                f"|{cells[0]}|{cells[1]}|\n|---|---|\n| | |\n",
+                f"<table><thead><tr><th>{cells[0]}</th><th>{cells[1]}</th></tr></thead>"
+                "<tbody><tr><td></td><td></td></tr></tbody></table>\n")
+            for markup in markups:
+                with self.subTest(populated=populated, markup=markup):
+                    rows = self.reverse.convert(markup)["content"][0]["content"]
+
+                    self.assertEqual(len(rows), 2)
+                    self.assertEqual([cell["type"] for cell in rows[0]["content"]], ["tableHeader", "tableHeader"])
+                    self.assertEqual(rows[0]["content"][populated]["content"], [_paragraph(_text("Header"))])
+                    self.assertEqual(
+                        rows[1]["content"],
+                        [_cell("tableCell", [{
+                            "type": "paragraph"}]),
+                         _cell("tableCell", [{
+                             "type": "paragraph"}])])
+
+    def test_preserves_empty_header_only_tables(self) -> None:
+        markups = ("| | |\n|---|---|\n", "<table><thead><tr><th></th><th></th></tr></thead></table>\n")
+        for markup in markups:
+            with self.subTest(markup=markup):
+                rows = self.reverse.convert(markup)["content"][0]["content"]
+
+                self.assertEqual(len(rows), 1)
+                self.assertEqual([cell["type"] for cell in rows[0]["content"]], ["tableHeader", "tableHeader"])
+
+    def test_preserves_merged_empty_headers(self) -> None:
+        for name, index in (("rowspan", 2), ("colspan", 3)):
+            with self.subTest(span=name):
+                document = self.pandoc.gfm_to_pandoc("| |\n|---|\n|Cell|\n")
+                document["blocks"][0]["c"][3][1][0][1][0][index] = 2
+
+                rows = MarkdownToADFConverter(RecordingPandoc(document)).convert("source")["content"][0]["content"]
+
+                self.assertEqual(len(rows), 2)
+                self.assertEqual(rows[0]["content"][0]["type"], "tableHeader")
+                self.assertEqual(rows[0]["content"][0]["attrs"][name], 2)
+
+    def test_preserves_merged_empty_html_headers(self) -> None:
+        markup = "<table><thead><tr><th colspan=\"2\"></th></tr></thead>" \
+            "<tbody><tr><td>A</td><td>B</td></tr></tbody></table>\n"
+
+        rows = self.reverse.convert(markup)["content"][0]["content"]
+
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["content"], [_cell("tableHeader", [{"type": "paragraph"}], colspan=2)])
+
+    def test_preserves_non_text_and_non_paragraph_header_content(self) -> None:
+        cases = {
+            "hard break": {
+                "t": "Para",
+                "c": [{
+                    "t": "LineBreak"}]},
+            "image": {
+                "t": "Para",
+                "c": [{
+                    "t": "Image",
+                    "c": [["", [], []], [], ["https://example.test/image.png", ""]]}]},
+            "empty code block": {
+                "t": "CodeBlock",
+                "c": [["", [], []], ""]},
+            "rule": {
+                "t": "HorizontalRule"}}
+        for name, block in cases.items():
+            with self.subTest(content=name):
+                document = self.pandoc.gfm_to_pandoc("| |\n|---|\n|Cell|\n")
+                document["blocks"][0]["c"][3][1][0][1][0][4] = [block]
+
+                rows = MarkdownToADFConverter(RecordingPandoc(document)).convert("source")["content"][0]["content"]
+
+                self.assertEqual(len(rows), 2)
+                self.assertEqual(rows[0]["content"][0]["type"], "tableHeader")
+                self.assertTrue(rows[0]["content"][0]["content"])
+
+    def test_drops_headers_containing_multiple_empty_paragraphs(self) -> None:
+        document = self.pandoc.gfm_to_pandoc("| |\n|---|\n|Cell|\n")
+        document["blocks"][0]["c"][3][1][0][1][0][4] = [{"t": "Para", "c": []}, {"t": "Plain", "c": []}]
+
+        rows = MarkdownToADFConverter(RecordingPandoc(document)).convert("source")["content"][0]["content"]
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["content"], [_cell("tableCell", [_paragraph(_text("Cell"))])])
+
+    def test_preserves_multiple_empty_header_rows(self) -> None:
+        document = self.pandoc.gfm_to_pandoc("| |\n|---|\n|Cell|\n")
+        header_rows = document["blocks"][0]["c"][3][1]
+        header_rows.append(header_rows[0])
+
+        rows = MarkdownToADFConverter(RecordingPandoc(document)).convert("source")["content"][0]["content"]
+
+        self.assertEqual(len(rows), 3)
+        self.assertEqual([row["content"][0]["type"] for row in rows], ["tableHeader", "tableHeader", "tableCell"])
+
+    def test_does_not_drop_a_header_row_without_cells(self) -> None:
+        document = self.pandoc.gfm_to_pandoc("| |\n|---|\n|Cell|\n")
+        document["blocks"][0]["c"][3][1][0][1] = []
+
+        rows = MarkdownToADFConverter(RecordingPandoc(document)).convert("source")["content"][0]["content"]
+
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0], {"type": "tableRow", "content": []})
+
+    def test_validates_an_empty_header_before_filtering(self) -> None:
+        document = self.pandoc.gfm_to_pandoc("| |\n|---|\n|Cell|\n")
+        document["blocks"][0]["c"][3][1][0][1][0][0] = ["unsupported", [], []]
+
+        with self.assertRaisesRegex(ConversionError, "table cell has unsupported attributes"):
+            MarkdownToADFConverter(RecordingPandoc(document)).convert("source")
+
+
 def _text(text, *marks):
     node = {"type": "text", "text": text}
     if marks:
